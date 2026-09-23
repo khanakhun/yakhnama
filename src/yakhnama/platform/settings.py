@@ -8,14 +8,24 @@ Patterns: Settings (pydantic-settings ``BaseSettings``, proposed in ADR 0011).
 """
 
 import functools
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import Field
+from pydantic import Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 LogFormat = Literal["json", "console"]
+TelemetryExporter = Literal["none", "console", "otlp"]
+
+# The only driver the async engine in ``platform/db.py`` supports (ADR 0004).
+ASYNC_POSTGRES_SCHEME: Final = "postgresql+asyncpg"
+# Matches the development credentials in ``docker-compose.yml``; real deployments
+# override it through ``YAKHNAMA_DATABASE_URL``. The port must equal
+# ``POSTGRES_HOST_PORT``.
+DEVELOPMENT_DATABASE_URL: Final = PostgresDsn(
+    "postgresql+asyncpg://yakhnama:yakhnama-dev-only@127.0.0.1:5432/yakhnama"
+)
 
 # An origin is scheme + host + port; 2048 matches the common URL length ceiling and
 # keeps a malformed environment value from becoming an unbounded allocation.
@@ -45,6 +55,21 @@ class Settings(BaseSettings):
         cors_allow_origins: Origins allowed by CORS; empty means no cross-origin access.
         public_coordinate_decimals: Decimal places kept when coordinates are published
             on public endpoints, to protect reporter locations (spec §10).
+        database_url: PostgreSQL DSN; must use the ``postgresql+asyncpg`` driver. It
+            carries a password, so it is excluded from ``repr`` and must never be
+            logged.
+        database_pool_size: Connections kept open by the engine's pool.
+        database_echo: Log every SQL statement (bound parameters are always hidden,
+            see ``platform/db.py``); for local debugging only.
+        otel_enabled: Turn OpenTelemetry tracing on.
+        otel_exporter: Where spans go: ``none`` (collected, not exported),
+            ``console`` (stdout) or ``otlp`` (not installed yet, see
+            ``platform/telemetry.py``).
+        otel_exporter_endpoint: Collector endpoint for the ``otlp`` exporter; an
+            empty value means none.
+        otel_service_name: ``service.name`` resource attribute on every span.
+        docs_enabled: Serve the OpenAPI document and the interactive docs.
+        health_ready_timeout_seconds: Upper bound for each readiness check.
     """
 
     model_config = SettingsConfigDict(
@@ -55,6 +80,9 @@ class Settings(BaseSettings):
         # as an extra, which ``extra="forbid"`` rejects, so typos fail loudly.
         dotenv_filtering="match_prefix",
         extra="forbid",
+        # A validation error would otherwise print the rejected value, and values such
+        # as ``database_url`` embed a password.
+        hide_input_in_errors=True,
     )
 
     app_name: str = Field(default="Yakhnama", min_length=1, max_length=100)
@@ -66,6 +94,41 @@ class Settings(BaseSettings):
     # maintainer decision (reporter safety versus research usefulness); this default is
     # a proposal recorded as an open question, not a domain fact.
     public_coordinate_decimals: int = Field(default=2, ge=0, le=6)
+
+    # repr=False keeps the password out of tracebacks and debug output that print the
+    # settings object.
+    database_url: PostgresDsn = Field(default=DEVELOPMENT_DATABASE_URL, repr=False)
+    # 64 is far above what one API process needs and keeps a typo from exhausting the
+    # server's max_connections.
+    database_pool_size: int = Field(default=5, ge=1, le=64)
+    database_echo: bool = False
+
+    otel_enabled: bool = False
+    otel_exporter: TelemetryExporter = "none"
+    otel_exporter_endpoint: str | None = Field(default=None, max_length=512)
+    otel_service_name: str = Field(default="yakhnama", min_length=1, max_length=100)
+
+    docs_enabled: bool = True
+    health_ready_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _require_asyncpg_driver(cls, database_url: PostgresDsn) -> PostgresDsn:
+        # Any other driver would fail later, at the first query, with a less helpful
+        # error; the message names the scheme only, never the DSN with its password.
+        if database_url.scheme != ASYNC_POSTGRES_SCHEME:
+            message = (
+                f"database_url must use the {ASYNC_POSTGRES_SCHEME} scheme, "
+                f"got {database_url.scheme}"
+            )
+            raise ValueError(message)
+        return database_url
+
+    @field_validator("otel_exporter_endpoint", mode="before")
+    @classmethod
+    def _empty_endpoint_means_none(cls, endpoint: object) -> object:
+        # An environment variable cannot hold None; an empty value is its spelling.
+        return None if endpoint == "" else endpoint
 
 
 @functools.lru_cache(maxsize=1)
