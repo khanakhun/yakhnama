@@ -344,9 +344,17 @@ def test_every_module_has_a_public_facade(module_directory: Path) -> None:
 
 
 def test_repository_adapters_are_discovered() -> None:
+    modules_with_repositories = [
+        directory
+        for directory in _module_directories()
+        if (directory / "infrastructure" / "repositories.py").is_file()
+    ]
+
     adapters = _repository_adapters()
 
-    assert len(adapters) >= len(_module_directories())
+    # A module that has no persistence yet (a fresh skeleton) contributes nothing.
+    assert len(adapters) >= len(modules_with_repositories)
+    assert modules_with_repositories, "at least one module must have repositories"
 
 
 @pytest.mark.parametrize("adapter", _repository_adapters(), ids=_adapter_id)
