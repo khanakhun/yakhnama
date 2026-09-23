@@ -108,10 +108,197 @@ All domain errors derive from `shared_kernel.errors.YakhnamaError`: `NotFoundErr
 the exception handlers registered in `main.py` — so no module or layer below `api`
 formats an HTTP response.
 
+## Phase 1 state
+
+Phase 1 (`docs/plans/phase-1.md`) added the shared kernel, the database and outbox
+platform, and three reference-data modules with domain, application and persistence
+layers. The module map above stays the description of every eventual bounded context;
+this section records what actually exists after Phase 1.
+
+### Module map (Phase 1)
+
+| Module | Owns | Key rule | Status |
+|--------|------|----------|--------|
+| `geography` | `AdminLevel`, `Place` aggregate, `PlaceName` | A place is never deleted, only retired or merged; at most one preferred name per language (`src/yakhnama/modules/geography/domain/entities.py`, `docs/data-dictionary/geography.md`). | domain + application + persistence |
+| `hazards` | `HazardType` taxonomy, hazard attribute schemas (Strategy + Registry), `GlacierRef`/`GlacialLakeRef` | A hazard type code is retired, never reused or deleted; attribute payloads validate against `DEFAULT_REGISTRY` (`src/yakhnama/modules/hazards/domain/`, `docs/data-dictionary/hazards.md`). | domain + application + persistence |
+| `impacts` | `ImpactMetric` registry | `category`, `value_kind`, `unit`, `currency` and `aggregation` are immutable once a metric exists; a metric code is never reused (`src/yakhnama/modules/impacts/domain/entities.py`, `docs/data-dictionary/impacts.md`). | domain + application + persistence (registry only; claims arrive in Phase 3) |
+
+Each module follows the layer rules in `AGENTS.md` §2.1 and exposes only `public.py` to
+the other two and to `yakhnama.seed`; `pyproject.toml`'s `[tool.importlinter]` contracts
+enforce this and the hexagonal layering inside each module.
+
+### The seed flow
+
+`poetry run poe seed` (`src/yakhnama/seed/__main__.py`) runs
+`SeedReferenceDataHandler` (`src/yakhnama/seed/application.py`), which:
+
+1. Checks a `SeedPolicy` (an allow-list placeholder until Phase 2's identity policies
+   land) before touching anything.
+2. Reads each versioned file in `data/reference/` through the `ReferenceFileReader`
+   port, validating it against that module's reference-file model.
+3. Hands each parsed file to its module's load command handler, in order — hazard
+   types, then impact metrics, then places — because later records refer to hazard
+   types and metrics by code.
+4. Each module's loader runs in its own unit of work and is idempotent: it upserts by
+   code, never deletes, and applies only labels, retirement status, names and
+   centroids in place on a re-run, reporting anything else as skipped for a human
+   (`docs/open-questions.md`, Q41–Q44).
+
+The seed is therefore not one atomic transaction across modules; re-running it after a
+partial failure completes the work without duplicating anything, because every
+individual load is idempotent.
+
+### Platform pieces added in Phase 1
+
+- **`platform/container.py`** — the second composition root (`AGENTS.md` §2.1). Builds
+  the database engine and session factory, binds `Clock` and `IdGenerator`, and
+  constructs one `OutboxWriter`, one `SubscriberRegistry` and one `OutboxRelay` shared
+  by the whole application.
+- **`platform/uow.py`** — `SqlAlchemyUnitOfWork` implements the `UnitOfWork` protocol
+  from `shared_kernel/uow.py`. A module subclasses it, overriding
+  `_open_repositories` to build its SQLAlchemy repositories on the session the unit of
+  work opened; `platform/container.py` binds a `SqlAlchemyUnitOfWorkFactory` per module
+  to that module's `UnitOfWorkFactory` port. On `commit`, the unit of work stages the
+  collected domain events as outbox rows in the same session before committing, so the
+  aggregate write and its events are atomic (ADR 0007).
+- **`platform/outbox/writer.py`** — serialises each `DomainEvent` into an
+  `OutboxMessage` row and stages it with `session.add`; it never flushes or commits
+  itself.
+- **`platform/outbox/relay.py`** — `OutboxRelay.relay_once` claims pending rows with
+  `SELECT ... FOR UPDATE SKIP LOCKED` (safe under concurrent relays), dispatches each
+  to its `SubscriberRegistry` subscribers and marks it published only once every
+  subscriber returns without raising — **at-least-once delivery**, so every subscriber
+  must be idempotent, keyed by `OutboxEnvelope.event_id`. A failure increments
+  `attempts` and stores only the error type in `last_error` (never the exception text
+  or the payload, per `AGENTS.md` §5); after `max_attempts` (default 5) a message stops
+  being claimed until a human or a future dead-letter process handles it
+  (`docs/open-questions.md`, Q47).
+- **`platform/telemetry.py`** — `configure_telemetry` instruments FastAPI and
+  SQLAlchemy with OpenTelemetry when enabled. `PersonalDataSpanProcessor` strips query
+  strings and redacts client address, port and user agent on every span as it starts;
+  `PersonalDataSpanExporter` wraps every exporter so exception text (driver messages,
+  stack traces) never leaves the process, keeping only the exception type and status
+  code (`AGENTS.md` §5). The OTLP exporter is not installed yet
+  (`docs/open-questions.md`, Q46).
+- **`platform/health.py`** — `/health/live` checks nothing (a database outage must not
+  make an orchestrator restart healthy processes); `/health/ready` runs `SELECT 1`
+  against the engine within a configurable timeout and returns HTTP 503 when it fails.
+  The object storage check joins in Phase 3, when the storage port exists.
+
+### A write, end to end
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Handler as Command Handler
+    participant UoW as SqlAlchemyUnitOfWork
+    participant Repo as Repository
+    participant DB as PostgreSQL
+    participant Writer as OutboxWriter
+    participant Relay as OutboxRelay
+
+    Client->>Handler: Command (e.g. LoadReferenceHazardTypes)
+    Handler->>UoW: async with uow_factory()
+    activate UoW
+    UoW->>Repo: open repositories on this session
+    Handler->>Repo: get / add / save aggregate
+    Repo->>DB: SELECT / INSERT / UPDATE
+    Handler->>UoW: record_event(domain event)
+    Handler->>UoW: commit()
+    UoW->>Writer: write(session, collected_events)
+    Writer->>DB: INSERT INTO outbox_messages (same transaction)
+    UoW->>DB: COMMIT
+    deactivate UoW
+    Handler-->>Client: DTO / report
+
+    Note over Relay,DB: Later, a separate run
+    Relay->>DB: SELECT ... FOR UPDATE SKIP LOCKED
+    Relay->>Relay: dispatch to SubscriberRegistry subscribers
+    Relay->>DB: mark published_at (or increment attempts)
+```
+
+## Phase 2 state
+
+Phase 2 (`docs/plans/phase-2.md`) added the `identity` module, the platform HTTP
+foundations every later endpoint relies on, and the first public read endpoints. This
+section records what actually exists after Phase 2; `docs/architecture/api.md` is the
+detailed companion for the API surface itself, and `docs/architecture/auth.md` for
+authentication.
+
+### Module map (Phase 2 addition)
+
+| Module | Owns | Key rule | Status |
+|--------|------|----------|--------|
+| `identity` | `User`, `Organization`, `Membership`, `Role`, `Actor`, the authorisation policies | A user is mirrored from its OIDC token at first sight and never deleted; a suspended user keeps its roles but gets no `Actor`, so no policy allows it anything (`src/yakhnama/modules/identity/domain/`, `docs/data-dictionary/identity.md`). | domain + application + persistence + API |
+
+The placeholder `AdminOnlyPolicy` duplicated in `geography`, `hazards` and `impacts`
+(`docs/open-questions.md` Q41) is replaced by identity policies (`IsAdmin`,
+`CanManageReferenceData`, ...) exposed through `modules/identity/public.py`, per the
+Facade rule in `AGENTS.md` §2.1.
+
+### Platform pieces added in Phase 2
+
+- **`platform/auth/`** — `HttpJwksClient` (a TTL-cached, rate-limited-refetch JWKS
+  client over `httpx`), `TokenValidator` (PyJWT-based signature and claim checks against
+  the injected `Clock`), the `Principal` DTO, and `PrincipalResolutionMiddleware`, which
+  validates the bearer token once per request and stores the outcome in request state for
+  the rate limiter, the idempotency middleware and every route to read (ADR 0015; full
+  detail in `docs/architecture/auth.md`, "The backend side").
+- **`platform/idempotency/`** — the `IdempotencyStore` port, a PostgreSQL adapter
+  (`idempotency_keys`, migration `0006_idempotency_keys`) and `IdempotencyMiddleware`,
+  which replays the stored response of a repeated `Idempotency-Key` on an authenticated
+  creating `POST` (ADR 0016).
+- **`platform/etag.py`** — strong ETags (`"<id>:<version>"`) from an aggregate's
+  `version`, and the `If-Match` checks that raise `PreconditionFailedError` (412) or
+  `PreconditionRequiredError` (428).
+- **`platform/ratelimit/`** — the `RateLimiter` port, an in-memory token-bucket adapter
+  (development and tests) and a Redis fixed-window adapter (production, shared across
+  processes), keyed per principal or per hashed client IP, with `RateLimitMiddleware`
+  answering `429` Problem Details with `Retry-After` (ADR 0017).
+- **`platform/http.py`** — the pure-ASGI hardening middlewares: request id, request
+  logging (no personal data), security headers and CSP, `TrustedHostMiddleware`, CORS
+  options, and `RequestBodyGuardMiddleware` (body size limit and NUL-character rejection).
+- **`platform/api_docs.py`** — renders the self-hosted Scalar API reference page served at
+  `/api/v1/docs` when `docs_enabled`, with a page-specific CSP computed from its own
+  rendered HTML (ADR 0014); Swagger UI and ReDoc are never served.
+- Extended error handling in `main.py`: `RequestValidationError` never echoes rejected
+  input, 404/405 render as Problem Details, and the catch-all 500 handler adds the request
+  id and security headers itself, because it runs outside every other middleware
+  (Starlette's `ServerErrorMiddleware`).
+- A production settings validator (`platform/settings.py`, `_guard_production` /
+  `production_problems`) that refuses to start with unsafe production settings, collecting
+  every broken rule into one message.
+
+### Middleware order
+
+`install_middlewares` (`main.py`) calls `add_middleware` innermost first (idempotency, body
+guard, rate limit, principal resolution, CORS, trusted host, security headers, request
+logging, request id, in that call order), so each new middleware wraps the ones already
+added and the actual request-time order is the reverse — outermost first: request id,
+request logging, security headers, trusted host, CORS, principal resolution, rate limit,
+body guard, idempotency, then the routes (see `platform/http.py`'s module docstring for the
+request-time explanation of each layer).
+
+```mermaid
+flowchart LR
+    Client --> RequestId --> RequestLogging --> SecurityHeaders --> TrustedHost --> CORS --> PrincipalResolution --> RateLimit --> BodyGuard --> Idempotency --> Routes
+```
+
+### The API layer conventions
+
+Every route under `/api/v1` follows the same conventions for authentication, errors,
+pagination, idempotency, concurrency and content negotiation. See
+[`api.md`](api.md) for the full reference, including the route table with each route's
+authentication and authorisation requirement.
+
 ## Further reading
 
-- Architecture decisions: [`../adr/`](../adr/README.md) (MADR format, numbered `0001`–`0010` in
-  Phase 0).
-- Data dictionary conventions: [`../data-dictionary/README.md`](../data-dictionary/README.md).
+- Architecture decisions: [`../adr/`](../adr/README.md) (MADR format).
+- Data dictionary conventions and the module pages:
+  [`../data-dictionary/README.md`](../data-dictionary/README.md).
+- API conventions: [`api.md`](api.md).
+- Authentication and the development realm: [`auth.md`](auth.md).
+- Open questions raised while building Phase 1 and Phase 2:
+  [`../open-questions.md`](../open-questions.md).
 - External data source adapters: `data-sources.md`, added in Phase 4 alongside the
   `add-source-adapter` skill.

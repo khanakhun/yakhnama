@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from yakhnama.platform.settings import Settings, get_settings
+from yakhnama.platform.settings import (
+    ASYNC_POSTGRES_SCHEME,
+    DEVELOPMENT_DATABASE_URL,
+    Settings,
+    get_settings,
+)
 
 
 def test_settings_without_environment_uses_documented_defaults() -> None:
@@ -135,3 +140,194 @@ def test_env_example_documents_every_settings_field() -> None:
     missing = set(Settings.model_fields) - documented
 
     assert missing == set()
+
+
+def test_settings_without_environment_uses_documented_platform_defaults() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.database_url == DEVELOPMENT_DATABASE_URL
+    assert settings.database_pool_size == 5
+    assert settings.database_echo is False
+    assert settings.otel_enabled is False
+    assert settings.otel_exporter == "none"
+    assert settings.otel_exporter_endpoint is None
+    assert settings.otel_service_name == "yakhnama"
+    assert settings.docs_enabled is True
+    assert settings.health_ready_timeout_seconds == 2.0
+
+
+def test_settings_database_url_env_var_with_asyncpg_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "YAKHNAMA_DATABASE_URL", "postgresql+asyncpg://app:pw@db.internal:6543/records"
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.database_url.scheme == ASYNC_POSTGRES_SCHEME
+    assert settings.database_url.path == "/records"
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql://app:pw@127.0.0.1:5432/records",
+        "postgresql+psycopg://app:pw@127.0.0.1:5432/records",
+    ],
+)
+def test_settings_database_url_without_asyncpg_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch, database_url: str
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_DATABASE_URL", database_url)
+
+    with pytest.raises(ValidationError, match="postgresql\\+asyncpg"):
+        Settings(_env_file=None)
+
+
+def test_settings_database_url_not_postgres_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_DATABASE_URL", "mysql://app:pw@127.0.0.1/records")
+
+    with pytest.raises(ValidationError, match="database_url"):
+        Settings(_env_file=None)
+
+
+def test_settings_invalid_database_url_error_does_not_echo_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "YAKHNAMA_DATABASE_URL", "postgresql://app:hunter2-secret@127.0.0.1/records"
+    )
+
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None)
+
+    assert "hunter2-secret" not in str(caught.value)
+
+
+def test_settings_repr_does_not_contain_database_password() -> None:
+    settings = Settings(_env_file=None)
+
+    rendered = repr(settings)
+
+    assert "yakhnama-dev-only" not in rendered
+    assert "database_url" not in rendered
+
+
+@pytest.mark.parametrize("pool_size", [1, 64])
+def test_settings_pool_size_at_bounds_is_accepted(pool_size: int) -> None:
+    settings = Settings(_env_file=None, database_pool_size=pool_size)
+
+    assert settings.database_pool_size == pool_size
+
+
+@pytest.mark.parametrize("pool_size", [0, 65])
+def test_settings_pool_size_out_of_bounds_raises_validation_error(
+    pool_size: int,
+) -> None:
+    with pytest.raises(ValidationError, match="database_pool_size"):
+        Settings(_env_file=None, database_pool_size=pool_size)
+
+
+@pytest.mark.parametrize("timeout", [0.1, 30.0])
+def test_settings_ready_timeout_at_bounds_is_accepted(timeout: float) -> None:
+    settings = Settings(_env_file=None, health_ready_timeout_seconds=timeout)
+
+    assert settings.health_ready_timeout_seconds == timeout
+
+
+@pytest.mark.parametrize("timeout", [0.09, 30.1])
+def test_settings_ready_timeout_out_of_bounds_raises_validation_error(
+    timeout: float,
+) -> None:
+    with pytest.raises(ValidationError, match="health_ready_timeout_seconds"):
+        Settings(_env_file=None, health_ready_timeout_seconds=timeout)
+
+
+def test_settings_unknown_otel_exporter_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_OTEL_EXPORTER", "jaeger")
+
+    with pytest.raises(ValidationError, match="otel_exporter"):
+        Settings(_env_file=None)
+
+
+def test_settings_empty_otel_endpoint_env_var_becomes_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_OTEL_EXPORTER_ENDPOINT", "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.otel_exporter_endpoint is None
+
+
+def test_settings_otel_endpoint_env_var_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_OTEL_EXPORTER_ENDPOINT", "http://127.0.0.1:4318")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.otel_exporter_endpoint == "http://127.0.0.1:4318"
+
+
+def test_settings_otel_endpoint_over_512_characters_raises_validation_error() -> None:
+    with pytest.raises(ValidationError, match="otel_exporter_endpoint"):
+        Settings(_env_file=None, otel_exporter_endpoint="http://x/" + "a" * 504)
+
+
+def test_settings_empty_otel_service_name_raises_validation_error() -> None:
+    with pytest.raises(ValidationError, match="otel_service_name"):
+        Settings(_env_file=None, otel_service_name="")
+
+
+def test_settings_seed_defaults_are_reference_dir_and_no_actor() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.reference_data_dir == Path("data/reference")
+    assert settings.seed_actor_id is None
+
+
+def test_settings_reference_data_dir_need_not_exist_at_load(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing"
+    monkeypatch.setenv("YAKHNAMA_REFERENCE_DATA_DIR", str(missing))
+
+    settings = Settings(_env_file=None)
+
+    assert settings.reference_data_dir == missing
+
+
+def test_settings_seed_actor_id_uuid7_env_var_is_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor_id = "01920000-0000-7000-8000-000000000001"
+    monkeypatch.setenv("YAKHNAMA_SEED_ACTOR_ID", actor_id)
+
+    settings = Settings(_env_file=None)
+
+    assert str(settings.seed_actor_id) == actor_id
+
+
+def test_settings_seed_actor_id_empty_env_var_means_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_SEED_ACTOR_ID", "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.seed_actor_id is None
+
+
+def test_settings_seed_actor_id_not_uuid7_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_SEED_ACTOR_ID", "6f1c2b0e-4a5d-4c3b-9a8e-1d2c3b4a5f60")
+
+    with pytest.raises(ValidationError, match="seed_actor_id"):
+        Settings(_env_file=None)

@@ -131,9 +131,10 @@ jobs:
       - name: API and architecture tests
         run: poetry run poe test-api
 
-  # The coverage gate and the input to diff-cover: unit, API and architecture tests
-  # together, exactly like the local `poe cov`, so diff-cover sees the same lines covered
-  # in CI as on a developer machine.
+  # The coverage gate and the input to diff-cover: every test tier including the
+  # integration tests on real PostGIS (testcontainers uses the runner's Docker), exactly
+  # like the local `poe cov`, so diff-cover sees the same lines covered in CI as on a
+  # developer machine. Database adapters can only be covered this way (no DB mocks).
   cov:
     name: Coverage gate (py${{ matrix.python }})
     runs-on: ubuntu-latest

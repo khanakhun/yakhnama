@@ -192,6 +192,42 @@ def test_is_sensitive_key_non_personal_key_returns_false(key: str) -> None:
     assert result is False
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "display_name",
+        "displayName",
+        "username",
+        "preferred_username",
+        "preferredUsername",
+        "subject",
+        "token_subject",
+    ],
+)
+def test_is_sensitive_key_identity_claim_key_returns_true(key: str) -> None:
+    result = is_sensitive_key(key)
+
+    assert result is True
+
+
+def test_redact_personal_data_identity_claims_are_redacted() -> None:
+    event = {
+        "event": "user_mirrored",
+        "subject": "f3c1-keycloak-sub",
+        "preferred_username": "amina",
+        "display_name": "Amina",
+    }
+
+    result = redact_personal_data(None, "info", event)
+
+    assert result == {
+        "event": "user_mirrored",
+        "subject": REDACTED,
+        "preferred_username": REDACTED,
+        "display_name": REDACTED,
+    }
+
+
 _AFFIXES = st.text(alphabet="abcdefghijklmnopqrstuvwxyz", max_size=6)
 
 

@@ -9,6 +9,10 @@ contributor guide live in the repository's `README.md` and `CONTRIBUTING.md`.
 
 - **[Architecture](architecture/README.md)** — the modular-monolith and hexagonal-layer
   diagrams, the module map, and how reads, writes and errors flow.
+- **[API conventions](architecture/api.md)** — authentication, Problem Details, pagination,
+  idempotency, `ETag`/`If-Match`, content negotiation, rate limiting and the route table.
+- **[Authentication](architecture/auth.md)** — the OIDC token flow, the development
+  Keycloak realm and the backend's validation rules.
 - **[Architecture decision records](adr/README.md)** — the recorded reasoning behind the
   structural choices, MADR format.
 - **[Data dictionary](data-dictionary/README.md)** — conventions for documenting every

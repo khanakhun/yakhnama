@@ -70,7 +70,9 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.2@sha256:4883630ef9db14031cde3e60700c9a9a8eaf1b5c24db1589d6a2d43de38ba2a9
     restart: unless-stopped
-    command: ["start-dev"]
+    # --import-realm loads every realm export under /opt/keycloak/data/import on startup
+    # (docker/keycloak/yakhnama-realm.json), so the dev realm always matches the repository.
+    command: ["start-dev", "--import-realm"]
     environment:
       # Keycloak 26 replaced the deprecated KEYCLOAK_ADMIN / KEYCLOAK_ADMIN_PASSWORD.
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
@@ -80,6 +82,7 @@ services:
       - "127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}:8080"
     volumes:
       - keycloak-data:/opt/keycloak/data
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
     healthcheck:
       # The image ships without curl; bash's /dev/tcp queries the management port
       # (9000 inside the container, not published) where /health/ready is served.

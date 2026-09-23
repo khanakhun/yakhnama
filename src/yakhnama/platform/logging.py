@@ -45,9 +45,10 @@ MAX_DEPTH = 32
 # - credentials (password, passwd, secret, token, apikey, authorization, cookie,
 #   session, privatekey, credential): leaking them in logs grants account or system
 #   access; substring matching catches "db_password", "id_token", "session_id".
-# - contact and identity (email, phone, mobile, whatsapp, cnic, nationalid, address):
-#   lets a third party identify, locate or contact a reporter; CNIC is Pakistan's
-#   national id number.
+# - contact and identity (email, phone, mobile, whatsapp, cnic, nationalid, address,
+#   displayname, username, subject): lets a third party identify, locate or contact
+#   a reporter; CNIC is Pakistan's national id number, "subject" the OIDC "sub" and
+#   "username" also covers "preferred_username".
 # - location (latitude, longitude, coordinates, geometry, location, gps): precise
 #   coordinates of a report can pinpoint a reporter's home; public output is coarsened
 #   separately via ``Settings.public_coordinate_decimals``.
@@ -71,6 +72,9 @@ SENSITIVE_KEY_SUBSTRINGS: tuple[str, ...] = (
     "cnic",
     "nationalid",
     "address",
+    "displayname",
+    "username",
+    "subject",
     "latitude",
     "longitude",
     "coordinates",

@@ -1,0 +1,72 @@
+# Languages and default scripts for names and labels.
+# No domain model exists yet; the application layer may adopt this file later.
+# Validated by a test-local model in tests/unit/data/test_languages.py.
+#
+# `code` is the language subtag used in LanguageCode (BCP 47: the ISO 639-1 code
+# where one exists, otherwise ISO 639-3). `iso_639_3` is the three-letter code.
+# Every default and alternative script is a proposed default: which script each
+# community writes its language in is for the maintainer and the communities to
+# confirm (open question Q5). No name in any of these languages is shipped without
+# its own source.
+schema_version: 1
+data_version: "2026-09-23"
+source: >-
+  Language codes: ISO 639-3 code tables (SIL International, ISO 639-3 Registration
+  Authority). Scripts: proposed.
+licence: CC-BY-4.0 (proposed, see ADR 0010)
+entries:
+  - code: en
+    iso_639_3: eng
+    english_name: English
+    default_script: Latn
+    alternative_scripts: []
+    status: proposed
+    source: ISO 639-3 code tables (SIL International)
+  - code: ur
+    iso_639_3: urd
+    english_name: Urdu
+    default_script: Arab
+    alternative_scripts: [Latn]
+    status: proposed
+    source: ISO 639-3 code tables (SIL International)
+  - code: scl
+    iso_639_3: scl
+    english_name: Shina
+    default_script: Arab
+    alternative_scripts: [Latn]
+    status: proposed
+    source: ISO 639-3 code tables (SIL International)
+    notes: >-
+      The Phase 1 plan (Q5) lists `shi`, but ISO 639-3 `shi` is Tachelhit; Shina is
+      `scl`. Kohistani Shina (`plk`) is a separate code and not listed.
+  - code: bsk
+    iso_639_3: bsk
+    english_name: Burushaski
+    default_script: Arab
+    alternative_scripts: [Latn]
+    status: proposed
+    source: ISO 639-3 code tables (SIL International)
+  - code: bft
+    iso_639_3: bft
+    english_name: Balti
+    default_script: Arab
+    alternative_scripts: [Latn, Tibt]
+    status: proposed
+    source: ISO 639-3 code tables (SIL International)
+    notes: >-
+      Tibt is listed because ScriptCode records Tibetan script as occasionally used
+      for Balti; to confirm.
+  - code: wbl
+    iso_639_3: wbl
+    english_name: Wakhi
+    default_script: Arab
+    alternative_scripts: [Latn]
+    status: proposed
+    source: ISO 639-3 code tables (SIL International)
+  - code: khw
+    iso_639_3: khw
+    english_name: Khowar
+    default_script: Arab
+    alternative_scripts: [Latn]
+    status: proposed
+    source: ISO 639-3 code tables (SIL International)

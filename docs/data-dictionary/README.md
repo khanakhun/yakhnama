@@ -1,10 +1,20 @@
 # Data dictionary — conventions
 
 This directory documents every public field Yakhnama stores or exports: its type, unit,
-meaning, provenance and the version it was introduced in. There are no domain fields
-documented yet — Phase 0 has no domain model — so this page records the conventions every
-future entry follows, per the Definition of Done in `AGENTS.md` §9 ("The data dictionary
-... covers every new field, unit and meaning").
+meaning, provenance and the version it was introduced in. This page records the
+conventions every entry follows, per the Definition of Done in `AGENTS.md` §9 ("The data
+dictionary ... covers every new field, unit and meaning").
+
+## Module pages
+
+- [`geography.md`](geography.md) — the administrative hierarchy, `Place` and
+  `PlaceName` (`src/yakhnama/modules/geography/domain/`).
+- [`hazards.md`](hazards.md) — the `HazardType` taxonomy and hazard attribute schemas
+  (`src/yakhnama/modules/hazards/domain/`).
+- [`impacts.md`](impacts.md) — the `ImpactMetric` registry
+  (`src/yakhnama/modules/impacts/domain/`).
+- [`identity.md`](identity.md) — users mirrored from OIDC, organisations,
+  memberships, roles and policies (`src/yakhnama/modules/identity/domain/`).
 
 ## Layout
 
@@ -43,6 +53,11 @@ Every field is a row in a Markdown table with exactly these columns:
   explicitly, even when it looks obvious.
 - **Geometry** is WGS84 (EPSG:4326), per `geojson-pydantic` types.
 - **Identifiers** are UUIDv7.
+- **Languages** are a BCP 47 subset: an ISO 639 language code (ISO 639-1 where one
+  exists, for example `en`, `ur`; otherwise ISO 639-3, for example `scl` for Shina, not
+  `shi`, which is a different language) with an ISO 15924 script subtag when the
+  script matters (for example `ur-Arab`). See `docs/open-questions.md` Q37 for why
+  `scl` is correct and `shi` is not.
 - **Confidence** — any uncertain number (an impact figure, a derived estimate) carries a
   `Confidence` level (`low | medium | high`) alongside its `provenance`; a number without
   a source is never published.

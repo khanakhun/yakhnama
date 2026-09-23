@@ -134,6 +134,8 @@ cp .env.example .env
 
 poetry run poe up          # PostgreSQL 16 + PostGIS 3.5, MinIO, Keycloak 26, Redis 7
                             # (also creates the MinIO buckets via `minio-init`)
+poetry run poe migrate     # apply Alembic migrations (from Phase 1)
+poetry run poe seed        # load the versioned reference data idempotently (from Phase 1)
 poetry run pre-commit install
 
 poetry run poe check       # everything CI runs
@@ -150,10 +152,41 @@ poetry run uvicorn yakhnama.main:create_app --factory --reload
 ```
 
 - Liveness: `GET /health/live`
+- Readiness (checks the database, from Phase 1): `GET /health/ready`
 - OpenAPI document: `/api/v1/openapi.json`
-- Swagger UI: `/api/v1/docs`
+- API reference (Scalar, replacing Swagger UI and ReDoc): `/api/v1/docs`
 
 Stop the local services with `poetry run poe down`.
+
+### Authentication (development)
+
+`poe up` also starts a local Keycloak with the `yakhnama` realm pre-imported from
+`docker/keycloak/yakhnama-realm.json` (roles, two demo users, dev-only passwords). Set
+`YAKHNAMA_OIDC_ISSUER=http://127.0.0.1:8080/realms/yakhnama` in `.env` (adjust the port if
+`KEYCLOAK_HOST_PORT` was changed), then get a bearer token for the demo citizen account:
+
+```bash
+curl -s -X POST "http://127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}/realms/yakhnama/protocol/openid-connect/token" \
+  -d client_id=yakhnama-dev-cli \
+  -d grant_type=password \
+  -d username=demo-citizen \
+  -d password=demo-citizen-dev-only
+```
+
+Use the response's `access_token` as `Authorization: Bearer <access_token>` against the
+API, for example to call the caller's own record, which mirrors the demo user into the
+`identity` module on first sight:
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/me \
+  -H "Authorization: Bearer <access_token>"
+```
+
+This resource-owner password flow exists only in this development realm — see
+`docs/architecture/auth.md` for the full token flow, the realm contents, the backend's
+validation rules and the production-provider caveat, and `docs/architecture/api.md` for
+the `/api/v1` conventions every endpoint follows (errors, pagination, idempotency,
+`ETag`/`If-Match`, rate limiting).
 
 ## Development workflow
 
@@ -171,14 +204,17 @@ task below is defined in `pyproject.toml` under `[tool.poe.tasks]`.
 | `poetry run poe cov` | All non-integration tests with the coverage gate |
 | `poetry run poe diff-cover` | Coverage ≥ 90 % on lines changed against `main` |
 | `poetry run poe security` | `gitleaks` secret scan and `pip-audit` dependency audit |
+| `poetry run poe openapi-snapshot` | Regenerate `tests/contract/openapi.json` from the app factory |
+| `poetry run poe contract` | Verify the committed OpenAPI snapshot still matches the app |
 | `poetry run poe up` / `down` | Start or stop PostGIS, MinIO, Keycloak, Redis |
 | `poetry run poe docs` | Serve this documentation site locally (`mkdocs serve`) |
 | `poetry run poe check` | Everything CI runs, in order — green here means green in CI |
 
 `poetry run poe migrate` (Alembic) and `poetry run poe test-integration` (real PostGIS and
-MinIO via testcontainers) are added once there is something to migrate or integrate
-against, from Phase 1. `poetry run poe openapi-snapshot` is added with the first versioned
-endpoint, from Phase 2.
+MinIO via testcontainers) were added once there was something to migrate or integrate
+against, from Phase 1. After a route changes, regenerate and review the OpenAPI snapshot
+with `poe openapi-snapshot`, then verify it with `poe contract` (both from Phase 2; see
+`docs/architecture/api.md`, "OpenAPI snapshot and contract tests").
 
 Install the git hooks once with `poetry run pre-commit install`; they run `ruff format`,
 `ruff check`, `mypy`, `lint-imports`, `gitleaks`, `poetry check --lock` and `commitizen`
@@ -220,19 +256,30 @@ docs/   adr/ architecture/ data-dictionary/ plans/
 
 ## Status
 
-**Phase 0: foundation** — tooling, agent infrastructure, the app skeleton, CI and these
-community documents. No domain functionality yet.
+**Phase 2: identity, authentication and API foundations — complete (pending review)**, per
+`docs/plans/phase-2.md` (approved in advance by the maintainer). Bearer-JWT authentication
+validated against an OIDC provider's JWKS, the `identity` module (users mirrored from
+tokens, organisations, memberships, Policy-based authorisation), the API foundations every
+endpoint relies on (RFC 9457 Problem Details, cursor pagination, `Idempotency-Key`,
+`ETag`/`If-Match`, rate limiting, CORS and security headers), the first public read
+endpoints for reference data, a self-hosted Scalar API reference, and the first committed
+OpenAPI snapshot with its contract test all exist. See `docs/architecture/api.md` and
+`docs/architecture/auth.md` for the details. Reports, events and media remain Phase 3.
 
 Roadmap:
 
 - **Phase 0 — Foundation.** Poetry/Ruff/mypy/import-linter tooling, app factory, CI,
-  docker-compose, agent infrastructure, community documents and ADRs (this phase).
-Phases 1–4 are planned, each subject to an approved `docs/plans/phase-N.md`:
+  docker-compose, agent infrastructure, community documents and ADRs. Complete.
+- **Phase 1 — Shared kernel and reference data.** Framework-free building blocks,
+  database and transaction infrastructure, and the `geography`, `hazards` and `impacts`
+  reference-data modules with versioned YAML seed data. Complete.
+- **Phase 2 — Identity, authentication and API foundations.** Bearer-JWT authentication,
+  the `identity` module, the API foundations (Problem Details, pagination, idempotency,
+  concurrency, rate limiting), the first public read endpoints and an OpenAPI snapshot
+  with contract tests. Complete (pending review).
 
-- **Phase 1 — Persistence.** Alembic migrations, PostGIS-backed repositories, integration
-  tests against real PostGIS and MinIO.
-- **Phase 2 — API contract.** First versioned endpoints, an OpenAPI snapshot and contract
-  tests against it.
+Phases 3–4 are planned, each subject to an approved `docs/plans/phase-N.md`:
+
 - **Phase 3 — Core domain.** Scope defined in `docs/plans/phase-3.md` when it is written
   and approved; expected to build out reports, verification, events and impact claims.
 - **Phase 4 — Data sources.** External source adapters and import/export formats; see
