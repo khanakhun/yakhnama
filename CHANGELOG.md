@@ -24,3 +24,35 @@ were written by hand because there is no release yet.
 - Initial architecture decision records in `docs/adr/`.
 - Documentation site scaffold (`mkdocs.yml`, `docs/`), including the architecture overview,
   data dictionary conventions and open questions log.
+
+### Phase 1
+
+- Shared kernel (`yakhnama.shared_kernel`): error hierarchy, `IdGenerator` port with an
+  in-house RFC 9562 UUIDv7 generator (ADR 0013), `Clock` port, value objects
+  (`Coordinates`, `BoundingBox`, `Measurement` with an SI unit registry,
+  `DateWithPrecision`, `LanguageCode`, `LocalizedText`, `Confidence`), a `Specification`
+  base with `and_`/`or_`/`not_`, `DomainEvent`, the `UnitOfWork` protocol, and opaque
+  cursor pagination.
+- Platform (`yakhnama.platform`): async SQLAlchemy engine and session factory,
+  `SqlAlchemyUnitOfWork`, the transactional outbox (`OutboxWriter`, `OutboxRelay` with
+  at-least-once delivery and `SELECT ... FOR UPDATE SKIP LOCKED` claiming), OpenTelemetry
+  tracing with personal-data scrubbing on every span and exporter, `platform/container.py`
+  as the infrastructure composition root, and a database-backed `/health/ready` probe.
+- `geography` domain: `AdminLevel`, the `Place` aggregate and `PlaceName` value object,
+  with invariants for name uniqueness and one preferred name per language.
+- `hazards` domain: the `HazardType` taxonomy with an explicit lifecycle (create, retire,
+  reactivate, relabel, reparent), the hazard attribute schema registry (Strategy +
+  Registry) for GLOF, landslide, debris flow, cloudburst, flash flood, avalanche and
+  glacier surge, and `GlacierRef` / `GlacialLakeRef` value objects.
+- `impacts` domain: the `ImpactMetric` registry (count, measurement and monetary value
+  kinds, categories, Sendai and DesInventar mapping fields, aggregation defaults).
+- Application layers for `geography`, `hazards` and `impacts`: commands, queries,
+  handlers, ports, DTOs and `public.py` facades, plus the idempotent
+  `SeedReferenceDataHandler` orchestrating all three.
+- Alembic async migration environment and migration `0001` (PostGIS/pg_trgm/unaccent
+  extensions and the outbox table).
+- Versioned reference data (`data/reference/hazard_types.yaml`, `impact_metrics.yaml`,
+  `languages.yaml`, `admin_hierarchy_gb.yaml`) with schema and data versioning and a
+  source-or-`proposed` provenance convention.
+- Test infrastructure: `tests/factories/` (polyfactory), consolidated `tests/fakes/`, and
+  shared PostGIS/MinIO testcontainer fixtures.

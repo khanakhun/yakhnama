@@ -61,7 +61,13 @@ nav:
       - "0010 · Licensing": adr/0010-licensing.md
       - "0011 · Catalog entries for settings and API schemas": adr/0011-catalog-entries-for-settings-and-api-schemas.md
       - "0012 · Catalog entries for commands, queries, DTOs and errors": adr/0012-catalog-entries-for-commands-queries-dtos-and-errors.md
-  - Data dictionary: data-dictionary/README.md
+      - "0013 · In-house UUIDv7 generator": adr/0013-in-house-uuidv7-generator.md
+  - Data dictionary:
+      - Overview: data-dictionary/README.md
+      - Geography: data-dictionary/geography.md
+      - Hazards: data-dictionary/hazards.md
+      - Impacts: data-dictionary/impacts.md
   - Open questions: open-questions.md
   - Plans:
       - "Phase 0 · Foundation": plans/phase-0.md
+      - "Phase 1 · Shared kernel and reference data": plans/phase-1.md

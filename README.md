@@ -134,6 +134,8 @@ cp .env.example .env
 
 poetry run poe up          # PostgreSQL 16 + PostGIS 3.5, MinIO, Keycloak 26, Redis 7
                             # (also creates the MinIO buckets via `minio-init`)
+poetry run poe migrate     # apply Alembic migrations (from Phase 1)
+poetry run poe seed        # load the versioned reference data idempotently (from Phase 1)
 poetry run pre-commit install
 
 poetry run poe check       # everything CI runs
@@ -150,6 +152,7 @@ poetry run uvicorn yakhnama.main:create_app --factory --reload
 ```
 
 - Liveness: `GET /health/live`
+- Readiness (checks the database, from Phase 1): `GET /health/ready`
 - OpenAPI document: `/api/v1/openapi.json`
 - Swagger UI: `/api/v1/docs`
 
@@ -220,17 +223,21 @@ docs/   adr/ architecture/ data-dictionary/ plans/
 
 ## Status
 
-**Phase 0: foundation** — tooling, agent infrastructure, the app skeleton, CI and these
-community documents. No domain functionality yet.
+**Phase 1: shared kernel and reference data** — in progress, per `docs/plans/phase-1.md`
+(approved by the maintainer). The shared kernel, the database/outbox/telemetry platform,
+and the `geography`, `hazards` and `impacts` modules (domain, application and
+persistence layers) exist, with an Alembic migration environment and an idempotent
+reference-data seed. No public endpoints beyond `/health/live` and `/health/ready` yet.
 
 Roadmap:
 
 - **Phase 0 — Foundation.** Poetry/Ruff/mypy/import-linter tooling, app factory, CI,
-  docker-compose, agent infrastructure, community documents and ADRs (this phase).
-Phases 1–4 are planned, each subject to an approved `docs/plans/phase-N.md`:
+  docker-compose, agent infrastructure, community documents and ADRs. Complete.
+- **Phase 1 — Shared kernel and reference data.** Framework-free building blocks,
+  database and transaction infrastructure, and the `geography`, `hazards` and `impacts`
+  reference-data modules with versioned YAML seed data. In progress.
+Phases 2–4 are planned, each subject to an approved `docs/plans/phase-N.md`:
 
-- **Phase 1 — Persistence.** Alembic migrations, PostGIS-backed repositories, integration
-  tests against real PostGIS and MinIO.
 - **Phase 2 — API contract.** First versioned endpoints, an OpenAPI snapshot and contract
   tests against it.
 - **Phase 3 — Core domain.** Scope defined in `docs/plans/phase-3.md` when it is written
