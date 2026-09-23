@@ -29,13 +29,19 @@ hazard type, impact metric, source adapter, exchange format, ADR or phase report
 
 ## Hooks (`.claude/settings.json`)
 
-- `PreToolUse` on `Edit|Write|MultiEdit`: `.claude/hooks/guard_protected_paths.py` blocks
-  writes to `.env*`, `poetry.lock`, committed migrations, `LICENSE`, `.github/CODEOWNERS`,
-  and to `AGENTS.md` from any subagent (the hook input carries `agent_id` only inside a
-  subagent). It exits 2 with the reason on stderr.
+- `PreToolUse` on `Edit|Write|MultiEdit|NotebookEdit`: `.claude/hooks/guard_protected_paths.py`
+  blocks writes to `.env*` (except `.env.example`), `poetry.lock`, committed migrations,
+  `LICENSE`, `.github/CODEOWNERS`, and, from any subagent, `AGENTS.md`, everything under
+  `.claude/` and the user-level `~/.claude/settings*.json` (the hook input carries `agent_id`
+  only inside a subagent). It exits 2
+  with the reason on stderr and fails closed: the command wrapper turns any other failure
+  into exit 2.
 - `PostToolUse` on the same tools: `.claude/hooks/format_and_check_file.py` runs
   `ruff format`, `ruff check --fix` and `mypy` on the edited Python file and exits 2 with the
   remaining errors so they are fixed immediately.
+- `permissions.deny` in the same file refuses reads and file-tool edits of `.env` and
+  `.env.local` anywhere, and edits of `poetry.lock`, `LICENSE` and `CODEOWNERS`, for the lead
+  as well. `.env.example` stays editable on purpose.
 
 Both hooks are tested under `tests/unit/hooks/` and follow every rule in `AGENTS.md`.
 

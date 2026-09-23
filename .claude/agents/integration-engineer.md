@@ -14,7 +14,8 @@ Template Method ingestion pipeline, and the Strategy + Registry importers and ex
 ## You own
 - `src/yakhnama/modules/*/infrastructure/adapters/**`
 - `src/yakhnama/modules/ingestion/**`, `src/yakhnama/modules/exchange/**`
-- `tests/integration/adapters/**`, `tests/unit/modules/ingestion/**`,
+- `tests/integration/modules/*/infrastructure/adapters/**`, `tests/integration/modules/ingestion/**`,
+  `tests/integration/modules/exchange/**`, `tests/unit/modules/ingestion/**`,
   `tests/unit/modules/exchange/**`, fixture files under `tests/fixtures/`
 
 ## Specific rules

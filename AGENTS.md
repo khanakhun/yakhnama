@@ -90,6 +90,11 @@ concern; propose any other pattern in an ADR first. Never add a pattern without 
 | Retry, timing, idempotency | Decorator | `platform/decorators.py` |
 | Test doubles for ports | Fake (in-memory), never mocks of our own ports | `tests/fakes/` |
 | Test data | Factory (`polyfactory`) | `tests/factories/` |
+| Configuration (proposed in ADR 0011, pending maintainer approval) | Settings (`pydantic-settings` `BaseSettings`) | `platform/settings.py` |
+| HTTP request/response bodies (proposed in ADR 0011, pending maintainer approval) | API Schema (Pydantic model, frozen where possible) | `modules/*/api/schemas.py`, `platform/health.py` |
+| Write requests (proposed in ADR 0012, pending maintainer approval) | Command (imperative Pydantic model) | `application/commands.py` |
+| Read requests and results (proposed in ADR 0012, pending maintainer approval) | Query, DTO (Pydantic models) | `application/queries.py`, `application/dto.py` |
+| Domain failures (proposed in ADR 0012, pending maintainer approval) | Domain Error (exception rooted at `YakhnamaError`) | `shared_kernel/errors.py`, `domain/errors.py` |
 
 ## 4. Standards
 
@@ -126,12 +131,12 @@ All commands run through Poetry and Poe so they behave the same on every OS and 
 | `poetry run poe arch` | `lint-imports` layer and module contracts |
 | `poetry run poe test-unit` | Unit tests with coverage |
 | `poetry run poe test-api` | API and architecture tests |
-| `poetry run poe test-integration` | Real PostGIS and MinIO via testcontainers (from Phase 1) |
+| `poetry run poe test-integration` | Tests against real tools and services (git, ruff, mypy now; PostGIS and MinIO from Phase 1) |
 | `poetry run poe cov` | All non-integration tests with the coverage gate |
 | `poetry run poe diff-cover` | Coverage on changed lines against `main` |
 | `poetry run poe security` | `gitleaks` and `pip-audit` |
 | `poetry run poe migrate` | `alembic upgrade head` (from Phase 1) |
-| `poetry run poe openapi-snapshot` | Regenerate `tests/contract/openapi.json` (from Phase 2) |
+| `poetry run poe openapi-snapshot` | Regenerate `tests/contract/openapi.json` (task added in Phase 2) |
 | `poetry run poe up` / `down` | Start or stop PostGIS, MinIO, Keycloak, Redis |
 | `poetry run poe check` | Everything CI runs, in order. This is the gate. |
 
@@ -156,8 +161,11 @@ All commands run through Poetry and Poe so they behave the same on every OS and 
 - Never commit to `main`, force-push, or rewrite pushed history.
 - Never lower a coverage threshold, add an ignore, skip a test or loosen a type to pass.
 - Never edit `poetry.lock` by hand, `.env*`, `LICENSE`, `.github/CODEOWNERS`, or a migration
-  already committed. `AGENTS.md` is edited only by the lead session. The hook in
-  `.claude/hooks/guard_protected_paths.py` blocks these.
+  already committed. `AGENTS.md` and everything under `.claude/` (settings, hooks, agents,
+  skills) are edited only by the lead session. The hook in
+  `.claude/hooks/guard_protected_paths.py` and the deny list in `.claude/settings.json` block
+  these for the file tools; shell writes are a residual risk backstopped by pre-commit, CI and
+  CODEOWNERS.
 - Never hard-delete verified data, overwrite an `ImpactClaim`, or edit a submitted `Report`
   (corrections are new revisions; retraction is a status change with a reason).
 - Never store passwords, casualty names in public fields, or personal data in logs.

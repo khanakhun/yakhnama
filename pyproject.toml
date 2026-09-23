@@ -78,6 +78,9 @@ max-complexity = 10
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
+# Test-only relaxations: S101 because pytest uses assert; PLR2004 because expected
+# literals are the point of a test; D103 because the test name is the documentation;
+# ANN201 because every test returns None.
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004", "D103", "ANN201"]
 
@@ -152,7 +155,7 @@ xfail_strict = true
 filterwarnings = ["error"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
-  "integration: needs real PostGIS/MinIO via testcontainers",
+  "integration: touches real tools or services (git, ruff, mypy; PostGIS/MinIO via testcontainers from Phase 1)",
 ]
 
 [tool.coverage.run]
@@ -219,6 +222,10 @@ cmd = "lint-imports"
 help = "Unit tests (no I/O) with coverage"
 cmd = "pytest tests/unit --cov --cov-report=term-missing --cov-report=xml"
 
+[tool.poe.tasks.test-integration]
+help = "Tests that touch real tools or services (git, ruff, mypy now; PostGIS and MinIO from Phase 1)"
+cmd = "pytest tests/integration -m integration"
+
 [tool.poe.tasks.test-api]
 help = "HTTP-level tests against the app factory"
 cmd = "pytest tests/api tests/architecture"
@@ -235,16 +242,15 @@ cmd = "diff-cover coverage.xml --compare-branch=main --fail-under=90"
 help = "Secret scan and dependency audit"
 sequence = [
   { cmd = "gitleaks git --no-banner --redact ." },
-  { shell = "poetry export --without-hashes --all-groups -f requirements.txt | pip-audit --strict --progress-spinner off -r /dev/stdin" },
+  { shell = "set -o pipefail; poetry export --without-hashes --all-groups -f requirements.txt | pip-audit --strict --progress-spinner off -r /dev/stdin", interpreter = "bash" },
 ]
 
-[tool.poe.tasks.openapi-snapshot]
-help = "Regenerate tests/contract/openapi.json from the app factory"
-cmd = "python -m yakhnama.platform.openapi_snapshot"
-
 [tool.poe.tasks.up]
-help = "Start PostGIS, MinIO, Keycloak and Redis"
-cmd = "docker compose up -d --wait"
+help = "Start PostGIS, MinIO, Keycloak and Redis, then create the MinIO buckets"
+sequence = [
+  { cmd = "docker compose up -d --wait --wait-timeout 240" },
+  { cmd = "docker compose run --rm minio-init" },
+]
 
 [tool.poe.tasks.down]
 help = "Stop the local services"
@@ -256,4 +262,4 @@ cmd = "mkdocs serve"
 
 [tool.poe.tasks.check]
 help = "Everything CI runs, in order. Green here means green in CI."
-sequence = ["lint", "typecheck", "arch", "cov", "diff-cover", "security"]
+sequence = ["lint", "typecheck", "arch", "cov", "test-integration", "diff-cover", "security"]
