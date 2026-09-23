@@ -16,7 +16,8 @@ SHARED_KERNEL = SOURCE_ROOT / "shared_kernel"
 SHARED_KERNEL_ALLOWED_THIRD_PARTY = frozenset({"pydantic", "geojson_pydantic"})
 
 # Mirrors the "Pattern" column of AGENTS.md §3, one name per pattern, plus "Settings"
-# and "API Schema" proposed in docs/adr/0011. Change it only together with §3.
+# and "API Schema" (ADR 0011) and "Command", "Query", "DTO", "Domain Error" (ADR 0012).
+# Change it only together with §3.
 CATALOG_PATTERNS = frozenset(
     {
         "Repository",

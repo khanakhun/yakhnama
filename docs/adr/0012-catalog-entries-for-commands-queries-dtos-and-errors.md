@@ -2,7 +2,7 @@
 
 - Date: 2026-09-23
 - Status: proposed
-- Deciders: lead agent, maintainer
+- Deciders: lead agent, maintainer (required: this changes `AGENTS.md` §2.3 and §3)
 
 ## Context and problem statement
 
@@ -29,7 +29,7 @@ no declaration at all, all of which the test would reject once copied into `src/
 
 ## Decision outcome
 
-Proposed option: 1. Three rows are added to `AGENTS.md` §3, marked proposed until the
+Proposed option: **1, add three catalog rows**. Three rows are added to `AGENTS.md` §3, marked proposed until the
 maintainer approves, and the structural test accepts the names:
 
 | Concern | Pattern | Where |
@@ -38,8 +38,12 @@ maintainer approves, and the structural test accepts the names:
 | Read requests and results | Query, DTO (Pydantic models) | `application/queries.py`, `application/dto.py` |
 | Domain failures | Domain Error (exception rooted at `YakhnamaError`) | `shared_kernel/errors.py`, `domain/errors.py` |
 
-What is needed to move to accepted: the maintainer's approval, because `AGENTS.md` §3 is
-reserved to them.
+The same ADR also proposes one addition to the error hierarchy in `AGENTS.md` §2.3:
+`PreconditionFailedError` (a `YakhnamaError` mapped to HTTP 412), raised by handlers when an
+`If-Match` version does not match, so that `main.py` never imports module-specific errors.
+
+**What is needed to move this ADR to `accepted`:** the maintainer's written approval,
+because `AGENTS.md` §2.3 and §3 are reserved to them.
 
 ### Consequences
 
@@ -52,13 +56,16 @@ reserved to them.
 ## Pros and cons of the options
 
 ### Option 1, add rows
-Pro: honest and greppable. Con: catalog grows.
+- Good, because it is honest and greppable.
+- Bad, because the catalog grows.
 
 ### Option 2, qualify existing rows
-Pro: no new rows. Con: `Command Handler (command model)` misdescribes a request object.
+- Good, because no new rows are needed.
+- Bad, because `Command Handler (command model)` misdescribes a request object.
 
 ### Option 3, exempt
-Pro: nothing to maintain. Con: weakens the declaration rule, which §2 forbids.
+- Good, because there is nothing to maintain.
+- Bad, because it weakens the declaration rule, which §2 forbids.
 
 ## More information
 

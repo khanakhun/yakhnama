@@ -59,8 +59,9 @@ Handlers are plain callables wired in the composition root.
 
 All domain errors derive from `shared_kernel.errors.YakhnamaError` (`NotFoundError`,
 `ConflictError`, `ValidationError`, `PermissionDeniedError`, `InvariantViolationError`,
-`InvalidTransitionError`). The API maps them to RFC 9457 Problem Details in exactly one
-place: the exception handlers registered in `main.py`.
+`InvalidTransitionError`, plus `PreconditionFailedError` for `If-Match` mismatches, proposed in
+ADR 0012 pending maintainer approval). The API maps them to RFC 9457 Problem Details in exactly
+one place: the exception handlers registered in `main.py`.
 
 ## 3. Pattern catalog
 
