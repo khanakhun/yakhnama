@@ -47,6 +47,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Architecture: architecture/README.md
+  - Authentication: architecture/auth.md
   - ADRs:
       - Overview: adr/README.md
       - "0001 · Modular monolith with hexagonal layers": adr/0001-modular-monolith-with-hexagonal-layers.md
@@ -67,6 +68,7 @@ nav:
       - Geography: data-dictionary/geography.md
       - Hazards: data-dictionary/hazards.md
       - Impacts: data-dictionary/impacts.md
+      - Identity: data-dictionary/identity.md
   - Open questions: open-questions.md
   - Plans:
       - "Phase 0 · Foundation": plans/phase-0.md
