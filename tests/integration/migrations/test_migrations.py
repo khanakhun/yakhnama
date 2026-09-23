@@ -34,7 +34,9 @@ ALEMBIC_INI: Final = REPOSITORY_ROOT / "alembic.ini"
 VERSION_TABLE: Final = "alembic_version"
 # Tables the PostGIS image creates in the public schema; they are not ours.
 POSTGIS_TABLES: Final = frozenset({"spatial_ref_sys"})
-APPLICATION_TABLES_AT_HEAD: Final = frozenset({"outbox_messages"})
+APPLICATION_TABLES_AT_HEAD: Final = frozenset(
+    {"outbox_messages", "places", "place_names", "hazard_types", "impact_metrics"}
+)
 EXTENSIONS: Final = frozenset({"postgis", "pg_trgm", "unaccent"})
 
 

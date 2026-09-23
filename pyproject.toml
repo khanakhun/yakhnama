@@ -265,6 +265,9 @@ markers = [
 
 [tool.coverage.run]
 branch = true
+# SQLAlchemy's asyncio bridge runs on greenlets; without this the adapter
+# branches executed under await are not recorded.
+concurrency = ["thread", "greenlet"]
 source = ["yakhnama", ".claude/hooks"]
 omit = ["*/__main__.py"]
 
@@ -336,8 +339,8 @@ help = "HTTP-level tests against the app factory"
 cmd = "pytest tests/api tests/architecture"
 
 [tool.poe.tasks.cov]
-help = "All non-integration tests with the coverage gate"
-cmd = "pytest tests/unit tests/api tests/architecture --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
+help = "Every test tier with the coverage gate (integration needs Docker for PostGIS)"
+cmd = "pytest tests/unit tests/api tests/architecture tests/integration --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
 
 [tool.poe.tasks.cov-layers]
 help = "Per-layer gate: >= 95% branch coverage in every module's domain and application layer"
@@ -382,4 +385,4 @@ cmd = "mkdocs serve"
 
 [tool.poe.tasks.check]
 help = "Everything CI runs, in order. Green here means green in CI."
-sequence = ["lint", "typecheck", "arch", "cov", "cov-layers", "test-integration", "diff-cover", "security"]
+sequence = ["lint", "typecheck", "arch", "cov", "cov-layers", "diff-cover", "security"]
