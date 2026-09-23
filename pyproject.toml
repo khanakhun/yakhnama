@@ -65,7 +65,6 @@ build-backend = "poetry.core.masonry.api"
 line-length = 88
 target-version = "py313"
 src = ["src", "tests"]
-extend-exclude = ["migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "N", "D", "UP", "B", "A", "C4", "C90", "SIM", "RET",
@@ -97,7 +96,7 @@ strict = true
 plugins = ["pydantic.mypy"]
 warn_unreachable = true
 disallow_any_explicit = false
-files = ["src", "tests", ".claude/hooks"]
+files = ["src", "tests", ".claude/hooks", "migrations"]
 mypy_path = ["src", ".claude/hooks"]
 explicit_package_bases = true
 namespace_packages = true
@@ -228,6 +227,24 @@ source_modules = [
   "yakhnama.modules.impacts.api",
 ]
 forbidden_modules = ["sqlalchemy", "geoalchemy2", "alembic", "asyncpg", "boto3", "botocore", "shapely"]
+
+[[tool.importlinter.contracts]]
+name = "seed orchestrates modules only through their public facades and the kernel"
+type = "forbidden"
+source_modules = ["yakhnama.seed"]
+forbidden_modules = [
+  "yakhnama.modules.geography.domain",
+  "yakhnama.modules.geography.application",
+  "yakhnama.modules.geography.infrastructure",
+  "yakhnama.modules.hazards.domain",
+  "yakhnama.modules.hazards.application",
+  "yakhnama.modules.hazards.infrastructure",
+  "yakhnama.modules.impacts.domain",
+  "yakhnama.modules.impacts.application",
+  "yakhnama.modules.impacts.infrastructure",
+]
+# Facades re-export domain and application types, so only direct imports count.
+allow_indirect_imports = true
 
 # --------------------------------------------------------------------------- #
 # pytest and coverage (§11)                                                   #
