@@ -15,7 +15,10 @@ from yakhnama.platform.outbox.sqlalchemy_store import SqlAlchemyOutboxStore
 from yakhnama.platform.outbox.writer import OutboxWriter
 from yakhnama.platform.settings import Settings
 from yakhnama.platform.tasks.handlers import (
+    EXCHANGE_RUN_EXPORT_TASK,
+    EXCHANGE_RUN_IMPORT_TASK,
     IDEMPOTENCY_PURGE_TASK,
+    INGESTION_RUN_TASK,
     MEDIA_SCAN_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
@@ -59,6 +62,9 @@ def test_build_container_binds_the_platform_and_module_task_handlers(
         IDEMPOTENCY_PURGE_TASK,
         REPORTS_TRIAGE_TASK,
         MEDIA_SCAN_TASK,
+        EXCHANGE_RUN_EXPORT_TASK,
+        EXCHANGE_RUN_IMPORT_TASK,
+        INGESTION_RUN_TASK,
     }
 
 

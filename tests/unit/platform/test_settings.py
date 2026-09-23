@@ -331,3 +331,19 @@ def test_settings_seed_actor_id_not_uuid7_raises_validation_error(
 
     with pytest.raises(ValidationError, match="seed_actor_id"):
         Settings(_env_file=None)
+
+
+def test_settings_ingestion_fixtures_dir_defaults_to_the_repository_fixtures() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.ingestion_fixtures_dir == Path("data/fixtures/ingestion")
+
+
+def test_settings_ingestion_fixtures_dir_reads_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("YAKHNAMA_INGESTION_FIXTURES_DIR", str(tmp_path))
+
+    settings = Settings(_env_file=None)
+
+    assert settings.ingestion_fixtures_dir == tmp_path

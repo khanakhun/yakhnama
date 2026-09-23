@@ -15,13 +15,15 @@ authorised query services **and** cross-module adapters of
 are the module fakes. The result is laid over the built container with
 ``dataclasses.replace``, so a renamed ``Container`` field breaks these tests.
 
-The Phase 4 modules (exchange, ingestion) have no ``Container`` fields yet: the
-composition root binds them after this harness. ``build_exchange_services_over_fakes``
-and ``build_ingestion_services_over_fakes`` wire the real command handlers and the
-authorised query service over the module fakes, and ``Phase4Container`` carries
-them under the exact field names the routers read (``ExchangeApiServices`` and
-``IngestionApiServices``), so the lead can move the fields into ``Container`` and
-delete the subclass without touching a router or a test.
+The Phase 4 modules (exchange, ingestion) are wired the same way, by the
+production ``build_exchange_services`` and ``build_ingestion_services`` over the
+module fakes: the in-memory units of work, query services and artifact store, the
+fake format strategies and source adapter, and fakes for the ports the export and
+import runs reach other modules through. The requesting actor of a run is rebuilt
+by the production ``IdentityActorLookupAdapter`` over the identity fake. The result
+is laid over the built container with ``dataclasses.replace`` under the
+``Container`` field names the routers read (``ExchangeApiServices`` and
+``IngestionApiServices``), so a renamed field breaks these tests too.
 
 ``auth_headers`` returns an ``Authorization`` header with a token signed by the same
 key, so the validator accepts it::
@@ -36,7 +38,7 @@ Patterns: Fake.
 import dataclasses
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
-from typing import Any, Final
+from typing import Final
 
 import httpx
 from fastapi import FastAPI
@@ -56,8 +58,12 @@ from tests.fakes.auth import (
 from tests.fakes.clock import FrozenClock
 from tests.fakes.events import InMemoryEventQueryService, InMemoryEventsUnitOfWork
 from tests.fakes.exchange import (
+    FakeBackfillReferenceChecker,
     FakeExporter,
+    FakeExportRowSource,
+    FakeHistoricalEventWriter,
     FakeImporter,
+    FakeLineageSourceRegistrar,
     InMemoryArtifactStore,
     InMemoryExchangeQueryService,
     InMemoryExchangeUnitOfWork,
@@ -111,31 +117,12 @@ from tests.fakes.verification import (
 from yakhnama.main import create_app
 from yakhnama.modules.events.domain.specifications import EventSearchCandidate
 from yakhnama.modules.events.public import EventDetail, EventSummary
-from yakhnama.modules.exchange.public import (
-    ArtifactStore,
-    CancelExportHandler,
-    ExchangeHandlerDependencies,
-    ExchangeJobQueryService,
-    ExportFormat,
-    FormatAdapterRegistry,
-    RequestExportHandler,
-    RequestImportHandler,
-)
+from yakhnama.modules.exchange.public import ExportFormat, FormatAdapterRegistry
 from yakhnama.modules.geography.domain.entities import Place
 from yakhnama.modules.hazards.domain.entities import HazardType
 from yakhnama.modules.identity.domain.entities import Membership, Organization, User
-from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.impacts.domain.entities import ImpactMetric
-from yakhnama.modules.ingestion.public import (
-    CatalogueRasterAssetHandler,
-    DeprecateDatasetHandler,
-    IngestionQueryService,
-    RecordDatasetVersionHandler,
-    RegisterDatasetHandler,
-    RetireDatasetHandler,
-    RunIngestionHandler,
-    SourceAdapterRegistry,
-)
+from yakhnama.modules.ingestion.public import SourceAdapterRegistry
 from yakhnama.modules.media.infrastructure.adapters.scanner import (
     NoOpMalwareScanner,
 )
@@ -145,11 +132,18 @@ from yakhnama.platform.auth.tokens import TokenValidator
 from yakhnama.platform.container import (
     Container,
     CorePorts,
+    ExchangePorts,
+    ExchangeServices,
+    ExchangeWorkerPorts,
+    IngestionPorts,
+    IngestionServices,
     MediaAdapters,
     RecordingReads,
     RecordingServices,
     RecordingUnits,
     build_container,
+    build_exchange_services,
+    build_ingestion_services,
     build_recording_services,
 )
 from yakhnama.platform.ratelimit.limiter import RateLimiter
@@ -238,152 +232,32 @@ class MirroredEventQueryService(InMemoryEventQueryService):
 
 
 # --------------------------------------------------------------------------- #
-# Phase 4 bindings (exchange, ingestion) until ``Container`` declares them    #
+# Phase 4 bindings (exchange, ingestion)                                      #
 # --------------------------------------------------------------------------- #
 
 TEST_ADAPTER_NAME: Final = "test_adapter"
 """The one source adapter (and pipeline) the ingestion harness registers."""
 
 
-class IdentityBackedActorLookup:
-    """``ActorLookup`` over the identity fake's committed users.
-
-    The production adapter rebuilds the actor through the identity facade; this
-    one reads the same users the API mirrored, so a job runs for the actor who
-    requested it (and a suspended user gets ``None``).
-
-    Implements: Fake (of Adapter).
-    """
-
-    def __init__(self, identity: InMemoryIdentityUnitOfWork) -> None:
-        """Create the lookup.
-
-        Args:
-            identity: The identity unit of work whose users are read.
-        """
-        self._identity = identity
-
-    async def actor_for(self, user_id: EntityId) -> Actor | None:
-        """Return the current actor of a committed, active user.
-
-        Args:
-            user_id: The user.
-
-        Returns:
-            The actor with the user's roles, or ``None`` if unknown or suspended.
-        """
-        user = self._identity.users.committed.get(user_id)
-        if user is None or not user.is_active:
-            return None
-        return user.to_actor()
-
-
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class ExchangeServices:
-    """The exchange use cases, wired over the module fakes.
-
-    Implements: Fake (of the composition root's bindings).
-
-    Attributes:
-        request_export_handler: Queues exports.
-        cancel_export_handler: Cancels queued exports.
-        request_import_handler: Queues imports.
-        exchange_queries: Authorised job reads.
-        artifact_store: The object storage fake.
-        dependencies: What the handlers were built from, so a test can build
-            ``RunExportHandler`` and ``RunImportHandler`` to play the worker.
-    """
-
-    request_export_handler: RequestExportHandler
-    cancel_export_handler: CancelExportHandler
-    request_import_handler: RequestImportHandler
-    exchange_queries: ExchangeJobQueryService
-    artifact_store: ArtifactStore
-    dependencies: ExchangeHandlerDependencies
-
-
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class IngestionServices:
-    """The ingestion use cases, wired over the module fakes.
-
-    Implements: Fake (of the composition root's bindings).
-
-    Attributes:
-        register_dataset_handler: Registers datasets.
-        record_dataset_version_handler: Records dataset versions.
-        deprecate_dataset_handler: Deprecates datasets.
-        retire_dataset_handler: Retires datasets.
-        run_ingestion_handler: Requests runs (enqueues ``ingestion.run``).
-        catalogue_raster_asset_handler: Catalogues rasters.
-        ingestion_queries: The read port.
-    """
-
-    register_dataset_handler: RegisterDatasetHandler
-    record_dataset_version_handler: RecordDatasetVersionHandler
-    deprecate_dataset_handler: DeprecateDatasetHandler
-    retire_dataset_handler: RetireDatasetHandler
-    run_ingestion_handler: RunIngestionHandler
-    catalogue_raster_asset_handler: CatalogueRasterAssetHandler
-    ingestion_queries: IngestionQueryService
-
-
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class Phase4Container(Container):
-    """``Container`` plus the Phase 4 fields the exchange and ingestion routers read.
-
-    The field names are the ones the composition root is to bind; once
-    ``Container`` declares them, this subclass is deleted.
-
-    Implements: Fake (of Composition Root).
-
-    Attributes:
-        request_export_handler: Queues exports.
-        cancel_export_handler: Cancels queued exports.
-        request_import_handler: Queues imports.
-        exchange_queries: Authorised export and import job reads.
-        artifact_store: The exchange ``ArtifactStore`` (presigned import uploads).
-        register_dataset_handler: Registers datasets.
-        record_dataset_version_handler: Records dataset versions.
-        deprecate_dataset_handler: Deprecates datasets.
-        retire_dataset_handler: Retires datasets.
-        run_ingestion_handler: Requests ingestion runs.
-        catalogue_raster_asset_handler: Catalogues rasters.
-        ingestion_queries: The ingestion read port.
-    """
-
-    request_export_handler: RequestExportHandler
-    cancel_export_handler: CancelExportHandler
-    request_import_handler: RequestImportHandler
-    exchange_queries: ExchangeJobQueryService
-    artifact_store: ArtifactStore
-    register_dataset_handler: RegisterDatasetHandler
-    record_dataset_version_handler: RecordDatasetVersionHandler
-    deprecate_dataset_handler: DeprecateDatasetHandler
-    retire_dataset_handler: RetireDatasetHandler
-    run_ingestion_handler: RunIngestionHandler
-    catalogue_raster_asset_handler: CatalogueRasterAssetHandler
-    ingestion_queries: IngestionQueryService
-
-
 def build_exchange_services_over_fakes(
     *,
-    container: Container,
+    core: CorePorts,
     exchange: InMemoryExchangeUnitOfWork,
     artifacts: InMemoryArtifactStore,
-    identity: InMemoryIdentityUnitOfWork,
     task_queue: TaskQueue,
 ) -> ExchangeServices:
-    """Wire the exchange use cases over the fakes.
+    """Wire the exchange use cases with the production builder over the fakes.
 
     ``csv`` and ``geojson`` exports are written by ``FakeExporter`` and ``csv``
     imports read by ``FakeImporter``; the other formats have no strategy, so
-    requesting them is refused as unsupported.
+    requesting them is refused as unsupported. The worker's ports towards other
+    modules are empty fakes: a test that plays the worker builds its own
+    ``RunExportHandler`` or ``RunImportHandler`` from ``dependencies``.
 
     Args:
-        container: Supplies the clock and ids.
+        core: Supplies the clock, ids and the identity unit-of-work factory.
         exchange: The exchange unit of work.
         artifacts: The object storage fake.
-        identity: Supplies the actors jobs run for.
         task_queue: Where the run tasks are enqueued.
 
     Returns:
@@ -395,71 +269,58 @@ def build_exchange_services_over_fakes(
         .register_exporter(FakeExporter(ExportFormat.GEOJSON, "application/geo+json"))
         .register_importer(FakeImporter())
     )
-    dependencies = ExchangeHandlerDependencies(
-        uow_factory=InMemoryUnitOfWorkFactory(exchange),
-        clock=container.clock,
-        ids=container.id_generator,
-        tasks=task_queue,
-        formats=formats,
-        artifacts=artifacts,
-        actors=IdentityBackedActorLookup(identity),
-    )
-    return ExchangeServices(
-        request_export_handler=RequestExportHandler(dependencies),
-        cancel_export_handler=CancelExportHandler(dependencies),
-        request_import_handler=RequestImportHandler(dependencies),
-        exchange_queries=ExchangeJobQueryService(
-            InMemoryExchangeQueryService(exchange), artifacts
+    return build_exchange_services(
+        core=core,
+        ports=ExchangePorts(
+            uow_factory=InMemoryUnitOfWorkFactory(exchange),
+            reads=InMemoryExchangeQueryService(exchange),
+            artifacts=artifacts,
+            formats=formats,
         ),
-        artifact_store=artifacts,
-        dependencies=dependencies,
+        worker=ExchangeWorkerPorts(
+            rows=FakeExportRowSource(),
+            references=FakeBackfillReferenceChecker(),
+            lineage=FakeLineageSourceRegistrar(),
+            writer=FakeHistoricalEventWriter(),
+            coordinates=core.public_coordinates,
+            generator="yakhnama/test",
+        ),
+        task_queue=task_queue,
     )
 
 
 def build_ingestion_services_over_fakes(
     *,
-    container: Container,
+    core: CorePorts,
     ingestion: InMemoryIngestionUnitOfWork,
     task_queue: TaskQueue,
 ) -> IngestionServices:
-    """Wire the ingestion use cases over the fakes.
+    """Wire the ingestion use cases with the production builder over the fakes.
 
     One source adapter, ``test_adapter``, is registered with a pipeline for it.
 
     Args:
-        container: Supplies the clock and ids.
+        core: Supplies the clock and ids.
         ingestion: The ingestion unit of work.
         task_queue: Where ``ingestion.run`` is enqueued.
 
     Returns:
         The use cases.
     """
-    clock = container.clock
-    ids = container.id_generator
-    uow_factory = InMemoryUnitOfWorkFactory(ingestion)
-    return IngestionServices(
-        register_dataset_handler=RegisterDatasetHandler(uow_factory, clock, ids),
-        record_dataset_version_handler=RecordDatasetVersionHandler(
-            uow_factory, clock, ids
-        ),
-        deprecate_dataset_handler=DeprecateDatasetHandler(uow_factory, clock, ids),
-        retire_dataset_handler=RetireDatasetHandler(uow_factory, clock, ids),
-        run_ingestion_handler=RunIngestionHandler(
-            uow_factory=uow_factory,
+    clock, ids = core.clock, core.id_generator
+    return build_ingestion_services(
+        core=core,
+        ports=IngestionPorts(
+            uow_factory=InMemoryUnitOfWorkFactory(ingestion),
+            reads=InMemoryIngestionQueryService(ingestion),
             adapters=SourceAdapterRegistry(
                 [FakeSourceAdapter({}, clock=clock, name=TEST_ADAPTER_NAME)]
             ),
             pipelines=RecordingPipelineFactory(
                 clock=clock, ids=ids, adapter_names=(TEST_ADAPTER_NAME,)
             ),
-            task_queue=task_queue,
-            clock=clock,
-            ids=ids,
         ),
-        catalogue_raster_asset_handler=CatalogueRasterAssetHandler(
-            uow_factory, clock, ids
-        ),
-        ingestion_queries=InMemoryIngestionQueryService(ingestion),
+        task_queue=task_queue,
     )
 
 
@@ -468,8 +329,8 @@ def lay_phase4_over(
     *,
     exchange: ExchangeServices,
     ingestion: IngestionServices,
-) -> Phase4Container:
-    """Return ``container`` extended with the Phase 4 fields.
+) -> Container:
+    """Return ``container`` with every Phase 4 field the routers read replaced.
 
     Args:
         container: The container to copy.
@@ -477,26 +338,24 @@ def lay_phase4_over(
         ingestion: The ingestion bindings.
 
     Returns:
-        A ``Phase4Container`` with every ``Container`` field copied.
+        The copy; ``dataclasses.replace`` fails on a field ``Container`` lacks.
     """
-    # Any: each Container field has its own type, which dataclasses.fields erases;
-    # the dataclass constructor still receives exactly the declared fields.
-    inherited: dict[str, Any] = {
-        field.name: getattr(container, field.name)
-        for field in dataclasses.fields(container)
-    }
-    return Phase4Container(
-        **inherited,
+    return dataclasses.replace(
+        container,
+        exchange_handler_dependencies=exchange.dependencies,
         request_export_handler=exchange.request_export_handler,
         cancel_export_handler=exchange.cancel_export_handler,
         request_import_handler=exchange.request_import_handler,
         exchange_queries=exchange.exchange_queries,
         artifact_store=exchange.artifact_store,
+        run_export_handler=exchange.run_export_handler,
+        run_import_handler=exchange.run_import_handler,
         register_dataset_handler=ingestion.register_dataset_handler,
         record_dataset_version_handler=ingestion.record_dataset_version_handler,
         deprecate_dataset_handler=ingestion.deprecate_dataset_handler,
         retire_dataset_handler=ingestion.retire_dataset_handler,
         run_ingestion_handler=ingestion.run_ingestion_handler,
+        execute_ingestion_run_handler=ingestion.execute_ingestion_run_handler,
         catalogue_raster_asset_handler=ingestion.catalogue_raster_asset_handler,
         ingestion_queries=ingestion.ingestion_queries,
     )
@@ -573,7 +432,7 @@ class ApiHarness:
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class _Stores:
+class RecordingStores:
     """The Phase 3 in-memory stores and adapter fakes, built together.
 
     Implements: Fake.
@@ -591,29 +450,25 @@ class _Stores:
     task_queue: RecordingTaskQueue
 
 
-def build_recording_services_over_fakes(  # noqa: PLR0913  # reason: one argument per store it wires
+def build_core_over_fakes(
     *,
-    stores: _Stores,
     container: Container,
-    impacts: InMemoryImpactsUnitOfWork,
     geography: InMemoryGeographyUnitOfWork,
     identity: InMemoryIdentityUnitOfWork,
     settings: Settings,
-) -> tuple[RecordingUnits, RecordingReads, MediaAdapters, RecordingServices]:
-    """Wire the Phase 3 use cases with the production builder over the fakes.
+) -> CorePorts:
+    """Return the kernel and Phase 1 and 2 ports the later use cases depend on.
 
     Args:
-        stores: The Phase 3 stores and adapter fakes.
         container: Supplies the clock, ids and hazard type query service.
-        impacts: The impacts unit of work (claims share it with the metrics).
         geography: The geography unit of work, for place codes.
-        identity: The identity unit of work, for reviewer eligibility.
+        identity: The identity unit of work, for reviewers and job actors.
         settings: Supplies ``public_coordinate_decimals``.
 
     Returns:
-        The unit-of-work factories, read ports, media adapters and use cases.
+        The ports, over the fakes.
     """
-    core = CorePorts(
+    return CorePorts(
         clock=container.clock,
         id_generator=container.id_generator,
         public_coordinates=PublicCoordinatePolicy(
@@ -623,6 +478,24 @@ def build_recording_services_over_fakes(  # noqa: PLR0913  # reason: one argumen
         geography_uow_factory=InMemoryUnitOfWorkFactory(geography),
         hazard_type_query_service=container.hazard_type_query_service,
     )
+
+
+def build_recording_services_over_fakes(
+    *,
+    stores: RecordingStores,
+    core: CorePorts,
+    impacts: InMemoryImpactsUnitOfWork,
+) -> tuple[RecordingUnits, RecordingReads, MediaAdapters, RecordingServices]:
+    """Wire the Phase 3 use cases with the production builder over the fakes.
+
+    Args:
+        stores: The Phase 3 stores and adapter fakes.
+        core: The kernel and Phase 1 and 2 ports, over the fakes.
+        impacts: The impacts unit of work (claims share it with the metrics).
+
+    Returns:
+        The unit-of-work factories, read ports, media adapters and use cases.
+    """
     units = RecordingUnits(
         provenance=InMemoryUnitOfWorkFactory(stores.provenance),
         reports=InMemoryUnitOfWorkFactory(stores.reports),
@@ -791,7 +664,7 @@ def build_test_app(  # noqa: PLR0913  # reason: one optional seed per fake repos
         place_query_service=InMemoryPlaceQueryService(geography.places),
         identity_query_service=InMemoryIdentityQueryService(identity),
     )
-    stores = _Stores(
+    stores = RecordingStores(
         provenance=InMemoryProvenanceUnitOfWork(),
         reports=InMemoryReportsUnitOfWork(),
         media=InMemoryMediaUnitOfWork(),
@@ -803,13 +676,14 @@ def build_test_app(  # noqa: PLR0913  # reason: one optional seed per fake repos
         mime_sniffer=FakeMimeSniffer(),
         task_queue=RecordingTaskQueue(),
     )
-    units, reads, media, services = build_recording_services_over_fakes(
-        stores=stores,
+    core = build_core_over_fakes(
         container=container,
-        impacts=impacts,
         geography=geography,
         identity=identity,
         settings=resolved_settings,
+    )
+    units, reads, media, services = build_recording_services_over_fakes(
+        stores=stores, core=core, impacts=impacts
     )
     container = lay_recording_over(
         container,
@@ -825,14 +699,10 @@ def build_test_app(  # noqa: PLR0913  # reason: one optional seed per fake repos
         ingestion if ingestion is not None else InMemoryIngestionUnitOfWork()
     )
     exchange_services = build_exchange_services_over_fakes(
-        container=container,
-        exchange=exchange,
-        artifacts=artifacts,
-        identity=identity,
-        task_queue=stores.task_queue,
+        core=core, exchange=exchange, artifacts=artifacts, task_queue=stores.task_queue
     )
     ingestion_services = build_ingestion_services_over_fakes(
-        container=container, ingestion=ingestion_uow, task_queue=stores.task_queue
+        core=core, ingestion=ingestion_uow, task_queue=stores.task_queue
     )
     app = create_app(
         resolved_settings,

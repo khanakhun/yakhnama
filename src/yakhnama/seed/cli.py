@@ -3,7 +3,8 @@
 ``main`` parses the arguments, loads the settings, configures the structured logger,
 builds the container, runs ``SeedReferenceDataHandler`` once and disposes the engine.
 The outcome is logged, never printed (``AGENTS.md`` §4): one ``seed_completed`` line
-with the counts and ``data_version`` of every file, one ``seed_change_skipped``
+with the counts and ``data_version`` of every file (the dataset catalog's counts
+include the fixture entries left out), one ``seed_change_skipped``
 warning per difference the loaders left for a human, or one ``seed_failed`` line
 with the error code and details, without a stack trace or file content.
 
@@ -31,6 +32,7 @@ from yakhnama.modules.geography.public import LoadReport as PlaceLoadReport
 from yakhnama.modules.hazards.public import LoadReport as HazardTypeLoadReport
 from yakhnama.modules.identity.public import Actor, Role
 from yakhnama.modules.impacts.public import LoadReport as ImpactMetricLoadReport
+from yakhnama.modules.ingestion.public import LoadReport as DatasetLoadReport
 from yakhnama.platform.container import Container, build_container, build_seed_handler
 from yakhnama.platform.logging import configure_logging
 from yakhnama.platform.settings import Settings, get_settings
@@ -143,6 +145,17 @@ def _file_summary(report: LoadReport) -> dict[str, object]:
     }
 
 
+def _datasets_summary(report: DatasetLoadReport) -> dict[str, object]:
+    # The catalog report has no data_version but says which fixtures were left out.
+    return {
+        "created": len(report.created),
+        "updated": len(report.updated),
+        "unchanged": len(report.unchanged),
+        "excluded": len(report.excluded),
+        "skipped": len(report.skipped_with_reason),
+    }
+
+
 def log_report(report: SeedReport) -> None:
     """Log what a seed run did: one summary line and one warning per skipped change.
 
@@ -155,19 +168,28 @@ def log_report(report: SeedReport) -> None:
         ("impact_metrics", report.impact_metrics),
         ("places", report.places),
     )
-    for file_key, file_report in files:
-        for skipped in file_report.skipped_with_reason:
-            logger.warning(
-                "seed_change_skipped",
-                file=file_key,
-                code=skipped.code,
-                reason=skipped.reason,
-            )
+    # (file, code, reason) of every difference left for a human, in file order.
+    skipped_changes = [
+        (file_key, skipped.code, skipped.reason)
+        for file_key, file_report in files
+        for skipped in file_report.skipped_with_reason
+    ]
+    summaries = {
+        file_key: _file_summary(file_report) for file_key, file_report in files
+    }
+    if report.datasets is not None:
+        skipped_changes.extend(
+            ("datasets", skipped.code, skipped.reason)
+            for skipped in report.datasets.skipped_with_reason
+        )
+        summaries["datasets"] = _datasets_summary(report.datasets)
+    for file_key, code, reason in skipped_changes:
+        logger.warning("seed_change_skipped", file=file_key, code=code, reason=reason)
     logger.info(
         "seed_completed",
         dry_run=report.dry_run,
         is_unchanged=report.is_unchanged,
-        **{file_key: _file_summary(file_report) for file_key, file_report in files},
+        **summaries,
     )
 
 

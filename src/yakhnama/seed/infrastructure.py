@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from yakhnama.modules.geography.public import PlaceReferenceFile
 from yakhnama.modules.hazards.public import HazardTypeReferenceFile
 from yakhnama.modules.impacts.public import ImpactMetricReferenceFile
+from yakhnama.modules.ingestion.public import DatasetReferenceFile
 from yakhnama.shared_kernel.errors import ValidationError
 
 HAZARD_TYPES_FILE: Final = "hazard_types.yaml"
@@ -32,6 +33,9 @@ IMPACT_METRICS_FILE: Final = "impact_metrics.yaml"
 
 PLACES_FILE: Final = "admin_hierarchy_gb.yaml"
 """File name of the place hierarchy inside the reference directory."""
+
+DATASETS_FILE: Final = "datasets.yaml"
+"""File name of the ingestion dataset catalog inside the reference directory."""
 
 
 def _invalid_file(file_name: str, reason: str, **extra: object) -> ValidationError:
@@ -47,7 +51,10 @@ class YamlReferenceFileReader:
     The directory is checked when a file is read, not when the reader is built, so
     wiring the seed never touches the file system.
 
-    Implements: Adapter (``ReferenceFileReader`` port).
+    It answers both the ``ReferenceFileReader`` and the ``DatasetReferenceReader``
+    ports.
+
+    Implements: Adapter.
     """
 
     def __init__(self, directory: Path) -> None:
@@ -98,6 +105,18 @@ class YamlReferenceFileReader:
                 not match ``PlaceReferenceFile``.
         """
         return self._load(PLACES_FILE, PlaceReferenceFile)
+
+    def read_datasets(self) -> DatasetReferenceFile:
+        """Parse and validate ``datasets.yaml``.
+
+        Returns:
+            The validated dataset catalog file (its ``datasets:`` entries).
+
+        Raises:
+            ValidationError: If the file is missing, unreadable, not YAML or does
+                not match ``DatasetReferenceFile``.
+        """
+        return self._load(DATASETS_FILE, DatasetReferenceFile)
 
     def _load[ModelT: BaseModel](self, file_name: str, model: type[ModelT]) -> ModelT:
         # Every re-raise uses ``from None``: a chained cause would carry the YAML or

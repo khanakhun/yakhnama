@@ -171,6 +171,10 @@ class Settings(BaseSettings):
             read by ``python -m yakhnama.seed``. A relative path resolves against the
             working directory. It is checked when the seed reads it, not when the
             settings load, so the API starts without it.
+        ingestion_fixtures_dir: Directory holding the synthetic ingestion fixture
+            files the reference source adapters read (the ``local_csv_temperature``
+            adapter reads ``temperature_sample.csv`` there). Relative paths resolve
+            against the working directory; checked when a run reads it.
         seed_actor_id: The system actor recorded on every change the seed makes.
             Must be a UUIDv7. When ``None``, each seed run generates a fresh UUIDv7
             system actor and logs it, so its changes can still be told apart. A
@@ -285,6 +289,7 @@ class Settings(BaseSettings):
     health_ready_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
 
     reference_data_dir: Path = Path("data/reference")
+    ingestion_fixtures_dir: Path = Path("data/fixtures/ingestion")
     # EntityId rather than a bare UUID: every actor id in the system is a UUIDv7
     # (ADR 0006), so a wrong value fails at startup instead of inside the seed.
     seed_actor_id: EntityId | None = None

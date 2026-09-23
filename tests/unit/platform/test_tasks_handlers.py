@@ -3,12 +3,19 @@
 import pytest
 from structlog.testing import capture_logs
 
+from yakhnama.modules.exchange.public import RUN_EXPORT_TASK, RUN_IMPORT_TASK
+from yakhnama.modules.ingestion.public import (
+    INGESTION_RUN_TASK as INGESTION_MODULE_RUN_TASK,
+)
 from yakhnama.platform.tasks.errors import (
     TaskHandlerNotBoundError,
     TaskNotRegisteredError,
 )
 from yakhnama.platform.tasks.handlers import (
+    EXCHANGE_RUN_EXPORT_TASK,
+    EXCHANGE_RUN_IMPORT_TASK,
     IDEMPOTENCY_PURGE_TASK,
+    INGESTION_RUN_TASK,
     MEDIA_SCAN_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
@@ -41,9 +48,23 @@ def test_task_names_are_the_documented_contract() -> None:
         "idempotency.purge_expired",
         "reports.run_triage",
         "media.scan",
+        "exchange.run_export",
+        "exchange.run_import",
+        "ingestion.run",
     )
     assert names[:3] == (OUTBOX_RELAY_TASK, OUTBOX_PURGE_TASK, IDEMPOTENCY_PURGE_TASK)
-    assert names[3:] == (REPORTS_TRIAGE_TASK, MEDIA_SCAN_TASK)
+    assert names[3:5] == (REPORTS_TRIAGE_TASK, MEDIA_SCAN_TASK)
+    assert names[5:] == (
+        EXCHANGE_RUN_EXPORT_TASK,
+        EXCHANGE_RUN_IMPORT_TASK,
+        INGESTION_RUN_TASK,
+    )
+
+
+def test_module_task_names_match_the_names_the_modules_enqueue() -> None:
+    names = (EXCHANGE_RUN_EXPORT_TASK, EXCHANGE_RUN_IMPORT_TASK, INGESTION_RUN_TASK)
+
+    assert names == (RUN_EXPORT_TASK, RUN_IMPORT_TASK, INGESTION_MODULE_RUN_TASK)
 
 
 def test_task_handler_registry_bind_then_handler_for_returns_handler() -> None:

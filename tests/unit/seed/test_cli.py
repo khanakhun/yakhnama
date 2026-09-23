@@ -18,6 +18,8 @@ from yakhnama.modules.hazards.public import LoadReport as HazardTypeLoadReport
 from yakhnama.modules.hazards.public import SkippedChange
 from yakhnama.modules.identity.public import CanManageReferenceData, Role
 from yakhnama.modules.impacts.public import LoadReport as ImpactMetricLoadReport
+from yakhnama.modules.ingestion.public import LoadReport as DatasetLoadReport
+from yakhnama.modules.ingestion.public import SkippedChange as DatasetSkippedChange
 from yakhnama.platform.container import Container, build_container
 from yakhnama.platform.settings import Settings, get_settings
 from yakhnama.seed.application import SeedReferenceData, SeedReport
@@ -241,6 +243,47 @@ def test_log_report_skipped_changes_logged_as_warnings() -> None:
         "reason": "parent differs; left for a human",
     }
     assert completed["hazard_types"]["skipped"] == 1
+
+
+def test_log_report_datasets_summary_and_skipped_changes_are_logged() -> None:
+    datasets = DatasetLoadReport(
+        dry_run=False,
+        created=("fixture.temperature_sample",),
+        updated=(),
+        unchanged=("era5.t2m",),
+        excluded=(),
+        skipped_with_reason=(
+            DatasetSkippedChange(
+                code="era5.t2m", reason="publisher differs; left for a human"
+            ),
+        ),
+    )
+    report = _report().model_copy(update={"datasets": datasets})
+
+    with capture_logs() as logs:
+        log_report(report)
+
+    warning, completed = logs
+    assert (warning["event"], warning["file"], warning["code"]) == (
+        "seed_change_skipped",
+        "datasets",
+        "era5.t2m",
+    )
+    assert completed["datasets"] == {
+        "created": 1,
+        "updated": 0,
+        "unchanged": 1,
+        "excluded": 0,
+        "skipped": 1,
+    }
+
+
+def test_log_report_without_datasets_step_logs_no_datasets_summary() -> None:
+    with capture_logs() as logs:
+        log_report(_report())
+
+    (completed,) = logs
+    assert "datasets" not in completed
 
 
 async def test_resolve_actor_id_configured_returns_setting(settings: Settings) -> None:

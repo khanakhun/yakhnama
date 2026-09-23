@@ -25,6 +25,15 @@ read the use cases (``submit_report_handler``, ``event_handler_dependencies``, .
 from this container by field name. ``AuditSubscriber`` is subscribed on the relay
 to every domain event type of every module (``wiring.audit``).
 
+The Phase 4 modules follow the same shape: ``build_exchange_ports`` and
+``build_ingestion_ports`` bind each module's own ports, ``build_exchange_worker_ports``
+answers the exchange runs' ports towards events, impacts, reports, provenance,
+hazards and geography with the adapters of ``wiring.exchange``, and
+``build_exchange_services`` and ``build_ingestion_services`` wire the use cases the
+routers read (``request_export_handler``, ``run_ingestion_handler``, ...) and the
+worker runs (``run_export_handler``, ``run_import_handler``,
+``execute_ingestion_run_handler``).
+
 Internal (non-facade) imports this composition root needs besides module
 infrastructure: the ``*UnitOfWorkFactory``/query-service ports not exported by
 older facades (geography, hazards, impacts, identity; unchanged since Phase 1),
@@ -36,6 +45,7 @@ Patterns: Composition Root, Dependency Injection.
 import dataclasses
 from collections.abc import Mapping
 from datetime import timedelta
+from importlib.metadata import version
 from types import MappingProxyType
 
 import httpx
@@ -65,6 +75,33 @@ from yakhnama.modules.events.public import (
 )
 from yakhnama.modules.events.public import (
     moderation_policy as events_moderation_policy,
+)
+from yakhnama.modules.exchange.infrastructure.adapters.registry import (
+    default_format_adapters,
+)
+from yakhnama.modules.exchange.infrastructure.adapters.s3_artifact_store import (
+    S3ArtifactStore,
+)
+from yakhnama.modules.exchange.infrastructure.queries import (
+    SqlAlchemyExchangeQueryService,
+)
+from yakhnama.modules.exchange.infrastructure.uow import SqlAlchemyExchangeUnitOfWork
+from yakhnama.modules.exchange.public import (
+    ArtifactStore,
+    BackfillReferenceChecker,
+    CancelExportHandler,
+    ExchangeHandlerDependencies,
+    ExchangeJobQueryService,
+    ExchangeQueryService,
+    ExchangeUnitOfWorkFactory,
+    ExportRowSource,
+    FormatAdapterRegistry,
+    HistoricalEventWriter,
+    LineageSourceRegistrar,
+    RequestExportHandler,
+    RequestImportHandler,
+    RunExportHandler,
+    RunImportHandler,
 )
 from yakhnama.modules.geography.application.handlers import (
     LoadReferencePlacesHandler,
@@ -124,6 +161,31 @@ from yakhnama.modules.impacts.public import (
 )
 from yakhnama.modules.impacts.public import (
     moderation_policy as impacts_moderation_policy,
+)
+from yakhnama.modules.ingestion.infrastructure.adapters.reference import (
+    reference_adapters,
+    reference_pipelines,
+)
+from yakhnama.modules.ingestion.infrastructure.queries import (
+    SqlAlchemyIngestionQueryService,
+)
+from yakhnama.modules.ingestion.infrastructure.uow import (
+    SqlAlchemyIngestionUnitOfWork,
+)
+from yakhnama.modules.ingestion.public import (
+    CatalogueRasterAssetHandler,
+    DeprecateDatasetHandler,
+    ExecuteIngestionRunHandler,
+    IngestionQueryService,
+    IngestionUnitOfWorkFactory,
+    LoadReferenceDatasetsHandler,
+    PipelineClassRegistry,
+    PipelineFactory,
+    RecordDatasetVersionHandler,
+    RegisterDatasetHandler,
+    RetireDatasetHandler,
+    RunIngestionHandler,
+    SourceAdapterRegistry,
 )
 from yakhnama.modules.media.application.ports import MalwareScanner
 from yakhnama.modules.media.infrastructure.adapters.exif import PillowExifReader
@@ -207,7 +269,10 @@ from yakhnama.platform.ratelimit.redis_limiter import RedisRateLimiter
 from yakhnama.platform.settings import Settings
 from yakhnama.platform.tasks.broker import build_broker
 from yakhnama.platform.tasks.handlers import (
+    EXCHANGE_RUN_EXPORT_TASK,
+    EXCHANGE_RUN_IMPORT_TASK,
     IDEMPOTENCY_PURGE_TASK,
+    INGESTION_RUN_TASK,
     MEDIA_SCAN_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
@@ -229,10 +294,21 @@ from yakhnama.platform.wiring.events import (
     ReportFactsAdapter,
     VerificationCaseOpenerAdapter,
 )
+from yakhnama.platform.wiring.exchange import (
+    BatchReferencePorts,
+    FacadeExportRowSource,
+    IdentityActorLookupAdapter,
+    ProvenanceLineageRegistrarAdapter,
+    RegistryReferenceCheckerAdapter,
+    RunExportTaskAdapter,
+    RunImportTaskAdapter,
+    SessionBatchEventWriter,
+)
 from yakhnama.platform.wiring.impacts import (
     HazardEventDirectoryAdapter,
     ImpactSourceMarkerAdapter,
 )
+from yakhnama.platform.wiring.ingestion import ExecuteIngestionRunTaskAdapter
 from yakhnama.platform.wiring.media import ReportSourceAdapter, ScanTaskAdapter
 from yakhnama.platform.wiring.provenance import SourceCitationCheckerAdapter
 from yakhnama.platform.wiring.reports import (
@@ -244,7 +320,7 @@ from yakhnama.platform.wiring.verification import (
     ReportOwnerAdapter,
     ReviewerEligibilityAdapter,
 )
-from yakhnama.seed.application import SeedReferenceDataHandler
+from yakhnama.seed.application import DatasetSeedStep, SeedReferenceDataHandler
 from yakhnama.seed.infrastructure import YamlReferenceFileReader
 from yakhnama.shared_kernel.clock import Clock, SystemClock
 from yakhnama.shared_kernel.ids import IdGenerator, Uuid7Generator
@@ -326,6 +402,29 @@ class Container:
         event_impacts_queries: Authorised impacts reads.
         event_types: Every module's domain event classes by ``event_type``.
         audit_subscriber: Writes the audit log; subscribed to every event type.
+        exchange_uow_factory: The exchange ``UnitOfWorkFactory`` port.
+        exchange_query_service: The exchange ``ExchangeQueryService`` port.
+        artifact_store: The exchange ``ArtifactStore`` (S3-compatible, private
+            bucket, ``exports/`` and ``imports/`` keys only).
+        exchange_handler_dependencies: What every exchange handler is built from.
+        request_export_handler: Queues exports.
+        cancel_export_handler: Cancels queued exports.
+        request_import_handler: Queues imports.
+        exchange_queries: Authorised export and import job reads.
+        run_export_handler: Writes an export; run by ``exchange.run_export``.
+        run_import_handler: Validates and writes an import; run by
+            ``exchange.run_import``.
+        ingestion_uow_factory: The ingestion ``UnitOfWorkFactory`` port.
+        source_adapters: The registered ingestion source adapters.
+        pipeline_factory: Builds the ingestion pipeline of each source adapter.
+        register_dataset_handler: Registers datasets.
+        record_dataset_version_handler: Records dataset versions.
+        deprecate_dataset_handler: Deprecates datasets.
+        retire_dataset_handler: Retires datasets.
+        run_ingestion_handler: Requests ingestion runs.
+        execute_ingestion_run_handler: Executes a run; run by ``ingestion.run``.
+        catalogue_raster_asset_handler: Catalogues rasters.
+        ingestion_queries: The ingestion read port (open data).
         token_validator: Checks bearer tokens; ``None`` when ``oidc_issuer`` is not
             set, in which case every protected route answers 401.
         rate_limiter: The ``RateLimiter`` port (in memory or Redis).
@@ -398,6 +497,27 @@ class Container:
     event_impacts_queries: EventImpactsQueryService
     event_types: DomainEventTypeRegistry
     audit_subscriber: AuditSubscriber
+    exchange_uow_factory: ExchangeUnitOfWorkFactory
+    exchange_query_service: ExchangeQueryService
+    artifact_store: ArtifactStore
+    exchange_handler_dependencies: ExchangeHandlerDependencies
+    request_export_handler: RequestExportHandler
+    cancel_export_handler: CancelExportHandler
+    request_import_handler: RequestImportHandler
+    exchange_queries: ExchangeJobQueryService
+    run_export_handler: RunExportHandler
+    run_import_handler: RunImportHandler
+    ingestion_uow_factory: IngestionUnitOfWorkFactory
+    source_adapters: SourceAdapterRegistry
+    pipeline_factory: PipelineFactory
+    register_dataset_handler: RegisterDatasetHandler
+    record_dataset_version_handler: RecordDatasetVersionHandler
+    deprecate_dataset_handler: DeprecateDatasetHandler
+    retire_dataset_handler: RetireDatasetHandler
+    run_ingestion_handler: RunIngestionHandler
+    execute_ingestion_run_handler: ExecuteIngestionRunHandler
+    catalogue_raster_asset_handler: CatalogueRasterAssetHandler
+    ingestion_queries: IngestionQueryService
     token_validator: TokenValidator | None
     rate_limiter: RateLimiter
     idempotency_store: IdempotencyStore
@@ -877,6 +997,361 @@ def build_recording_services(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Phase 4: exchange and ingestion                                             #
+# --------------------------------------------------------------------------- #
+
+EXPORT_GENERATOR_PREFIX = "yakhnama/"
+"""Start of the ``generator`` every export sidecar names; the version follows."""
+
+
+def export_generator() -> str:
+    """Return the ``generator`` written into every export sidecar.
+
+    Returns:
+        ``yakhnama/<installed package version>``.
+    """
+    return f"{EXPORT_GENERATOR_PREFIX}{version('yakhnama')}"
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class ExchangePorts:
+    """The exchange module's own ports: storage, persistence and formats.
+
+    Implements: Composition Root.
+
+    Attributes:
+        uow_factory: Opens exchange units of work.
+        reads: The exchange job read port.
+        artifacts: Object storage for export and import files.
+        formats: The exporter and importer strategies.
+    """
+
+    uow_factory: ExchangeUnitOfWorkFactory
+    reads: ExchangeQueryService
+    artifacts: ArtifactStore
+    formats: FormatAdapterRegistry
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class ExchangeWorkerPorts:
+    """The ports the export and import runs reach other modules through.
+
+    Implements: Composition Root.
+
+    Attributes:
+        rows: Streams export rows through the events, impacts and reports reads.
+        references: Checks an import row's hazard, metric and place codes.
+        lineage: Registers an import's ``dataset`` source.
+        writer: Opens the batches an import writes events and claims in.
+        coordinates: Rounds exported report positions.
+        generator: ``yakhnama/<version>``, written into every sidecar.
+    """
+
+    rows: ExportRowSource
+    references: BackfillReferenceChecker
+    lineage: LineageSourceRegistrar
+    writer: HistoricalEventWriter
+    coordinates: PublicCoordinatePolicy
+    generator: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class ExchangeServices:
+    """The exchange use cases, bound to their ports and cross-module adapters.
+
+    Each attribute but ``dependencies`` becomes the ``Container`` field of the
+    same name; ``dependencies`` becomes ``exchange_handler_dependencies``.
+
+    Implements: Composition Root.
+
+    Attributes:
+        dependencies: What every exchange handler is built from.
+        request_export_handler: Queues exports.
+        cancel_export_handler: Cancels queued exports.
+        request_import_handler: Queues imports.
+        exchange_queries: Authorised export and import job reads.
+        artifact_store: The exchange ``ArtifactStore`` (presigned import uploads).
+        run_export_handler: Writes an export; run by ``exchange.run_export``.
+        run_import_handler: Validates and writes an import; run by
+            ``exchange.run_import``.
+    """
+
+    dependencies: ExchangeHandlerDependencies
+    request_export_handler: RequestExportHandler
+    cancel_export_handler: CancelExportHandler
+    request_import_handler: RequestImportHandler
+    exchange_queries: ExchangeJobQueryService
+    artifact_store: ArtifactStore
+    run_export_handler: RunExportHandler
+    run_import_handler: RunImportHandler
+
+
+def build_exchange_ports(
+    settings: Settings,
+    clock: Clock,
+    session_factory: async_sessionmaker[AsyncSession],
+    outbox_writer: OutboxWriter,
+) -> ExchangePorts:
+    """Bind the exchange module's own ports to their production adapters.
+
+    Args:
+        settings: Supplies the ``storage_*`` settings of the artifact store.
+        clock: Source of the upload grants' expiries.
+        session_factory: Opens one session per unit of work or query.
+        outbox_writer: Stages each unit of work's domain events on commit.
+
+    Returns:
+        The ports; nothing connects until first use.
+    """
+    return ExchangePorts(
+        uow_factory=SqlAlchemyUnitOfWorkFactory(
+            SqlAlchemyExchangeUnitOfWork,
+            session_factory=session_factory,
+            outbox_writer=outbox_writer,
+        ),
+        reads=SqlAlchemyExchangeQueryService(session_factory),
+        artifacts=S3ArtifactStore.from_settings(settings, clock),
+        formats=default_format_adapters(),
+    )
+
+
+def build_exchange_worker_ports(  # noqa: PLR0913  # reason: one keyword per port group the runs reach
+    *,
+    core: CorePorts,
+    engine: AsyncEngine,
+    outbox_writer: OutboxWriter,
+    reads: RecordingReads,
+    services: RecordingServices,
+    impact_metrics: ImpactMetricQueryService,
+) -> ExchangeWorkerPorts:
+    """Bind the ports the export and import runs reach other modules through.
+
+    Args:
+        core: The clock, ids, coordinate policy and the Phase 1 and 2 ports.
+        engine: Each import batch takes one connection and transaction from it.
+        outbox_writer: Stages the batch units of work's domain events.
+        reads: The Phase 3 read ports (report facts and owners).
+        services: The Phase 3 use cases (authorised reads, source registrar).
+        impact_metrics: The impact metric read port (reference checks).
+
+    Returns:
+        The worker ports.
+    """
+    places = PlaceDirectoryAdapter(core.geography_uow_factory)
+    return ExchangeWorkerPorts(
+        rows=FacadeExportRowSource(
+            events=services.event_queries,
+            impacts=services.event_impacts_queries,
+            reports=services.report_queries,
+        ),
+        references=RegistryReferenceCheckerAdapter(
+            hazard_types=core.hazard_type_query_service,
+            impact_metrics=impact_metrics,
+            places=places,
+        ),
+        lineage=ProvenanceLineageRegistrarAdapter(services.source_registrar),
+        writer=SessionBatchEventWriter(
+            engine,
+            BatchReferencePorts(
+                outbox_writer=outbox_writer,
+                clock=core.clock,
+                ids=core.id_generator,
+                coordinates=core.public_coordinates,
+                hazard_types=core.hazard_type_query_service,
+                geography=core.geography_uow_factory,
+                identity=core.identity_uow_factory,
+                report_facts=ReportFactsAdapter(reads.reports, core.public_coordinates),
+                report_owners=ReportOwnerAdapter(reads.reports),
+            ),
+        ),
+        coordinates=core.public_coordinates,
+        generator=export_generator(),
+    )
+
+
+def build_exchange_services(
+    *,
+    core: CorePorts,
+    ports: ExchangePorts,
+    worker: ExchangeWorkerPorts,
+    task_queue: TaskQueue,
+) -> ExchangeServices:
+    """Wire the exchange use cases to their ports and cross-module adapters.
+
+    The requesting actor of every run is rebuilt through
+    ``IdentityActorLookupAdapter`` over ``core.identity_uow_factory``.
+
+    Args:
+        core: The clock, ids and identity unit-of-work factory.
+        ports: The exchange module's own ports.
+        worker: The ports the runs reach other modules through.
+        task_queue: Schedules the export and import runs.
+
+    Returns:
+        The use cases, ready to become ``Container`` fields.
+    """
+    dependencies = ExchangeHandlerDependencies(
+        uow_factory=ports.uow_factory,
+        clock=core.clock,
+        ids=core.id_generator,
+        tasks=task_queue,
+        formats=ports.formats,
+        artifacts=ports.artifacts,
+        actors=IdentityActorLookupAdapter(core.identity_uow_factory),
+    )
+    return ExchangeServices(
+        dependencies=dependencies,
+        request_export_handler=RequestExportHandler(dependencies),
+        cancel_export_handler=CancelExportHandler(dependencies),
+        request_import_handler=RequestImportHandler(dependencies),
+        exchange_queries=ExchangeJobQueryService(ports.reads, ports.artifacts),
+        artifact_store=ports.artifacts,
+        run_export_handler=RunExportHandler(
+            dependencies,
+            rows=worker.rows,
+            coordinates=worker.coordinates,
+            generator=worker.generator,
+        ),
+        run_import_handler=RunImportHandler(
+            dependencies,
+            references=worker.references,
+            lineage=worker.lineage,
+            writer=worker.writer,
+        ),
+    )
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class IngestionPorts:
+    """The ingestion module's ports: persistence, reads, sources and pipelines.
+
+    Implements: Composition Root.
+
+    Attributes:
+        uow_factory: Opens ingestion units of work.
+        reads: The ingestion read port (open data).
+        adapters: The registered source adapters.
+        pipelines: Builds the pipeline of each adapter.
+    """
+
+    uow_factory: IngestionUnitOfWorkFactory
+    reads: IngestionQueryService
+    adapters: SourceAdapterRegistry
+    pipelines: PipelineFactory
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class IngestionServices:
+    """The ingestion use cases, bound to their ports.
+
+    Each attribute becomes the ``Container`` field of the same name.
+
+    Implements: Composition Root.
+
+    Attributes:
+        register_dataset_handler: Registers datasets.
+        record_dataset_version_handler: Records dataset versions.
+        deprecate_dataset_handler: Deprecates datasets.
+        retire_dataset_handler: Retires datasets.
+        run_ingestion_handler: Requests runs (enqueues ``ingestion.run``).
+        execute_ingestion_run_handler: Executes a run; run by ``ingestion.run``.
+        catalogue_raster_asset_handler: Catalogues rasters.
+        ingestion_queries: The ingestion read port.
+    """
+
+    register_dataset_handler: RegisterDatasetHandler
+    record_dataset_version_handler: RecordDatasetVersionHandler
+    deprecate_dataset_handler: DeprecateDatasetHandler
+    retire_dataset_handler: RetireDatasetHandler
+    run_ingestion_handler: RunIngestionHandler
+    execute_ingestion_run_handler: ExecuteIngestionRunHandler
+    catalogue_raster_asset_handler: CatalogueRasterAssetHandler
+    ingestion_queries: IngestionQueryService
+
+
+def build_ingestion_ports(
+    settings: Settings,
+    clock: Clock,
+    ids: IdGenerator,
+    session_factory: async_sessionmaker[AsyncSession],
+    outbox_writer: OutboxWriter,
+) -> IngestionPorts:
+    """Bind the ingestion ports and register the built-in reference sources.
+
+    Only the synthetic fixture source exists in this version:
+    ``reference_adapters(settings.ingestion_fixtures_dir)`` and
+    ``reference_pipelines()``; a real source is registered here beside them.
+
+    Args:
+        settings: Supplies ``ingestion_fixtures_dir``.
+        clock: Handed to the adapters and every pipeline.
+        ids: Handed to every pipeline.
+        session_factory: Opens one session per unit of work or query.
+        outbox_writer: Stages each unit of work's domain events on commit.
+
+    Returns:
+        The ports; the fixture directory is read only when a run fetches.
+    """
+    return IngestionPorts(
+        uow_factory=SqlAlchemyUnitOfWorkFactory(
+            SqlAlchemyIngestionUnitOfWork,
+            session_factory=session_factory,
+            outbox_writer=outbox_writer,
+        ),
+        reads=SqlAlchemyIngestionQueryService(session_factory),
+        adapters=SourceAdapterRegistry(
+            reference_adapters(settings.ingestion_fixtures_dir, clock=clock)
+        ),
+        pipelines=PipelineClassRegistry(
+            clock=clock, ids=ids, pipelines=reference_pipelines()
+        ),
+    )
+
+
+def build_ingestion_services(
+    *, core: CorePorts, ports: IngestionPorts, task_queue: TaskQueue
+) -> IngestionServices:
+    """Wire the ingestion use cases to their ports.
+
+    Args:
+        core: Supplies the clock and ids.
+        ports: The ingestion ports.
+        task_queue: Schedules ``ingestion.run``.
+
+    Returns:
+        The use cases, ready to become ``Container`` fields.
+    """
+    clock, ids, uow_factory = core.clock, core.id_generator, ports.uow_factory
+    return IngestionServices(
+        register_dataset_handler=RegisterDatasetHandler(uow_factory, clock, ids),
+        record_dataset_version_handler=RecordDatasetVersionHandler(
+            uow_factory, clock, ids
+        ),
+        deprecate_dataset_handler=DeprecateDatasetHandler(uow_factory, clock, ids),
+        retire_dataset_handler=RetireDatasetHandler(uow_factory, clock, ids),
+        run_ingestion_handler=RunIngestionHandler(
+            uow_factory=uow_factory,
+            adapters=ports.adapters,
+            pipelines=ports.pipelines,
+            task_queue=task_queue,
+            clock=clock,
+            ids=ids,
+        ),
+        execute_ingestion_run_handler=ExecuteIngestionRunHandler(
+            uow_factory=uow_factory,
+            adapters=ports.adapters,
+            pipelines=ports.pipelines,
+            clock=clock,
+            ids=ids,
+        ),
+        catalogue_raster_asset_handler=CatalogueRasterAssetHandler(
+            uow_factory, clock, ids
+        ),
+        ingestion_queries=ports.reads,
+    )
+
+
 def build_container(settings: Settings) -> Container:
     """Bind the ports to their production adapters.
 
@@ -927,6 +1402,29 @@ def build_container(settings: Settings) -> Container:
     services = build_recording_services(
         core=core, units=units, reads=reads, media=media, task_queue=task_queue
     )
+    impact_metric_query_service = SqlAlchemyImpactMetricQueryService(session_factory)
+    exchange_ports = build_exchange_ports(
+        settings, clock, session_factory, outbox_writer
+    )
+    exchange = build_exchange_services(
+        core=core,
+        ports=exchange_ports,
+        worker=build_exchange_worker_ports(
+            core=core,
+            engine=engine,
+            outbox_writer=outbox_writer,
+            reads=reads,
+            services=services,
+            impact_metrics=impact_metric_query_service,
+        ),
+        task_queue=task_queue,
+    )
+    ingestion_ports = build_ingestion_ports(
+        settings, clock, id_generator, session_factory, outbox_writer
+    )
+    ingestion = build_ingestion_services(
+        core=core, ports=ingestion_ports, task_queue=task_queue
+    )
     event_types = DomainEventTypeRegistry.from_modules(EVENT_MODULES)
     audit_subscriber = AuditSubscriber(units.audit, event_types, id_generator)
     subscribe_to_every_event(subscriber_registry, event_types, audit_subscriber)
@@ -965,7 +1463,7 @@ def build_container(settings: Settings) -> Container:
         ),
         place_query_service=SqlAlchemyPlaceQueryService(session_factory),
         hazard_type_query_service=core.hazard_type_query_service,
-        impact_metric_query_service=SqlAlchemyImpactMetricQueryService(session_factory),
+        impact_metric_query_service=impact_metric_query_service,
         identity_uow_factory=core.identity_uow_factory,
         identity_query_service=SqlAlchemyIdentityQueryService(session_factory),
         provenance_uow_factory=units.provenance,
@@ -1008,6 +1506,27 @@ def build_container(settings: Settings) -> Container:
         event_impacts_queries=services.event_impacts_queries,
         event_types=event_types,
         audit_subscriber=audit_subscriber,
+        exchange_uow_factory=exchange_ports.uow_factory,
+        exchange_query_service=exchange_ports.reads,
+        artifact_store=exchange.artifact_store,
+        exchange_handler_dependencies=exchange.dependencies,
+        request_export_handler=exchange.request_export_handler,
+        cancel_export_handler=exchange.cancel_export_handler,
+        request_import_handler=exchange.request_import_handler,
+        exchange_queries=exchange.exchange_queries,
+        run_export_handler=exchange.run_export_handler,
+        run_import_handler=exchange.run_import_handler,
+        ingestion_uow_factory=ingestion_ports.uow_factory,
+        source_adapters=ingestion_ports.adapters,
+        pipeline_factory=ingestion_ports.pipelines,
+        register_dataset_handler=ingestion.register_dataset_handler,
+        record_dataset_version_handler=ingestion.record_dataset_version_handler,
+        deprecate_dataset_handler=ingestion.deprecate_dataset_handler,
+        retire_dataset_handler=ingestion.retire_dataset_handler,
+        run_ingestion_handler=ingestion.run_ingestion_handler,
+        execute_ingestion_run_handler=ingestion.execute_ingestion_run_handler,
+        catalogue_raster_asset_handler=ingestion.catalogue_raster_asset_handler,
+        ingestion_queries=ingestion.ingestion_queries,
         token_validator=token_validator,
         rate_limiter=rate_limiter,
         idempotency_store=SqlAlchemyIdempotencyStore(session_factory, id_generator),
@@ -1026,12 +1545,14 @@ def build_container(settings: Settings) -> Container:
 def build_task_handlers(container: Container) -> Mapping[str, TaskHandler]:
     """Bind every task name this build can serve to its handler.
 
-    The platform tasks and the two module tasks are bound here:
-    ``reports.run_triage`` runs ``run_triage_handler``, and ``media.scan`` streams
+    The platform tasks and the module tasks are bound here:
+    ``reports.run_triage`` runs ``run_triage_handler``; ``media.scan`` streams
     the original to ``malware_scanner`` and stores the verdict with
-    ``record_scan_result_handler``. Every handler reads the container it is given,
-    so a test that replaces a field (for example the scanner) and calls this
-    function gets handlers over its replacement.
+    ``record_scan_result_handler``; ``exchange.run_export`` and
+    ``exchange.run_import`` run ``run_export_handler`` and ``run_import_handler``;
+    ``ingestion.run`` runs ``execute_ingestion_run_handler``. Every handler reads
+    the container it is given, so a test that replaces a field (for example the
+    scanner) and calls this function gets handlers over its replacement.
 
     Args:
         container: Supplies the relay, the stores, the module handlers, the
@@ -1068,8 +1589,32 @@ def build_task_handlers(container: Container) -> Mapping[str, TaskHandler]:
                 scanner=container.malware_scanner,
                 record_scan_result=container.record_scan_result_handler,
             ),
+            EXCHANGE_RUN_EXPORT_TASK: RunExportTaskAdapter(
+                container.run_export_handler
+            ),
+            EXCHANGE_RUN_IMPORT_TASK: RunImportTaskAdapter(
+                container.run_import_handler
+            ),
+            INGESTION_RUN_TASK: ExecuteIngestionRunTaskAdapter(
+                container.execute_ingestion_run_handler
+            ),
         }
     )
+
+
+def includes_fixture_datasets(settings: Settings) -> bool:
+    """Tell whether the seed registers the catalog's synthetic fixture datasets.
+
+    Fixtures let a development or test database run the reference ingestion end to
+    end; a production catalog must never list synthetic data as if it were real.
+
+    Args:
+        settings: Supplies ``environment``.
+
+    Returns:
+        ``True`` unless ``environment`` is ``production``.
+    """
+    return settings.environment != "production"
 
 
 def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
@@ -1079,6 +1624,10 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
     module load it calls, so the seed changes nothing unless its actor is an admin;
     the command line runs it as a synthetic system actor holding ``admin``.
     The reader reads ``settings.reference_data_dir`` when the handler runs, not now.
+    The dataset catalog is loaded last by ``LoadReferenceDatasetsHandler``, which
+    ``catalog_policy`` (admins) guards on its own; synthetic fixture entries are
+    included unless ``environment`` is ``production``, so a development or test
+    database can run the fixture ingestion while a real catalog never lists them.
 
     Args:
         container: The container whose units of work, clock and ids the loads use.
@@ -1087,8 +1636,9 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
         The seed handler, ready to be called with ``SeedReferenceData``.
     """
     policy = CanManageReferenceData()
+    reader = YamlReferenceFileReader(container.settings.reference_data_dir)
     return SeedReferenceDataHandler(
-        reader=YamlReferenceFileReader(container.settings.reference_data_dir),
+        reader=reader,
         policy=policy,
         load_hazard_types=LoadReferenceHazardTypesHandler(
             container.hazards_uow_factory,
@@ -1107,6 +1657,15 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
             policy,
             container.clock,
             container.id_generator,
+        ),
+        datasets=DatasetSeedStep(
+            reader=reader,
+            load=LoadReferenceDatasetsHandler(
+                container.ingestion_uow_factory,
+                container.clock,
+                container.id_generator,
+            ),
+            include_fixtures=includes_fixture_datasets(container.settings),
         ),
     )
 

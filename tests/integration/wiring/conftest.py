@@ -4,10 +4,14 @@
 downgrades it to ``base`` (dropping Alembic's version table) afterwards, so the
 other integration packages still find an empty database. ``buckets`` creates an
 empty private and public bucket on the session MinIO for one test and removes them
-after it.
+after it. ``container`` is the production container built from ``wiring_settings``
+with only the token validator (locally keyed) and the rate limiter (always
+allowing) replaced; after each test it empties every application table, so each
+flow starts from an empty, migrated database.
 """
 
 import asyncio
+import dataclasses
 import uuid
 from argparse import Namespace
 from collections.abc import AsyncIterator, Iterator
@@ -21,9 +25,20 @@ from alembic import command
 from alembic.config import Config
 from pydantic import BaseModel, ConfigDict, PostgresDsn
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from tests.fakes.auth import (
+    DEFAULT_ISSUED_AT,
+    TEST_AUDIENCE,
+    TEST_ISSUER,
+    FakeJwksClient,
+    StaticRateLimiter,
+    session_key_pair,
+)
+from tests.fakes.clock import FrozenClock
 from tests.integration.conftest import MinioServer
+from yakhnama.platform.auth.tokens import TokenValidator
+from yakhnama.platform.container import Container, build_container
 from yakhnama.platform.settings import Settings
 
 if TYPE_CHECKING:
@@ -145,4 +160,60 @@ def wiring_settings(
         storage_public_bucket=buckets.public,
         task_queue_backend="memory",
         malware_scanner="noop",
+        # Absolute, so the flows do not depend on the working directory.
+        reference_data_dir=REPOSITORY_ROOT / "data" / "reference",
+        ingestion_fixtures_dir=REPOSITORY_ROOT / "data" / "fixtures" / "ingestion",
     )
+
+
+# Tables the migrations own but no test writes: Alembic's version and PostGIS's
+# reference systems.
+_KEPT_TABLES: Final = ("alembic_version", "spatial_ref_sys")
+
+
+async def empty_application_tables(engine: AsyncEngine) -> None:
+    """Truncate every table of the public schema except the migration and SRID ones.
+
+    Args:
+        engine: An engine on the migrated test database.
+    """
+    async with engine.begin() as connection:
+        names = (
+            await connection.execute(
+                text(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+                    "AND tablename <> ALL(:kept)"
+                ),
+                {"kept": list(_KEPT_TABLES)},
+            )
+        ).scalars()
+        quoted = ", ".join(f'"{name}"' for name in names)
+        if quoted:
+            await connection.execute(
+                text(f"TRUNCATE {quoted} RESTART IDENTITY CASCADE")
+            )
+
+
+@pytest.fixture
+async def container(wiring_settings: Settings) -> AsyncIterator[Container]:
+    """Yield the production container with a locally keyed token validator."""
+    built = build_container(wiring_settings)
+    validator_clock = FrozenClock(DEFAULT_ISSUED_AT)
+    container = dataclasses.replace(
+        built,
+        token_validator=TokenValidator(
+            jwks_client=FakeJwksClient([session_key_pair()]),
+            issuer=TEST_ISSUER,
+            audience=TEST_AUDIENCE,
+            algorithms=["RS256"],
+            leeway_seconds=0,
+            clock=validator_clock,
+        ),
+        # The flows send more requests per minute than the default budget allows.
+        rate_limiter=StaticRateLimiter(),
+    )
+
+    yield container
+
+    await empty_application_tables(built.engine)
+    await built.aclose()
