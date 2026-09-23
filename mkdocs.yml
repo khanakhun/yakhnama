@@ -51,6 +51,7 @@ nav:
   - Authentication: architecture/auth.md
   - Recording flow: architecture/recording.md
   - Media storage: architecture/media.md
+  - Data exchange: architecture/exchange.md
   - Best figure policy: architecture/best-figure.md
   - ADRs:
       - Overview: adr/README.md
@@ -79,6 +80,8 @@ nav:
       - Media: data-dictionary/media.md
       - Events: data-dictionary/events.md
       - Verification: data-dictionary/verification.md
+      - Exchange: data-dictionary/exchange.md
+      - Ingestion: data-dictionary/ingestion.md
   - Open questions: open-questions.md
   - Plans:
       - "Phase 0 · Foundation": plans/phase-0.md

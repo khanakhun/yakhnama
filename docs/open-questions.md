@@ -1536,7 +1536,7 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** The JWKS client checks the response size only after reading the whole body; a hostile or misconfigured provider could send a very large document.
 - **Proposed default:** Deferred to Phase 4: cap while streaming (`httpx` `aiter_bytes`) at the configured size.
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** resolved (2026-09-23) in Phase 4 T7: `HttpJwksClient` streams discovery and JWKS bodies with `aiter_bytes()` and abandons the stream once the decoded body exceeds `max_document_bytes` (default 256 KiB); a declared `Content-Length` above the cap is refused before any byte is read.
 
 ## Q175 — Access-token `typ` check
 
@@ -1544,7 +1544,7 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** Tokens whose `typ` header is not an access token (for example ID tokens) are accepted if otherwise valid.
 - **Proposed default:** Deferred to Phase 4: reject `typ` values other than `JWT`/`at+jwt` when present.
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** resolved (2026-09-23) in Phase 4 T7: when the JOSE header carries `typ`, `TokenValidator` accepts only `oidc_accepted_token_types` (default `JWT`, `at+jwt`), compared case-insensitively with an optional `application/` prefix (RFC 7515 §4.1.9); a token without `typ` is not refused for it; rejections are logged as `token_type_not_accepted`.
 
 ## Q176 — Account-creation limits
 
@@ -1560,7 +1560,7 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** Anonymous rate limiting hashes the full client address, so an IPv6 caller can rotate through a /64 to evade limits.
 - **Proposed default:** Deferred to Phase 4: key anonymous limits on the /64 prefix for IPv6 and the /32 address for IPv4.
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** resolved (2026-09-23) in Phase 4 T7: anonymous rate-limit keys hash the /64 prefix of an IPv6 peer and the full address of an IPv4 peer (IPv4-mapped IPv6 counts as IPv4); `client_network` in `platform/ratelimit/middleware.py`.
 
 ## Q178 — Source citation lookup for public reads
 
@@ -1568,4 +1568,12 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** Until a `SourceCitationChecker` adapter exists, such sources are hidden from anonymous and non-member readers even when the citing event is public, so public event pages cannot link to their citizen sources.
 - **Proposed default:** No checker bound in Phase 3 (safe: nothing leaks). Phase 4 adds an events read `is_source_cited_by_public_event(source_id)` and wires it.
 - **Blocking:** no
-- **Status:** open (Phase 3 security review)
+- **Status:** resolved (2026-09-23) in Phase 4 T7: the events read port `EventCitationQueryService.is_source_cited_by_public_event` (SQL `EXISTS` on `source_ids @>`, `status = 'published'` and the verification case `verified`) answers `SourceCitationChecker` through `platform/wiring/provenance.py`, bound in `build_recording_services`. Only the event's own `source_ids` count (linked reports' sources are already added there); a source cited only by an impact claim stays hidden.
+
+## Q179 — Domain event fields that carry coordinates or free text
+
+- **Question:** `tests/architecture/test_outbox_payloads.py` lists 22 event fields (place and event centroids and bounding boxes, place names, retirement and merge reasons, relabel texts, claim values, asset locations) under `PENDING_REMOVAL`. Should they be dropped from the events so subscribers re-read the aggregate?
+- **Why it matters:** The outbox payload contract is ids and non-personal scalars only; today the only subscriber digests the payload, so nothing leaks, but a future subscriber could copy these fields.
+- **Proposed default:** Drop them module by module in a follow-up; the test refuses new offenders and any listed entry that stops offending must be removed from the list.
+- **Blocking:** no
+- **Status:** open (Phase 4 T7)

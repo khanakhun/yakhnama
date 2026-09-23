@@ -135,6 +135,7 @@ def test_production_problems_hardened_storage_reports_no_storage_problem() -> No
         environment="test",
         storage_endpoint_url="https://s3.eu-central-1.amazonaws.com",
         storage_secret_access_key=SecretStr("rotated-secret"),
+        storage_access_key_id="rotated-key-id",
         malware_scanner="clamav",
         clamav_host="clamd.internal",
     )

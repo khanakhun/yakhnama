@@ -57,6 +57,7 @@ from yakhnama.modules.audit.public import (
 from yakhnama.modules.events.infrastructure.queries import SqlAlchemyEventQueryService
 from yakhnama.modules.events.infrastructure.uow import SqlAlchemyEventsUnitOfWork
 from yakhnama.modules.events.public import (
+    EventCitationQueryService,
     EventHandlerDependencies,
     EventQueryService,
     EventRecordQueryService,
@@ -233,6 +234,7 @@ from yakhnama.platform.wiring.impacts import (
     ImpactSourceMarkerAdapter,
 )
 from yakhnama.platform.wiring.media import ReportSourceAdapter, ScanTaskAdapter
+from yakhnama.platform.wiring.provenance import SourceCitationCheckerAdapter
 from yakhnama.platform.wiring.reports import (
     MediaOwnershipAdapter,
     PhotoEvidenceAdapter,
@@ -452,6 +454,7 @@ def build_token_validator(
         leeway_seconds=settings.oidc_leeway_seconds,
         clock=clock,
         roles_claim=settings.oidc_roles_claim,
+        accepted_token_types=settings.oidc_accepted_token_types,
     )
     return validator, http_client
 
@@ -547,6 +550,9 @@ class RecordingReads:
         nearby_reports: The triage duplicate finder.
         media: Media reads with keys and EXIF (internal).
         events: Event reads joined with their verification state.
+        event_citations: Whether a public event cites a source, for the
+            provenance read side; ``None`` leaves citizen and organisation
+            sources private to non-members (fail closed).
         verification: Verification case reads.
         impacts: Impact claim and asset reads.
         audit: Audit log reads.
@@ -560,6 +566,7 @@ class RecordingReads:
     verification: VerificationQueryService
     impacts: ImpactQueryService
     audit: AuditQueryService
+    event_citations: EventCitationQueryService | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -677,12 +684,15 @@ def build_recording_reads(
     Returns:
         The read ports.
     """
+    # One instance answers both events read ports.
+    events = SqlAlchemyEventQueryService(session_factory)
     return RecordingReads(
         sources=SqlAlchemySourceQueryService(session_factory),
         reports=SqlAlchemyReportQueryService(session_factory, public_coordinates),
         nearby_reports=SqlAlchemyNearbyReportsFinder(session_factory),
         media=SqlAlchemyMediaQueryService(session_factory),
-        events=SqlAlchemyEventQueryService(session_factory),
+        events=events,
+        event_citations=events,
         verification=SqlAlchemyVerificationQueryService(session_factory),
         impacts=SqlAlchemyImpactQueryService(session_factory),
         audit=SqlAlchemyAuditQueryService(session_factory),
@@ -769,7 +779,14 @@ def build_recording_services(
     events_directory = HazardEventDirectoryAdapter(reads.events)
     return RecordingServices(
         source_registrar=registrar,
-        source_queries=AuthorisedSourceQueryService(reads.sources),
+        source_queries=AuthorisedSourceQueryService(
+            reads.sources,
+            citation_checker=(
+                None
+                if reads.event_citations is None
+                else SourceCitationCheckerAdapter(reads.event_citations)
+            ),
+        ),
         submit_report_handler=SubmitReportHandler(
             uow_factory=units.reports,
             source_registrar=registrar,

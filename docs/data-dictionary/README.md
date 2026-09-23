@@ -21,6 +21,11 @@ dictionary ... covers every new field, unit and meaning").
 - [`media.md`](media.md) — media assets, EXIF facts, scan and moderation status.
 - [`events.md`](events.md) — canonical hazard events, relations and report links.
 - [`verification.md`](verification.md) — verification cases and the state machine.
+- [`ingestion.md`](ingestion.md) — dataset catalog, versions, ingestion runs,
+  observations and the STAC-aligned raster catalog.
+- [`exchange.md`](exchange.md) — export and import jobs, metadata sidecars,
+  validation reports and the backfill row contract
+  (`src/yakhnama/modules/exchange/domain/`).
 
 ## Layout
 

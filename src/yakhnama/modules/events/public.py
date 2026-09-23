@@ -45,6 +45,7 @@ from yakhnama.modules.events.application.handlers import (
     UnlinkReportFromEventHandler,
 )
 from yakhnama.modules.events.application.ports import (
+    EventCitationQueryService,
     EventQueryService,
     EventRelationRepository,
     EventRepository,
@@ -79,6 +80,7 @@ __all__ = [
     "AffectedPlace",
     "CreateEventFromReports",
     "CreateEventFromReportsHandler",
+    "EventCitationQueryService",
     "EventDetail",
     "EventGeometry",
     "EventHandlerDependencies",

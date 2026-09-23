@@ -26,6 +26,7 @@ from yakhnama.platform.auth.tokens import (
     AccessTokenClaims,
     TokenValidator,
     claim_at,
+    normalise_token_type,
 )
 from yakhnama.shared_kernel.errors import AuthenticationError
 
@@ -449,3 +450,80 @@ def test_access_token_claims_time_problem_is_none_inside_window() -> None:
     problem = claims.time_problem(now, 0.0)
 
     assert problem is None
+
+
+@pytest.mark.parametrize(
+    "token_type", ["JWT", "jwt", "at+jwt", "AT+JWT", "application/at+jwt"]
+)
+async def test_validate_accepted_token_type_returns_principal(
+    clock: FrozenClock, token_type: str
+) -> None:
+    token = issue_token(
+        access_token_claims(), session_key_pair(), headers={"typ": token_type}
+    )
+
+    principal = await _validator(clock).validate(token)
+
+    assert principal.subject == "test-subject"
+
+
+async def test_validate_token_without_type_header_returns_principal(
+    clock: FrozenClock,
+) -> None:
+    # PyJWT drops a "typ" header whose value is None.
+    token = issue_token(
+        access_token_claims(), session_key_pair(), headers={"typ": None}
+    )
+
+    assert "typ" not in jwt.get_unverified_header(token)
+    principal = await _validator(clock).validate(token)
+    assert principal.subject == "test-subject"
+
+
+@pytest.mark.parametrize("token_type", ["ID", "id+jwt", "Refresh", "logout+jwt", 7])
+async def test_validate_other_token_type_is_rejected(
+    clock: FrozenClock, token_type: object
+) -> None:
+    token = issue_token(
+        access_token_claims(), session_key_pair(), headers={"typ": token_type}
+    )
+
+    reason = await _rejection_reason(_validator(clock), token)
+
+    assert reason == "token_type_not_accepted"
+
+
+async def test_validate_configured_token_types_replace_the_default(
+    clock: FrozenClock,
+) -> None:
+    validator = TokenValidator(
+        jwks_client=FakeJwksClient([session_key_pair()]),
+        issuer=TEST_ISSUER,
+        audience=TEST_AUDIENCE,
+        algorithms=("RS256",),
+        leeway_seconds=LEEWAY_SECONDS,
+        clock=clock,
+        accepted_token_types=("at+jwt",),
+    )
+    generic = issue_token(access_token_claims(), session_key_pair())
+    typed = issue_token(
+        access_token_claims(), session_key_pair(), headers={"typ": "at+jwt"}
+    )
+
+    reason = await _rejection_reason(validator, generic)
+    principal = await validator.validate(typed)
+
+    assert reason == "token_type_not_accepted"
+    assert principal.subject == "test-subject"
+
+
+@pytest.mark.parametrize(
+    ("token_type", "expected"),
+    [("JWT", "jwt"), ("application/AT+JWT", "at+jwt"), ("at+jwt", "at+jwt")],
+)
+def test_normalise_token_type_lowers_and_strips_application_prefix(
+    token_type: str, expected: str
+) -> None:
+    normalised = normalise_token_type(token_type)
+
+    assert normalised == expected

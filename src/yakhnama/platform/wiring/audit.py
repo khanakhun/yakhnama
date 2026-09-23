@@ -22,10 +22,12 @@ from types import MappingProxyType, ModuleType
 from typing import Final
 
 from yakhnama.modules.events.domain import events as events_events
+from yakhnama.modules.exchange.domain import events as exchange_events
 from yakhnama.modules.geography.domain import events as geography_events
 from yakhnama.modules.hazards.domain import events as hazards_events
 from yakhnama.modules.identity.domain import events as identity_events
 from yakhnama.modules.impacts.domain import events as impacts_events
+from yakhnama.modules.ingestion.domain import events as ingestion_events
 from yakhnama.modules.media.domain import events as media_events
 from yakhnama.modules.provenance.domain import events as provenance_events
 from yakhnama.modules.reports.domain import events as reports_events
@@ -44,6 +46,8 @@ EVENT_MODULES: Final[tuple[ModuleType, ...]] = (
     media_events,
     events_events,
     verification_events,
+    exchange_events,
+    ingestion_events,
 )
 """Every module's ``domain/events.py`` that defines domain events."""
 
