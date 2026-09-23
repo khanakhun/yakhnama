@@ -1,0 +1,166 @@
+# Administrative hierarchy FIXTURE for Gilgit-Baltistan.
+# Validated by PlaceReferenceFile
+# (src/yakhnama/modules/geography/domain/reference.py) in tests/unit/data/.
+#
+# This is test and development data, not a claim about the world: every entry has
+# status: fixture, there are no polygons, bounding boxes or centroids, and there are
+# no tehsils or villages. Real boundaries and hierarchy wait for the boundary data
+# source decision (open question Q1). The `division` level is itself a proposed
+# addition to the glossary hierarchy (docs/data-dictionary/geography.md).
+#
+# English names only (kind: official, is_preferred: true). A name in any other
+# language needs its own `source`.
+schema_version: 1
+data_version: "2026-09-23"
+source: "Fixture for development and tests; boundaries pending the maintainer's data-source decision (open question Q1)"
+licence: CC-BY-4.0 (proposed)
+entries:
+  - code: pk
+    level: country
+    names:
+      - text: Pakistan
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb
+    level: province_or_region
+    parent_code: pk
+    names:
+      - text: Gilgit-Baltistan
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.gilgit_division
+    level: division
+    parent_code: pk.gb
+    names:
+      - text: Gilgit Division
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.baltistan_division
+    level: division
+    parent_code: pk.gb
+    names:
+      - text: Baltistan Division
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.diamer_division
+    level: division
+    parent_code: pk.gb
+    names:
+      - text: Diamer Division
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.gilgit
+    level: district
+    parent_code: pk.gb.gilgit_division
+    names:
+      - text: Gilgit
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.hunza
+    level: district
+    parent_code: pk.gb.gilgit_division
+    names:
+      - text: Hunza
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.nagar
+    level: district
+    parent_code: pk.gb.gilgit_division
+    names:
+      - text: Nagar
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.ghizer
+    level: district
+    parent_code: pk.gb.gilgit_division
+    names:
+      - text: Ghizer
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.skardu
+    level: district
+    parent_code: pk.gb.baltistan_division
+    names:
+      - text: Skardu
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.shigar
+    level: district
+    parent_code: pk.gb.baltistan_division
+    names:
+      - text: Shigar
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.kharmang
+    level: district
+    parent_code: pk.gb.baltistan_division
+    names:
+      - text: Kharmang
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.ghanche
+    level: district
+    parent_code: pk.gb.baltistan_division
+    names:
+      - text: Ghanche
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.diamer
+    level: district
+    parent_code: pk.gb.diamer_division
+    names:
+      - text: Diamer
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)
+  - code: pk.gb.astore
+    level: district
+    parent_code: pk.gb.diamer_division
+    names:
+      - text: Astore
+        language: en
+        kind: official
+        is_preferred: true
+    status: fixture
+    source: Fixture for development and tests; not a sourced claim about boundaries or hierarchy (open question Q1)

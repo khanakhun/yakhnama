@@ -1,0 +1,161 @@
+# Impact metric registry reference data.
+# Validated by ImpactMetricReferenceFile
+# (src/yakhnama/modules/impacts/domain/reference.py) in tests/unit/data/.
+#
+# Rules (see data/reference/README.md):
+# - Codes are never removed, renamed or reused; unit, kind, category and aggregation
+#   never change once a metric exists. A new definition is a new code and the old one
+#   is retired with `retirement.replaced_by`.
+# - `source` covers the definition and every mapping of the entry; `proposed` until the
+#   maintainer confirms them.
+# - `sendai` is set only where the indicator is a direct count of the same thing;
+#   everything else is null with the candidate in `notes`. `desinventar` stays null
+#   until field names are sourced.
+# - No monetary metrics: currency handling needs an ADR first.
+# - Aggregation follows the proposed defaults in docs/data-dictionary/impacts.md:
+#   `sum` for counts, `max` for measurements.
+schema_version: 1
+data_version: "2026-09-23"
+source: >-
+  proposed. Sendai indicator codes as listed in the report of the open-ended
+  intergovernmental expert working group on indicators (UN General Assembly
+  A/71/644, 2016); every mapping to them is proposed.
+licence: CC-BY-4.0 (proposed, see ADR 0010)
+entries:
+  # ------------------------------------------------------------------------ human
+  - code: deaths
+    labels:
+      en: Deaths
+    category: human
+    value_kind: count
+    unit: count
+    sendai:
+      code: A-2
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Proposed mapping to Sendai A-2 (number of deaths attributed to disasters).
+      A-1 is the compound per-100,000 indicator of deaths and missing persons and
+      is derived, not stored.
+  - code: missing_persons
+    labels:
+      en: Missing persons
+    category: human
+    value_kind: count
+    unit: count
+    sendai:
+      code: A-3
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Proposed mapping to Sendai A-3 (number of missing persons attributed to
+      disasters).
+  - code: injured_or_ill
+    labels:
+      en: Injured or ill people
+    category: human
+    value_kind: count
+    unit: count
+    sendai:
+      code: B-2
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Proposed mapping to Sendai B-2 (number of injured or ill people attributed
+      to disasters).
+  - code: people_affected
+    labels:
+      en: People affected
+    category: human
+    value_kind: count
+    unit: count
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Sendai B-1 is a compound per-100,000 indicator of directly affected people,
+      so no direct mapping is set. What counts as "affected" is not yet defined
+      and overlaps with the other human metrics (best-figure policy, Phase 3).
+  # ---------------------------------------------------------------------- housing
+  - code: houses_damaged
+    labels:
+      en: Houses damaged
+    category: housing
+    value_kind: count
+    unit: count
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Number of dwellings damaged but not destroyed. No Sendai mapping: B-3 counts
+      people whose dwellings were damaged and C-4 is an economic loss, neither a
+      count of houses. The damaged / destroyed threshold is not defined yet.
+  - code: houses_destroyed
+    labels:
+      en: Houses destroyed
+    category: housing
+    value_kind: count
+    unit: count
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Number of dwellings destroyed. No Sendai mapping: B-4 counts people whose
+      dwellings were destroyed, not houses.
+  # --------------------------------------------------------------- infrastructure
+  - code: roads_damaged
+    labels:
+      en: Road sections damaged or destroyed
+    category: infrastructure
+    value_kind: count
+    unit: count
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Number of distinct road sections reported damaged, destroyed or blocked. The
+      unit of counting (section, blockage) is proposed; a length in metres may suit
+      better. Candidate Sendai D-4 (other critical infrastructure) is not set
+      because the technical guidance may measure roads by length.
+  - code: bridges_damaged
+    labels:
+      en: Bridges damaged or destroyed
+    category: infrastructure
+    value_kind: count
+    unit: count
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Number of bridges damaged or destroyed, including footbridges. Candidate
+      Sendai D-4 (other critical infrastructure) is not set until confirmed.
+  # ------------------------------------------------------------------ agriculture
+  - code: livestock_lost
+    labels:
+      en: Livestock lost
+    category: agriculture
+    value_kind: count
+    unit: count
+    aggregation: sum
+    status: active
+    source: proposed
+    notes: >-
+      Number of animals killed or lost, all species together. Sendai C-2 is an
+      economic loss and its livestock sub-indicator may not fit the code pattern,
+      so no mapping is set.
+  - code: cropland_affected
+    labels:
+      en: Cropland affected
+    category: agriculture
+    value_kind: measurement
+    unit: square_metre
+    aggregation: max
+    status: active
+    source: proposed
+    notes: >-
+      Area of cropland damaged or destroyed, stored in square metres (SI);
+      hectares and kanals are converted on input. Aggregation is max, the proposed
+      default for peak measurements. No Sendai mapping (C-2 is economic).

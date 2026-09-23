@@ -1,0 +1,152 @@
+# Hazard taxonomy reference data.
+# Validated by HazardTypeReferenceFile
+# (src/yakhnama/modules/hazards/domain/reference.py) in tests/unit/data/.
+#
+# Rules (see data/reference/README.md):
+# - Codes are never removed, renamed or reused. A retired entry keeps its code with
+#   status: retired and a retirement reason.
+# - `source` is a citation, or the word `proposed` until the entry is confirmed.
+# - English labels only. A label in any other language needs a cited source
+#   (open question Q2).
+# - `attributes_schema` names a code registered in
+#   yakhnama.modules.hazards.domain.attributes.DEFAULT_REGISTRY.
+# - Every `alignment` below is a candidate from docs/data-dictionary/hazards.md
+#   (QH-1) and must be checked against the IRDR 2014 publication.
+schema_version: 1
+data_version: "2026-09-23"
+source: >-
+  Family and main-event names: IRDR Peril Classification and Hazard Glossary
+  (IRDR DATA Publication No. 1), 2014. Codes, labels, tree and placements: proposed.
+licence: CC-BY-4.0 (proposed, see ADR 0010)
+entries:
+  # ---------------------------------------------------------------- abstract parents
+  - code: flood
+    labels:
+      en: Flood
+    alignment:
+      family: hydrological
+      main_event: Flood
+    status: active
+    source: IRDR Peril Classification and Hazard Glossary, 2014
+    notes: >-
+      Abstract parent grouping flood types. Placement is the IRDR hydrological main
+      event "Flood"; the code and label are ours. GLOF is deliberately not a child:
+      IRDR files it under the climatological family (QH-1).
+  - code: mass_movement
+    labels:
+      en: Mass movement
+    alignment:
+      family: hydrological
+      main_event: Landslide
+    status: active
+    source: proposed
+    notes: >-
+      Abstract parent grouping wet mass movements. Mirrors the IRDR hydrological
+      main event "Landslide"; the code and label "Mass movement" are proposed. Dry
+      rockfall (IRDR geophysical "Mass movement (dry)") would be a separate type
+      added only when needed (QH-1).
+  - code: convective_storm
+    labels:
+      en: Convective storm
+    alignment:
+      family: meteorological
+      main_event: Convective storm
+    status: active
+    source: IRDR Peril Classification and Hazard Glossary, 2014
+    notes: >-
+      Abstract parent for cloudburst. Placement is the IRDR meteorological main
+      event "Convective storm"; the code and label are ours.
+  # ---------------------------------------------------- attribute-bearing leaves
+  - code: glof
+    labels:
+      en: Glacial lake outburst flood
+    alignment:
+      family: climatological
+      main_event: Glacial lake outburst
+    attributes_schema: glof
+    status: active
+    source: proposed
+    notes: >-
+      Root type rather than a child of flood because the QH-1 candidate places it
+      in the IRDR climatological family (main event "Glacial lake outburst"), not
+      under the hydrological main event "Flood". Placement to confirm (QH-1).
+  - code: flash_flood
+    parent: flood
+    labels:
+      en: Flash flood
+    alignment:
+      family: hydrological
+      main_event: Flood
+      peril: Flash flood
+    attributes_schema: flash_flood
+    status: active
+    source: proposed
+    notes: >-
+      QH-1 candidate: hydrological / Flood / Flash flood. Placement to confirm.
+  - code: landslide
+    parent: mass_movement
+    labels:
+      en: Landslide
+    alignment:
+      family: hydrological
+      main_event: Landslide
+    attributes_schema: landslide
+    status: active
+    source: proposed
+    notes: >-
+      QH-1 candidate: hydrological / Landslide with no peril. Dry rockfalls may
+      belong under geophysical / Mass movement (dry) instead; to confirm (QH-1).
+  - code: debris_flow
+    parent: mass_movement
+    labels:
+      en: Debris flow
+    alignment:
+      family: hydrological
+      main_event: Landslide
+    attributes_schema: debris_flow
+    status: active
+    source: proposed
+    notes: >-
+      QH-1 candidate: hydrological / Landslide. No IRDR peril is set because the
+      matching peril name is not confirmed; to check against the publication (QH-1).
+  - code: avalanche
+    parent: mass_movement
+    labels:
+      en: Avalanche
+    alignment:
+      family: hydrological
+      main_event: Landslide
+      peril: Avalanche
+    attributes_schema: avalanche
+    status: active
+    source: proposed
+    notes: >-
+      QH-1 candidate: hydrological / Landslide / Avalanche. Placement to confirm.
+  - code: cloudburst
+    parent: convective_storm
+    labels:
+      en: Cloudburst
+    alignment:
+      family: meteorological
+      main_event: Convective storm
+    attributes_schema: cloudburst
+    status: active
+    source: proposed
+    notes: >-
+      QH-1 candidate: meteorological / Convective storm; the IRDR peril name is not
+      confirmed, so no peril is set. No intensity or duration threshold defines a
+      cloudburst yet (QH-2).
+  - code: glacier_surge
+    labels:
+      en: Glacier surge
+    alignment:
+      family: climatological
+      main_event: Glacial lake outburst
+    attributes_schema: glacier_surge
+    status: active
+    source: proposed
+    notes: >-
+      No IRDR peril fits a glacier surge (QH-1). The model requires a main event,
+      so the only glacier-related climatological main event is used as a
+      placeholder; this placement is flagged and must not be read as a claim that
+      a surge is an outburst. Root type for the same reason.
