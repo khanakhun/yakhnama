@@ -20,6 +20,12 @@ from yakhnama.modules.hazards.application.queries import (
     GetHazardType,
     ListHazardTypes,
 )
+from yakhnama.modules.hazards.domain.attributes import (
+    DEFAULT_REGISTRY,
+    HazardAttributeRegistry,
+    HazardAttributes,
+    HazardAttributesUnion,
+)
 from yakhnama.modules.hazards.domain.reference import HazardTypeReferenceFile
 from yakhnama.modules.hazards.domain.value_objects import (
     HazardCode,
@@ -28,7 +34,11 @@ from yakhnama.modules.hazards.domain.value_objects import (
 )
 
 __all__ = [
+    "DEFAULT_REGISTRY",
     "GetHazardType",
+    "HazardAttributeRegistry",
+    "HazardAttributes",
+    "HazardAttributesUnion",
     "HazardCode",
     "HazardTypeDetail",
     "HazardTypeQueryService",

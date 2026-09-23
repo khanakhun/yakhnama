@@ -15,6 +15,12 @@ dictionary ... covers every new field, unit and meaning").
   (`src/yakhnama/modules/impacts/domain/`).
 - [`identity.md`](identity.md) — users mirrored from OIDC, organisations,
   memberships, roles and policies (`src/yakhnama/modules/identity/domain/`).
+- [`provenance.md`](provenance.md) — sources, citations, licences; immutable once referenced.
+- [`audit.md`](audit.md) — append-only audit entries written by the outbox subscriber.
+- [`reports.md`](reports.md) — raw observations, revisions and triage suggestions.
+- [`media.md`](media.md) — media assets, EXIF facts, scan and moderation status.
+- [`events.md`](events.md) — canonical hazard events, relations and report links.
+- [`verification.md`](verification.md) — verification cases and the state machine.
 
 ## Layout
 
