@@ -222,6 +222,93 @@ checked by an identity policy (`docs/data-dictionary/identity.md`, "Policies").
 | `GET` | `/api/v1/docs` | anon | Only when `docs_enabled`; excluded from the OpenAPI document itself. |
 | `GET` | `/api/v1/openapi.json` | anon | Only when `docs_enabled`. |
 
+## Phase 3 additions
+
+Phase 3 (`docs/plans/phase-3.md`) added the `reports`, `media`, `events`,
+`verification`, `impacts` (claims, assets, damage) and `provenance` routes below.
+The conventions above (Problem Details, pagination, `Idempotency-Key`,
+`ETag`/`If-Match`, rate limiting, security headers) apply unchanged; this section
+adds what is specific to recording data. See
+[`recording.md`](recording.md) for the end-to-end flow and the reporter privacy
+rules these routes enforce.
+
+### GeoJSON for reports and events
+
+`GET /reports` and `GET /events` negotiate GeoJSON the same way as `GET /places`
+(`?format=geojson` or `Accept: application/geo+json`, `?format=` winning,
+`Vary: Accept` always). `GET /events/{event_id}` also negotiates; its GeoJSON
+geometry is the event's own `geometry` when set, else its `centroid` as a `Point`,
+else `null`. `GET /reports` places each report at its **rounded** public point;
+the exact position never appears in a GeoJSON response, list or otherwise. The
+list forms carry their next page only in the `Link` header (a `FeatureCollection`
+has no room for `next_cursor`).
+
+### Report submission replay
+
+`POST /reports` is idempotent twice over. First, on the client's own
+`client_report_id` (a UUIDv7 sent in the body): a retried submission with the
+same id returns the **stored report again**, `201` with the identical body,
+because the handler has no way to tell a retry from the very first call apart
+from that id. Second, on `Idempotency-Key` through the platform middleware
+(optional, same semantics as every other creating `POST`, see above). Both
+mechanisms may be used together; they answer different failure modes (an offline
+client resubmitting later versus a client retrying the same HTTP request).
+
+### Media visibility
+
+`GET /media/{asset_id}` is anonymous. An anonymous caller, or any authenticated
+caller who is neither the uploader nor a moderator, sees a **published** asset
+only, and only its EXIF-stripped **public copy** — never the private original,
+never its EXIF facts, never an unpublished or rejected asset (reported as
+missing, the same "not found, not forbidden" rule reports and events use). The
+uploader and moderators additionally see the private original's presigned
+download link. Moderation of media happens at
+`POST /moderation/media/{asset_id}/decision`, `CanModerate` required.
+
+### Route table (Phase 3)
+
+Auth column as above. `M` marks a route under `/api/v1/moderation`, requiring
+`CanModerate` first, unless noted otherwise.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `POST` | `/api/v1/reports` | auth | `Idempotency-Key` optional; idempotent on `client_report_id`; `201`, `Location`, `ETag`. |
+| `GET` | `/api/v1/reports` | auth | Moderators see every report; others only their own; cursor pagination; GeoJSON negotiation; always rounded. |
+| `GET` | `/api/v1/reports/{report_id}` | auth | Exact view for the reporter and moderators; rounded, no accuracy, for organisation members; `ETag`. |
+| `POST` | `/api/v1/reports/{report_id}/revisions` | auth | Reporter only (`IsSelf`); required `If-Match`; `201`, `Location`, `ETag`. |
+| `POST` | `/api/v1/reports/{report_id}/withdrawal` | auth | Reporter only; required `If-Match`; `ETag`. |
+| `POST` | `/api/v1/media` | auth | Presigned upload grant before the report exists; `Idempotency-Key` optional; `201`, `Location`. |
+| `POST` | `/api/v1/reports/{report_id}/media` | auth | Presigned upload grant for the caller's own report; same as above. |
+| `POST` | `/api/v1/media/{asset_id}/complete` | auth | Uploader only; safe to repeat; `ETag`. |
+| `GET` | `/api/v1/media/{asset_id}` | anon | See "Media visibility" above; `ETag`. |
+| `POST` | `/api/v1/moderation/media/{asset_id}/decision` | auth (policy, M) | `CanModerate`; approves/rejects, sets sensitivity, may publish the public copy; `ETag`. |
+| `GET` | `/api/v1/events` | anon | Only `published` and `verified` events, unless the caller can moderate; cursor pagination; GeoJSON negotiation. |
+| `GET` | `/api/v1/events/{event_id}` | anon | Same visibility rule; `ETag`; GeoJSON negotiation. |
+| `GET` | `/api/v1/events/{event_id}/timeline` | anon | Same visibility rule; observations, period, verification transitions and claims in timeline order. |
+| `GET` | `/api/v1/events/{event_id}/impacts` | anon | Follows the event's own visibility; best figure per metric plus every claim, active and retracted; no moderator names, no retraction reasons or notes. |
+| `GET` | `/api/v1/infrastructure-assets/{asset_id}` | anon | Public reference data; `ETag`. |
+| `POST` | `/api/v1/moderation/events` | auth (policy, M) | Creates a draft event from report ids (`EventFactory.from_reports`); `Idempotency-Key` optional; `201`, `Location`, `ETag`. |
+| `PATCH` | `/api/v1/moderation/events/{event_id}` | auth (policy, M) | Geometry, period and/or attributes; one command per member sent; optional `If-Match` (narrows, does not close, a race — open question); `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/reports` | auth (policy, M) | Links a report with a role; optional `If-Match`; `ETag`. |
+| `DELETE` | `/api/v1/moderation/events/{event_id}/reports/{report_id}` | auth (policy, M) | Unlinks with a reason (JSON body, RFC 9110 §9.3.5); optional `If-Match`; `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/places` | auth (policy, M) | Adds an affected place with a kind; optional `If-Match`; `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/relations` | auth (policy, M) | Relates this event to another (`triggered_by`/`part_of`/`same_as`); optional `If-Match`; `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/publication` | auth (policy, M) | Sets `status=published`; does not itself require `verified` (open question); optional `If-Match`; `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/retraction` | auth (policy, M) | Sets `status=retracted` with a reason; final; optional `If-Match`; `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/merge` | auth (policy, M) | Sets `status=merged`, points at the survivor; final; optional `If-Match`; `ETag`. |
+| `GET` | `/api/v1/moderation/verification-cases` | auth (policy, M) | `CanModerate`; filters on state, target kind, assignee; cursor pagination. |
+| `GET` | `/api/v1/moderation/verification-cases/{case_id}` | auth (policy, M) | With history and `ETag`. |
+| `POST` | `/api/v1/moderation/verification/{case_id}/transitions` | auth (policy, M) | Moves the case; the API always sends `is_human=True`; `verified` reachable only this way; a reason is required for every target except `submitted`; optional `If-Match`; `ETag`. |
+| `POST` | `/api/v1/moderation/verification/{case_id}/assignment` | auth (policy, M) | Sets the reviewer; not allowed on `rejected`/`retracted` cases; optional `If-Match`; `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/impact-claims` | auth (policy, M) | Records a claim; `Idempotency-Key` optional; `201`. |
+| `POST` | `/api/v1/moderation/impact-claims/{claim_id}/retraction` | auth (policy, M) | `204`; no read route for one claim outside `/events/{id}/impacts` (open question). |
+| `POST` | `/api/v1/moderation/impact-claims/{claim_id}/correction` | auth (policy, M) | New claim, old one retracted, same unit of work; `Idempotency-Key` optional; `201`. |
+| `POST` | `/api/v1/moderation/infrastructure-assets` | auth (policy, M) | Registers an asset; `Idempotency-Key` optional; `201`, `Location`, `ETag`. |
+| `POST` | `/api/v1/moderation/events/{event_id}/damage-records` | auth (policy, M) | Records damage to an asset; `Idempotency-Key` optional; `201`; no read route for one damage record (open question). |
+| `GET` | `/api/v1/sources` | anon | Cursor pagination; optional `source_type` filter. |
+| `GET` | `/api/v1/sources/{source_id}` | anon | `ETag`. |
+| `POST` | `/api/v1/moderation/sources` | auth (policy, M) | Registers a `government`/`news`/`satellite`/`research`/`dataset` source (citizen and organisation sources are registered by the platform itself at report submission); `Idempotency-Key` optional; `201`, `Location`, `ETag`. |
+
 ## OpenAPI snapshot and contract tests
 
 `tests/contract/openapi.json` is the committed HTTP contract (`tests/contract/README.md`).
@@ -252,5 +339,7 @@ for self-hosting it with an integrity hash.
 - `docs/adr/0014-scalar-api-reference.md`, `0015-jwt-validation-with-pyjwt-and-a-cached-jwks.md`,
   `0016-idempotency-keys-in-postgresql.md`, `0017-rate-limiting-behind-a-port.md`.
 - `docs/data-dictionary/identity.md` — the `identity` module's fields, roles and policies.
+- `docs/architecture/recording.md` — the Phase 3 recording flow, reporter privacy rules,
+  task schedules and outbox semantics behind the routes in "Phase 3 additions".
 - `docs/open-questions.md` — Q58–Q70 record the authorisation and API defaults this page
-  documents that are not yet maintainer-confirmed.
+  documents that are not yet maintainer-confirmed; Q77 onward record the Phase 3 ones.

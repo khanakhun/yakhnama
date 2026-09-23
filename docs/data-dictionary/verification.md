@@ -74,6 +74,22 @@ Reason text is never in a payload.
 | `verification.verification_transitioned` | `from_state`, `to_state`, `actor_id`, `is_human`, `has_reason` |
 | `verification.verification_assigned` | `reviewer_id`, `previous_reviewer_id`, `assigned_by` |
 
+## Persistence
+
+`verification_cases` (migration `0013_verification`) stores `initial_state`
+as its own `NOT NULL` column, separate from `state`: `state` is the case's
+current, moving position, while `initial_state` is fixed at row creation and
+never updated, so the state the case was opened in (see "Initial states"
+above) stays recoverable even after `history` has grown past it. `history` is
+stored as one JSONB array per row (replayed against the transition table on
+every read, as the domain requires) rather than a separate table, since a
+case's history is always read and written as a whole with the case. `UNIQUE
+(target_kind, target_id)` enforces "one case per target for life" at the
+database level; it also serves the events read model's join on
+`target_kind = 'event'`. `target_id` carries no foreign key, because reports,
+events and claims belong to other modules. Indexes on `state`, `assigned_to`
+and `(created_at, id)` serve the moderator listings.
+
 ## Open questions
 
 - **Initial states.** Reports and claims open in `submitted`, events in `draft`.

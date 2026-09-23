@@ -141,6 +141,20 @@ poetry run pre-commit install
 poetry run poe check       # everything CI runs
 ```
 
+Reports, media, events, verification and impact claims (from Phase 3) go through
+background tasks — triage, malware scanning, the outbox relay and idempotency purge — run
+by a Taskiq worker, with periodic tasks enqueued by exactly one scheduler process per
+deployment:
+
+```bash
+poetry run poe worker      # runs every task (needs YAKHNAMA_TASK_QUEUE_BACKEND=redis)
+poetry run poe scheduler   # enqueues the periodic tasks; run exactly one per deployment
+```
+
+See `docs/architecture/recording.md` for the full report-to-event flow (submission,
+triage, media upload and moderation, event creation, impact claims, verification) and
+`docs/architecture/media.md` for the upload, EXIF-stripping and malware-scanning pipeline.
+
 If a default port is already taken on your machine, override it in `.env` before running
 `poe up`: `POSTGRES_HOST_PORT`, `MINIO_HOST_PORT`, `MINIO_CONSOLE_HOST_PORT`,
 `KEYCLOAK_HOST_PORT` and `REDIS_HOST_PORT`.
@@ -206,6 +220,8 @@ task below is defined in `pyproject.toml` under `[tool.poe.tasks]`.
 | `poetry run poe security` | `gitleaks` secret scan and `pip-audit` dependency audit |
 | `poetry run poe openapi-snapshot` | Regenerate `tests/contract/openapi.json` from the app factory |
 | `poetry run poe contract` | Verify the committed OpenAPI snapshot still matches the app |
+| `poetry run poe worker` | Run a Taskiq worker for background tasks (from Phase 3; needs `YAKHNAMA_TASK_QUEUE_BACKEND=redis`) |
+| `poetry run poe scheduler` | Run the Taskiq scheduler for periodic tasks (from Phase 3; run exactly one per deployment) |
 | `poetry run poe up` / `down` | Start or stop PostGIS, MinIO, Keycloak, Redis |
 | `poetry run poe docs` | Serve this documentation site locally (`mkdocs serve`) |
 | `poetry run poe check` | Everything CI runs, in order — green here means green in CI |
@@ -256,15 +272,15 @@ docs/   adr/ architecture/ data-dictionary/ plans/
 
 ## Status
 
-**Phase 2: identity, authentication and API foundations — complete (pending review)**, per
-`docs/plans/phase-2.md` (approved in advance by the maintainer). Bearer-JWT authentication
-validated against an OIDC provider's JWKS, the `identity` module (users mirrored from
-tokens, organisations, memberships, Policy-based authorisation), the API foundations every
-endpoint relies on (RFC 9457 Problem Details, cursor pagination, `Idempotency-Key`,
-`ETag`/`If-Match`, rate limiting, CORS and security headers), the first public read
-endpoints for reference data, a self-hosted Scalar API reference, and the first committed
-OpenAPI snapshot with its contract test all exist. See `docs/architecture/api.md` and
-`docs/architecture/auth.md` for the details. Reports, events and media remain Phase 3.
+**Phase 3: core recording — complete (pending review)**, per `docs/plans/phase-3.md`
+(approved in advance by the maintainer). Report submission and revision with a Chain of
+Responsibility triage that only suggests, presigned media upload with EXIF handling and
+SHA-256 deduplication, moderator-created events linked to reports, append-only impact
+claims with a documented best-figure policy, a `verification` state machine governing every
+report, event and claim, and an append-only `audit` log written by an outbox subscriber all
+exist, behind a Taskiq task queue for the outbox relay and background work. See
+`docs/architecture/recording.md` for the end-to-end flow and
+`docs/architecture/api.md` for the route table.
 
 Roadmap:
 
@@ -276,12 +292,13 @@ Roadmap:
 - **Phase 2 — Identity, authentication and API foundations.** Bearer-JWT authentication,
   the `identity` module, the API foundations (Problem Details, pagination, idempotency,
   concurrency, rate limiting), the first public read endpoints and an OpenAPI snapshot
-  with contract tests. Complete (pending review).
+  with contract tests. Complete.
+- **Phase 3 — Core recording.** `provenance`, `audit`, `reports`, `media`, `events`,
+  `verification` and the `impacts` claims/assets/damage extension, the Taskiq task queue,
+  and the recording API. Complete (pending review).
 
-Phases 3–4 are planned, each subject to an approved `docs/plans/phase-N.md`:
+Phase 4 is planned, subject to an approved `docs/plans/phase-4.md`:
 
-- **Phase 3 — Core domain.** Scope defined in `docs/plans/phase-3.md` when it is written
-  and approved; expected to build out reports, verification, events and impact claims.
 - **Phase 4 — Data sources.** External source adapters and import/export formats; see
   `docs/architecture/data-sources.md`, added in this phase.
 

@@ -110,6 +110,15 @@ carry a title, citation, URL, publisher or licence text.
 | `SourceImmutableError` | `invalid_transition` | A referenced source is asked to change. |
 | `InvalidSourceUrlError` | `validation_error` | `parse_source_url` gets a URL that breaks the rules. The URL is never repeated in the error, because it may carry a token. |
 
+## Persistence
+
+`sources` (migration `0008_provenance`) stores one row per `Source`, with `licence`
+as a JSONB object and `retrieved_at` split into an instant plus
+`retrieved_at_precision` (both `NULL` together, enforced by a check constraint).
+`owner_actor_id` and `organization_id` carry no foreign key, because users and
+organisations belong to the `identity` module. Indexes: `source_type`,
+`owner_actor_id`, and `(created_at, id)` for the newest-first keyset listing.
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |

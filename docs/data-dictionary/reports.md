@@ -125,6 +125,23 @@ reason, coordinate or accuracy.
 | `ReportRevisionUnchangedError` | validation | A revision's content equals the current content. |
 | `ReportSupersessionMismatchError` | invariant violation | `mark_superseded` with a report that is not the next revision by the same reporter. |
 
+## Persistence
+
+`reports` (migration `0010_reports`) stores one row per revision. `observation`
+is the reporter's exact, private WGS84 point with a GiST index for the future
+distance queries duplicate suspicion and moderator maps need; it is never
+stored rounded. **The rounded-point rule lives outside storage**: every row
+always holds the exact point, and `AuthorisedReportQueryService`
+(`shared_kernel.privacy.PublicCoordinatePolicy`) rounds it to
+`public_coordinate_decimals` only when building a non-exact view for a
+response, so the rounding rule can change (a different `decimals` setting, or a
+different policy entirely) without a migration or a backfill. `UNIQUE
+(supersedes_id)` enforces "at most one revision replaces a report" at the
+database level, backing `ReportSupersessionMismatchError`. `supersedes_id` and
+`superseded_by_id` both reference `reports.id` (`ON DELETE RESTRICT`; reports
+are never deleted anyway). Reporter, organisation and source ids carry no
+foreign key, because they belong to other modules.
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |

@@ -143,6 +143,36 @@ the outbox.
 | `events.event_merged` | `target_event_id` |
 | `events.events_related` | `to_event_id`, `kind` (`aggregate_id` is the relation's start) |
 
+## Persistence
+
+`events`, `event_relations` and `event_report_links` (migration `0012_events`)
+add mapper-derived and projection detail beyond the domain model:
+
+- **`period_earliest_at` / `period_latest_at`.** Two extra, `NOT NULL` columns
+  derived by the mapper from `period.started_at` and `period.ended_at` (`ended_at`
+  falling back to `started_at` when unset), checked `period_earliest_at <=
+  period_latest_at`. They exist purely to make search fast: `EventPeriodOverlapsSpecification`
+  compiles to a range comparison against these two columns, and
+  `ix_events_period_earliest_at_id` serves the keyset listing, instead of
+  recomputing the domain's precision-aware period rule in SQL on every query.
+  `geometry` and `centroid` each get their own explicit GiST index, and
+  `affected_places` a GIN index for place search.
+- **`event_report_links`.** A narrow table, keyed by `(event_id, report_id)`, that
+  projects only the *current* report links (not `unlinked_reports`, which stays
+  inside the `events` row's JSONB, append-only) for fast lookup "which events
+  link this report". `ON DELETE CASCADE` on `event_id` (unlike every other
+  foreign key into `events`, which is `RESTRICT`), because the projection is
+  disposable and is rebuilt from the aggregate, not a source of truth itself.
+- **Key-derived relation ids.** `event_relations.id` and every other id in these
+  three tables are the platform's UUIDv7s, generated the same way as every other
+  aggregate id (not a composite or hash-derived key); "key-derived" here refers
+  to the **uniqueness** key, `UNIQUE (from_event_id, to_event_id, kind)`, which
+  is what actually enforces the domain's "no relation twice" rule at the
+  database level, alongside a check that the two ends differ.
+
+`merged_into` references `events.id` (`ON DELETE RESTRICT`; events are never
+deleted). `hazard_code` and `status` are indexed for filtering.
+
 ## Open questions
 
 - **Event status set.** `draft | published | retracted | merged`, with `retracted` and

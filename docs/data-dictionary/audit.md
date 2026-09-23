@@ -69,6 +69,24 @@ Changing any of these rules changes every digest, so it needs an ADR.
 
 None. See [Principles](#principles).
 
+## Persistence
+
+`audit_entries` (migration `0009_audit`) adds a `recorded_at` column beside the
+domain's `occurred_at`: it is set by the database itself
+(`server_default=now()`), never by application code, so it records exactly when
+the row was written (Q-A5's persistence answer: a database default column,
+kept separate from the domain model). `event_id` is unique, so a redelivered
+outbox message is recorded once. **Append-only guard.** A `BEFORE UPDATE OR
+DELETE ... FOR EACH ROW` trigger (`audit_entries_reject_change`) raises on any
+attempt to change or delete a row, backing the domain's `AuditEntryImmutableError`
+with a database-level guarantee that holds even against a direct SQL session.
+`TRUNCATE` is a table-level privilege granted separately and is **not** covered by
+the trigger; production roles must not be granted it. This is an open question for
+the maintainer, together with a dedicated role holding only `INSERT` and
+`SELECT` on the table (see "Open questions" below). Indexes:
+`(occurred_at, id)` for the whole-log listing and
+`(target_type, target_id, occurred_at, id)` for the per-target listing.
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |
@@ -78,3 +96,4 @@ None. See [Principles](#principles).
 | Q-A3 | Is every actor either a user with an id or the system without one? Are there service accounts or organisations acting as actors? | Only `user` and `system`. | no |
 | Q-A4 | `action` allows 64 characters and `target_type` 64, but an event's `event_type` allows 100 and `aggregate_type` 100. An event beyond 64 cannot be audited. Should the limits match? | Keep 64 in audit and keep event types short. The outbox subscriber fails loudly on a longer one rather than truncating it. | no |
 | Q-A5 | Should the entry also record when it was written (`recorded_at`), separate from `occurred_at`? | Not in the domain. Persistence may add a database default column. | no |
+| Q-A6 | The append-only trigger (migration `0009_audit`) rejects `UPDATE`/`DELETE` but not `TRUNCATE`, which is a separate, table-level privilege. Should a dedicated database role with only `INSERT` and `SELECT` on `audit_entries` be created, so no production role can be granted `TRUNCATE` on it? | Yes; not yet done. | no |

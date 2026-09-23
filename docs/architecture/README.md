@@ -291,6 +291,54 @@ pagination, idempotency, concurrency and content negotiation. See
 [`api.md`](api.md) for the full reference, including the route table with each route's
 authentication and authorisation requirement.
 
+## Phase 3 state
+
+Phase 3 (`docs/plans/phase-3.md`) added the seven modules below (four domain
+groups: provenance/audit, reports/media, events/verification, impacts extension),
+the Taskiq task worker and scheduler, and the audit outbox subscriber. This
+section records what actually exists after Phase 3;
+[`recording.md`](recording.md) is the detailed companion for the end-to-end flow,
+[`api.md`](api.md#phase-3-additions) for the route table, and
+[`best-figure.md`](best-figure.md) for the impact aggregation policy.
+
+### Module map (Phase 3 addition)
+
+| Module | Owns | Key rule | Status |
+|--------|------|----------|--------|
+| `provenance` | `Source` (citizen, organisation, government, news, satellite, research, dataset) | Immutable once any fact cites it (`is_referenced`); a correction registers a new source (`docs/data-dictionary/provenance.md`). | domain + application + persistence + API |
+| `audit` | `AuditEntry`, the append-only audit log | Ids, codes and SHA-256 digests only, never free text; written after commit by an outbox subscriber; no update or delete path (`docs/data-dictionary/audit.md`). | domain + application + persistence (no API; internal record) |
+| `reports` | `Report`, revisions, triage | Never edited after submission; corrections are new revisions; triage (Chain of Responsibility) only suggests, never blocks or edits (`docs/data-dictionary/reports.md`). | domain + application + persistence + API |
+| `media` | `MediaAsset`, the private original and the EXIF-stripped public copy | The original's EXIF, including location, is never published; publication needs a clean scan, an approval and no blocking sensitivity flag (`docs/data-dictionary/media.md`). | domain + application + persistence + API + adapters |
+| `events` | `Event`, `EventRelation`, report links | The canonical record, created from reports by a Factory; public reads require both `published` and `verified` (`docs/data-dictionary/events.md`). | domain + application + persistence + API |
+| `verification` | `VerificationCase` per report, event or claim | The §6.3 transition table; a reason is required except for `submitted`; only a human reaches `verified` (`docs/data-dictionary/verification.md`). | domain + application + persistence + API |
+| `impacts` (extension) | `ImpactClaim`, `InfrastructureAsset`, `DamageRecord`, the best figure | Claims and damage are append-only; the best figure is a derived read model, never stored as a fact (`docs/data-dictionary/impacts.md`, `best-figure.md`). | domain + application + persistence + API |
+
+### Platform pieces added in Phase 3
+
+- **`platform/tasks/`** — the `TaskQueue` port (`shared_kernel`, ADR 0008) bound to a
+  Taskiq adapter with a Redis broker in production and an in-memory fake in tests.
+  `TaskHandlerRegistry` (Registry) maps each task name to the handler the
+  composition root bound for it; `platform/tasks/scheduled.py` attaches Taskiq
+  `schedule` labels for the periodic tasks, read by a `LabelScheduleSource`, so
+  `poetry run poe scheduler` needs no storage of its own. `poetry run poe worker`
+  runs the worker process that executes every task, periodic and one-off alike.
+  See [`recording.md`](recording.md#task-names-and-schedules) for the task table.
+- **`platform/storage/`** (adapters under `modules/media/infrastructure/adapters/`)
+  — an `aiobotocore` S3-compatible client for presigned `PUT`/`GET`, private and
+  public buckets, and SHA-256 verification on completion; see
+  [`media.md`](media.md).
+- **The audit outbox subscriber** — subscribes to every Phase 3 module's domain
+  events (never its own, since `audit` emits none) and writes one `AuditEntry` per
+  delivered event, keyed by `event_id` for at-least-once idempotency; see
+  [`recording.md`](recording.md#audit-via-the-outbox-subscriber).
+- **`shared_kernel/privacy.py`** — `PublicCoordinatePolicy` and
+  `round_coordinates`, the one implementation every module shares to coarsen a
+  reporter's position for a public payload, built from
+  `Settings.public_coordinate_decimals`.
+- **`shared_kernel` `SafeText`** — the shared free-text validation (Unicode NFC,
+  no control characters, lone surrogates or bidirectional overrides) every
+  Phase 3 free-text field (descriptions, citations, reasons, notes) is built on.
+
 ## Further reading
 
 - Architecture decisions: [`../adr/`](../adr/README.md) (MADR format).
@@ -298,7 +346,10 @@ authentication and authorisation requirement.
   [`../data-dictionary/README.md`](../data-dictionary/README.md).
 - API conventions: [`api.md`](api.md).
 - Authentication and the development realm: [`auth.md`](auth.md).
-- Open questions raised while building Phase 1 and Phase 2:
+- The Phase 3 recording flow, reporter privacy rules and task schedules:
+  [`recording.md`](recording.md).
+- The impact-claim best-figure aggregation policy: [`best-figure.md`](best-figure.md).
+- Open questions raised while building Phases 1–3:
   [`../open-questions.md`](../open-questions.md).
 - External data source adapters: `data-sources.md`, added in Phase 4 alongside the
   `add-source-adapter` skill.

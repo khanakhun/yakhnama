@@ -255,6 +255,34 @@ on the aggregate.
 | `impacts.damage_recorded` | `damage_record` | `hazard_event_id`, `asset_id`, `level`, `confidence`, `source_id`, `recorded_at`, `recorded_by` | Damage is recorded |
 | `impacts.damage_retracted` | `damage_record` | `hazard_event_id`, `asset_id`, `retracted_by` | A damage record is retracted |
 
+## Persistence (Phase 3: claims, assets, damage)
+
+`infrastructure_assets`, `impact_claims` and `damage_records` (migration
+`0014_impact_claims`) add referential integrity the domain layer cannot express
+(a domain module may not import another module's ORM, `AGENTS.md` §2.1), but
+that the database can enforce within `impacts`' own tables:
+
+- **`impact_claims.metric_code` references `impact_metrics.code`**
+  (`ON DELETE RESTRICT`), not the metric's `id`: `code` is the stable public key
+  claims are recorded against (`ImpactMetricRef`), so the foreign key follows the
+  same key the domain treats as identity. A metric can never be deleted while any
+  claim cites it, matching "a metric code is never reused" and "old claims still
+  need a best figure" even for a retired metric.
+- **`impact_claims.scope_asset_id` references `infrastructure_assets.id`**
+  (`ON DELETE RESTRICT`, nullable — a claim's scope may be a place code instead, or
+  the whole event). `damage_records.asset_id` references the same table and is
+  required (`ON DELETE RESTRICT`).
+- **`UNIQUE (supersedes_id)` on `impact_claims`** enforces "at most one
+  correction replaces a claim" at the database level, the same rule
+  `reports.supersedes_id` enforces for report revisions; `supersedes_id` also
+  references `impact_claims.id` (`ON DELETE RESTRICT`).
+- **`infrastructure_assets.osm_id` is unique** (nullable), and its `location`
+  has an explicit GiST index.
+- Event, source, place and user ids on all three tables carry no foreign key,
+  because they belong to other modules. Indexes: `impact_claims` on
+  `(event_id, metric_code)`, `(event_id, created_at, id)` and `source_id`;
+  `damage_records` on `event_id` and `asset_id`.
+
 ## Open questions
 
 - **Sendai indicator mapping list.** Which UNDRR Sendai global indicators (A-1, A-2, B-1,

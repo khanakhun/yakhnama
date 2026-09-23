@@ -6,7 +6,20 @@ How an uploaded photo, video or document travels from a phone to a public link, 
 the platform stores where, what it strips, and what it cannot yet guarantee. The rules
 behind it are in [ADR 0009](../adr/0009-object-storage-for-media-and-rasters.md); the
 fields are in the [media data dictionary](../data-dictionary/media.md). This page
-describes the adapters in `src/yakhnama/modules/media/infrastructure/adapters/`.
+describes the adapters in `src/yakhnama/modules/media/infrastructure/adapters/`. See
+[`recording.md`](recording.md) for where an upload sits in the wider report-to-event
+flow, and [`api.md`](api.md), "Media visibility", for what an anonymous or
+non-owning caller may read back.
+
+## Routes
+
+`POST /api/v1/media` (before the report exists) or
+`POST /api/v1/reports/{report_id}/media` (for the caller's own submitted report)
+grant the presigned upload; `POST /api/v1/media/{asset_id}/complete` confirms it;
+`GET /api/v1/media/{asset_id}` reads it back, an anonymous or non-owning caller
+seeing only a published asset's public copy; `POST
+/api/v1/moderation/media/{asset_id}/decision` (`CanModerate`) records the
+moderator's decision. Full route table, auth and notes: [`api.md`](api.md#route-table-phase-3).
 
 ## Upload flow
 

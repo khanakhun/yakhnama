@@ -100,6 +100,21 @@ an EXIF fact or a moderation reason.
 | `InvalidScanVerdictError` | validation | Recording `pending` as a scan result. |
 | `InvalidModerationDecisionError` | validation | A decision other than approved or rejected, or a rejection without a reason. |
 
+## Persistence
+
+`media_assets` (migration `0011_media`) splits the domain's `exif` value object
+into two columns: `exif` (JSONB — capture time with precision, camera) and
+`exif_location` (a private WGS84 point), rather than one combined JSONB blob, so
+the private location can carry its own type and stay excluded from any future
+JSONB search on the rest of the EXIF facts. A check constraint forbids
+`exif_location` without `exif`. `exif_location` has no GiST index: it is never
+searched spatially, only read back for triage and moderation. Deduplication
+(same SHA-256, same owner) is served by a **partial index** on
+`(owner_id, sha256)` restricted to `upload_status = 'completed'`, so a
+`requested` or `failed` upload with no digest yet never appears in the lookup.
+`report_id` is indexed for a report's assets. Owner, report and source ids
+carry no foreign key, because they belong to other modules.
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |
