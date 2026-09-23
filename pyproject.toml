@@ -424,6 +424,14 @@ cmd = "alembic upgrade head"
 help = "Load the versioned reference data idempotently"
 cmd = "python -m yakhnama.seed"
 
+[tool.poe.tasks.worker]
+help = "Run a Taskiq worker for background tasks (needs YAKHNAMA_TASK_QUEUE_BACKEND=redis)"
+cmd = "taskiq worker yakhnama.platform.tasks.worker:broker"
+
+[tool.poe.tasks.scheduler]
+help = "Run the Taskiq scheduler for periodic tasks; run exactly one per deployment"
+cmd = "taskiq scheduler yakhnama.platform.tasks.worker:scheduler"
+
 [tool.poe.tasks.diff-cover]
 help = "Require >= 90% coverage on lines changed relative to main"
 cmd = "diff-cover coverage.xml --compare-branch=main --fail-under=90"

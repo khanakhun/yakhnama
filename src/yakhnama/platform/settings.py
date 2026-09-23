@@ -26,6 +26,7 @@ TelemetryExporter = Literal["none", "console", "otlp"]
 # algorithms (HS*) and "none" are impossible to configure, not merely off by default.
 SigningAlgorithm = Literal["RS256", "ES256"]
 RateLimitBackend = Literal["memory", "redis"]
+TaskQueueBackend = Literal["memory", "redis"]
 
 # The only driver the async engine in ``platform/db.py`` supports (ADR 0004).
 ASYNC_POSTGRES_SCHEME: Final = "postgresql+asyncpg"
@@ -165,6 +166,24 @@ class Settings(BaseSettings):
         max_request_body_bytes: Largest request body accepted; larger bodies get
             413 before the route runs.
         request_id_header: Header that carries the request id in and out.
+        task_queue_backend: ``memory`` (tasks run inside the process that enqueues
+            them; development and tests) or ``redis`` (a Redis stream consumed by
+            ``poe worker``; required in production). ``redis`` needs ``redis_url``.
+        outbox_relay_interval_seconds: How often the scheduler enqueues
+            ``outbox.relay_once``.
+        outbox_batch_size: Outbox messages claimed per relay run.
+        outbox_max_attempts: Delivery attempts after which a message is
+            dead-lettered.
+        outbox_lease_seconds: How long a claimed message is reserved for the relay
+            that claimed it; after that another relay may claim it again. Must be
+            at least ``outbox_subscriber_timeout_seconds``.
+        outbox_subscriber_timeout_seconds: Upper bound for one subscriber call; a
+            slower call is cancelled and counts as a failed attempt.
+        outbox_retention_days: Published outbox messages older than this are
+            deleted by ``outbox.purge_published``; pending and dead-lettered
+            messages are never purged.
+        idempotency_purge_interval_minutes: How often the scheduler enqueues
+            ``idempotency.purge_expired``.
     """
 
     model_config = SettingsConfigDict(
@@ -251,6 +270,20 @@ class Settings(BaseSettings):
         default="X-Request-ID", pattern=r"^[A-Za-z][A-Za-z0-9-]{0,63}$"
     )
 
+    # Background work (ADR 0007, ADR 0008). Every default below is a proposed
+    # operational value, not a domain fact, recorded as an open question in the
+    # Phase 3 report until the maintainer confirms it.
+    task_queue_backend: TaskQueueBackend = "memory"
+    # Five seconds bounds how long a committed change waits for its side effects
+    # (audit, best figures) while costing one indexed query per interval when idle.
+    outbox_relay_interval_seconds: int = Field(default=5, ge=1, le=60)
+    outbox_batch_size: int = Field(default=100, ge=1, le=1000)
+    outbox_max_attempts: int = Field(default=5, ge=1, le=100)
+    outbox_lease_seconds: int = Field(default=120, ge=5, le=3600)
+    outbox_subscriber_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    outbox_retention_days: int = Field(default=30, ge=1, le=365)
+    idempotency_purge_interval_minutes: int = Field(default=60, ge=5, le=1440)
+
     @field_validator("database_url", mode="after")
     @classmethod
     def _require_asyncpg_driver(cls, database_url: PostgresDsn) -> PostgresDsn:
@@ -298,6 +331,21 @@ class Settings(BaseSettings):
     def _require_redis_url_for_redis_backend(self) -> Self:
         if self.rate_limit_backend == "redis" and self.redis_url is None:
             message = "redis_url is required when rate_limit_backend is 'redis'"
+            raise ValueError(message)
+        if self.task_queue_backend == "redis" and self.redis_url is None:
+            message = "redis_url is required when task_queue_backend is 'redis'"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _require_lease_to_cover_one_subscriber(self) -> Self:
+        # A lease shorter than one subscriber call would expire during every slow
+        # call, so a second relay would deliver the same message concurrently.
+        if self.outbox_lease_seconds < self.outbox_subscriber_timeout_seconds:
+            message = (
+                "outbox_lease_seconds must be at least "
+                "outbox_subscriber_timeout_seconds"
+            )
             raise ValueError(message)
         return self
 
@@ -378,6 +426,10 @@ PRODUCTION_RULES: Final[tuple[tuple[Callable[[Settings], bool], str], ...]] = (
     (
         lambda settings: settings.rate_limit_backend != "redis",
         "rate_limit_backend must be 'redis'",
+    ),
+    (
+        lambda settings: settings.task_queue_backend != "redis",
+        "task_queue_backend must be 'redis'",
     ),
     (
         lambda settings: "*" in settings.trusted_hosts,

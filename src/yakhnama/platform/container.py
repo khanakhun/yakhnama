@@ -14,18 +14,25 @@ on ``subscriber_registry``. Importing module infrastructure is what a compositio
 is for; nothing inside a module imports this file. ``build_seed_handler`` wires the
 reference-data seed used by ``python -m yakhnama.seed``.
 
+``build_task_handlers`` binds background task names to handlers (ADR 0008); see
+``yakhnama.platform.tasks.handlers`` for the contract a handler follows.
+
 Patterns: Composition Root, Dependency Injection.
 """
 
 import dataclasses
+from collections.abc import Mapping
 from datetime import timedelta
+from types import MappingProxyType
 
 import httpx
+import structlog
 from fastapi import Request
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import NoBackoff
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from taskiq import AsyncBroker
 
 from yakhnama.modules.geography.application.handlers import (
     LoadReferencePlacesHandler,
@@ -77,15 +84,27 @@ from yakhnama.platform.db import create_engine, create_session_factory
 from yakhnama.platform.idempotency.sqlalchemy_store import SqlAlchemyIdempotencyStore
 from yakhnama.platform.idempotency.store import IdempotencyStore
 from yakhnama.platform.outbox.relay import OutboxRelay, SubscriberRegistry
+from yakhnama.platform.outbox.sqlalchemy_store import SqlAlchemyOutboxStore
+from yakhnama.platform.outbox.store import OutboxStore
 from yakhnama.platform.outbox.writer import OutboxWriter
 from yakhnama.platform.ratelimit.limiter import InMemoryRateLimiter, RateLimiter
 from yakhnama.platform.ratelimit.redis_limiter import RedisRateLimiter
 from yakhnama.platform.settings import Settings
+from yakhnama.platform.tasks.broker import build_broker
+from yakhnama.platform.tasks.handlers import (
+    IDEMPOTENCY_PURGE_TASK,
+    OUTBOX_PURGE_TASK,
+    OUTBOX_RELAY_TASK,
+    TaskHandler,
+    TaskHandlerRegistry,
+)
+from yakhnama.platform.tasks.taskiq_adapter import TaskiqTaskQueue, register_tasks
 from yakhnama.platform.uow import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 from yakhnama.seed.application import SeedReferenceDataHandler
 from yakhnama.seed.infrastructure import YamlReferenceFileReader
 from yakhnama.shared_kernel.clock import Clock, SystemClock
 from yakhnama.shared_kernel.ids import IdGenerator, Uuid7Generator
+from yakhnama.shared_kernel.tasks import ScheduledTask, TaskQueue
 
 
 # A frozen dataclass rather than a Pydantic model: the container holds live resources
@@ -107,6 +126,7 @@ class Container:
         uow_factory: Opens a plain ``SqlAlchemyUnitOfWork``; modules bind their own
             factories next to it.
         subscriber_registry: Outbox subscribers per ``event_type``.
+        outbox_store: The ``OutboxStore`` port (PostgreSQL) the relay records on.
         outbox_relay: Delivers pending outbox messages to ``subscriber_registry``.
         geography_uow_factory: The geography ``UnitOfWorkFactory`` port.
         hazards_uow_factory: The hazards ``UnitOfWorkFactory`` port.
@@ -120,6 +140,10 @@ class Container:
             set, in which case every protected route answers 401.
         rate_limiter: The ``RateLimiter`` port (in memory or Redis).
         idempotency_store: The ``IdempotencyStore`` port (PostgreSQL).
+        task_broker: The Taskiq broker ``task_queue`` sends to; shut down on close.
+        task_handlers: Handlers for tasks that run in this process (with the
+            ``memory`` backend, every task); bound by ``build_container``.
+        task_queue: The ``TaskQueue`` port (Taskiq).
         http_client: The HTTP client of the JWKS client, closed on shutdown;
             ``None`` without OIDC.
         redis: The Redis client of the rate limiter, closed on shutdown; ``None``
@@ -134,6 +158,7 @@ class Container:
     outbox_writer: OutboxWriter
     uow_factory: SqlAlchemyUnitOfWorkFactory[SqlAlchemyUnitOfWork]
     subscriber_registry: SubscriberRegistry
+    outbox_store: OutboxStore
     outbox_relay: OutboxRelay
     geography_uow_factory: GeographyUnitOfWorkFactory
     hazards_uow_factory: HazardsUnitOfWorkFactory
@@ -146,11 +171,15 @@ class Container:
     token_validator: TokenValidator | None
     rate_limiter: RateLimiter
     idempotency_store: IdempotencyStore
+    task_broker: AsyncBroker
+    task_handlers: TaskHandlerRegistry
+    task_queue: TaskQueue
     http_client: httpx.AsyncClient | None = None
     redis: Redis | None = None
 
     async def aclose(self) -> None:
         """Release every resource the container opened: clients and the engine."""
+        await self.task_broker.shutdown()
         if self.http_client is not None:
             await self.http_client.aclose()
         if self.redis is not None:
@@ -246,7 +275,13 @@ def build_container(settings: Settings) -> Container:
     session_factory = create_session_factory(engine)
     outbox_writer = OutboxWriter(clock)
     subscriber_registry = SubscriberRegistry()
-    return Container(
+    outbox_store = SqlAlchemyOutboxStore(session_factory)
+    task_broker = build_broker(settings)
+    task_handlers = TaskHandlerRegistry()
+    task_queue = TaskiqTaskQueue(
+        task_broker, register_tasks(task_broker, task_handlers)
+    )
+    container = Container(
         settings=settings,
         clock=clock,
         id_generator=id_generator,
@@ -259,7 +294,15 @@ def build_container(settings: Settings) -> Container:
             outbox_writer=outbox_writer,
         ),
         subscriber_registry=subscriber_registry,
-        outbox_relay=OutboxRelay(subscriber_registry, clock),
+        outbox_store=outbox_store,
+        outbox_relay=OutboxRelay(
+            subscriber_registry,
+            clock,
+            outbox_store,
+            max_attempts=settings.outbox_max_attempts,
+            lease_seconds=settings.outbox_lease_seconds,
+            subscriber_timeout_seconds=settings.outbox_subscriber_timeout_seconds,
+        ),
         geography_uow_factory=SqlAlchemyUnitOfWorkFactory(
             SqlAlchemyGeographyUnitOfWork,
             session_factory=session_factory,
@@ -287,8 +330,55 @@ def build_container(settings: Settings) -> Container:
         token_validator=token_validator,
         rate_limiter=rate_limiter,
         idempotency_store=SqlAlchemyIdempotencyStore(session_factory, id_generator),
+        task_broker=task_broker,
+        task_handlers=task_handlers,
+        task_queue=task_queue,
         http_client=http_client,
         redis=redis,
+    )
+    # With the memory backend tasks run in this process, so they need handlers
+    # here; with redis they run in the worker, and these are simply never called.
+    task_handlers.bind(build_task_handlers(container))
+    return container
+
+
+def build_task_handlers(container: Container) -> Mapping[str, TaskHandler]:
+    """Bind every task name this build can serve to its handler.
+
+    The platform tasks are bound here. A module's task (``reports.run_triage``,
+    ``media.scan``) is added as one more entry built from the container, for
+    example ``REPORTS_TRIAGE_TASK: build_run_triage_task_handler(container)``; until
+    then the worker answers such a task with ``TaskHandlerNotBoundError``.
+
+    Args:
+        container: Supplies the relay, the stores, the clock and the settings.
+
+    Returns:
+        A read-only mapping from task name to handler.
+    """
+    settings = container.settings
+
+    async def relay_outbox(_task: ScheduledTask) -> None:
+        outcome = await container.outbox_relay.relay_once(settings.outbox_batch_size)
+        if outcome.claimed:
+            structlog.get_logger(__name__).info(
+                "outbox_relayed", **outcome.model_dump()
+            )
+
+    async def purge_outbox(_task: ScheduledTask) -> None:
+        cutoff = container.clock.now() - timedelta(days=settings.outbox_retention_days)
+        await container.outbox_relay.purge_published(cutoff)
+
+    async def purge_idempotency_keys(_task: ScheduledTask) -> None:
+        deleted = await container.idempotency_store.purge_expired(container.clock.now())
+        structlog.get_logger(__name__).info("idempotency_purged", deleted=deleted)
+
+    return MappingProxyType(
+        {
+            OUTBOX_RELAY_TASK: relay_outbox,
+            OUTBOX_PURGE_TASK: purge_outbox,
+            IDEMPOTENCY_PURGE_TASK: purge_idempotency_keys,
+        }
     )
 
 
