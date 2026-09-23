@@ -208,7 +208,7 @@ class User(BaseModel):
         pairs: set[tuple[EntityId, OrganizationRole]] = set()
         for membership in memberships:
             if membership.user_id != self.id:
-                message = f"membership {membership.id} belongs to another user"
+                message = "a membership belongs to another user"
                 raise InvariantViolationError(
                     message, details={"membership_id": str(membership.id)}
                 )
@@ -326,7 +326,7 @@ class User(BaseModel):
             message = "the citizen role cannot be revoked; suspend the user instead"
             raise CitizenRoleRequiredError(message, details={"user_id": str(self.id)})
         if role not in self.roles:
-            message = f"user {self.id} does not hold the role {role.value!r}"
+            message = "the user does not hold the role explicitly"
             raise RoleNotHeldError(
                 message, details={"user_id": str(self.id), "role": role.value}
             )
@@ -748,7 +748,7 @@ class Memberships(BaseModel):
             if member.organization_id != self.organization_id
         ]
         if foreign:
-            message = f"memberships {foreign} belong to another organisation"
+            message = "some memberships belong to another organisation"
             raise ValueError(message)
         repeated_users = [
             str(user_id)
@@ -756,7 +756,7 @@ class Memberships(BaseModel):
             if count > 1
         ]
         if repeated_users:
-            message = f"users {repeated_users} have more than one membership"
+            message = "some users have more than one membership"
             raise ValueError(message)
         if len({member.id for member in self.members}) != len(self.members):
             message = "membership ids must be unique"
@@ -817,7 +817,7 @@ class Memberships(BaseModel):
         """
         membership = change.state
         if membership.organization_id != self.organization_id:
-            message = f"membership {membership.id} is for another organisation"
+            message = "the membership is for another organisation"
             raise InvariantViolationError(
                 message, details={"organization_id": str(self.organization_id)}
             )

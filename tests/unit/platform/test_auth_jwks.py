@@ -293,3 +293,108 @@ def test_signing_keys_from_jwks_ec_key_is_usable() -> None:
     keys = signing_keys_from_jwks(jwks_document([ec_pair]))
 
     assert keys["ec-key"].algorithm_name == "ES256"
+
+
+async def test_get_signing_key_after_failed_fetch_backs_off_before_retrying(
+    clock: FrozenClock,
+) -> None:
+    provider = FakeProvider([session_key_pair()])
+    provider.status = 503
+    client = _client(provider.handle, clock)
+    with pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key(session_key_pair().key_id)
+    clock.advance(timedelta(seconds=10))
+
+    with capture_logs() as logs, pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key(session_key_pair().key_id)
+
+    assert provider.jwks_requests == 1
+    assert logs[0]["reason"] == "refetch_backoff"
+
+
+async def test_get_signing_key_backoff_ends_after_refetch_interval(
+    clock: FrozenClock,
+) -> None:
+    provider = FakeProvider([session_key_pair()])
+    provider.status = 503
+    client = _client(provider.handle, clock)
+    with pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key(session_key_pair().key_id)
+    provider.status = 200
+    clock.advance(timedelta(seconds=30))
+
+    key = await client.get_signing_key(session_key_pair().key_id)
+
+    assert key is not None
+    assert provider.jwks_requests == 2
+
+
+async def test_get_signing_key_failed_refresh_serves_expired_keys_within_grace(
+    clock: FrozenClock,
+) -> None:
+    key_pair = session_key_pair()
+    provider = FakeProvider([key_pair])
+    client = _client(provider.handle, clock)
+    await client.get_signing_key(key_pair.key_id)
+    clock.advance(TTL + timedelta(minutes=1))
+    provider.status = 503
+
+    with capture_logs() as logs:
+        key = await client.get_signing_key(key_pair.key_id)
+
+    assert key is not None
+    assert {
+        "event": "jwks_stale_served",
+        "age_seconds": int((TTL + timedelta(minutes=1)).total_seconds()),
+        "log_level": "warning",
+    } in logs
+
+
+async def test_get_signing_key_during_backoff_serves_expired_keys_within_grace(
+    clock: FrozenClock,
+) -> None:
+    key_pair = session_key_pair()
+    provider = FakeProvider([key_pair])
+    client = _client(provider.handle, clock)
+    await client.get_signing_key(key_pair.key_id)
+    clock.advance(TTL)
+    provider.status = 503
+    await client.get_signing_key(key_pair.key_id)
+    clock.advance(timedelta(seconds=5))
+
+    key = await client.get_signing_key(key_pair.key_id)
+
+    assert key is not None
+    assert provider.jwks_requests == 2
+
+
+async def test_get_signing_key_expired_keys_past_grace_raise_unavailable(
+    clock: FrozenClock,
+) -> None:
+    key_pair = session_key_pair()
+    provider = FakeProvider([key_pair])
+    client = _client(provider.handle, clock)
+    await client.get_signing_key(key_pair.key_id)
+    clock.advance(2 * TTL)
+    provider.status = 503
+
+    with pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key(key_pair.key_id)
+
+
+async def test_get_signing_key_backoff_past_grace_raises_unavailable(
+    clock: FrozenClock,
+) -> None:
+    key_pair = session_key_pair()
+    provider = FakeProvider([key_pair])
+    client = _client(provider.handle, clock)
+    await client.get_signing_key(key_pair.key_id)
+    clock.advance(2 * TTL - timedelta(seconds=1))
+    provider.status = 503
+    await client.get_signing_key(key_pair.key_id)
+    clock.advance(timedelta(seconds=5))
+
+    with pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key(key_pair.key_id)
+
+    assert provider.jwks_requests == 2

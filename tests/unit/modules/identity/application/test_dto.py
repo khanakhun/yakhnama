@@ -81,6 +81,7 @@ def test_member_summary_from_entities_uses_membership_start_as_since() -> None:
 
     summary = MemberSummary.from_entities(membership, user)
 
+    assert summary.membership_id == membership.id
     assert summary.user_id == user.id
     assert summary.display_name == "Member"
     assert summary.role is OrganizationRole.ADMIN

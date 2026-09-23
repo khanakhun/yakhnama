@@ -195,6 +195,52 @@ async def test_security_headers_middleware_keeps_header_set_by_route() -> None:
     assert response.headers.get_list("x-frame-options") == ["SAMEORIGIN"]
 
 
+async def test_security_headers_request_with_authorization_gets_no_store() -> None:
+    inner = RecordingApp(headers=((b"cache-control", b"public, max-age=60"),))
+    app = SecurityHeadersMiddleware(inner, is_hsts_enabled=False)
+
+    async with client_for(app) as client:
+        response = await client.get(
+            "/api/v1/hazard-types", headers={"Authorization": "Bearer x"}
+        )
+
+    assert response.headers.get_list("cache-control") == ["no-store"]
+
+
+@pytest.mark.parametrize("path", ["/api/v1/me", "/api/v1/users/0192", "/api/v1/users"])
+async def test_security_headers_private_path_gets_no_store_without_credentials(
+    path: str,
+) -> None:
+    app = SecurityHeadersMiddleware(
+        RecordingApp(),
+        is_hsts_enabled=False,
+        private_path_prefixes=("/api/v1/me", "/api/v1/users"),
+    )
+
+    async with client_for(app) as client:
+        response = await client.get(path)
+
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/v1/hazard-types", "/api/v1/usersx", "/api/v1/meta"]
+)
+async def test_security_headers_public_anonymous_response_is_not_marked(
+    path: str,
+) -> None:
+    app = SecurityHeadersMiddleware(
+        RecordingApp(),
+        is_hsts_enabled=False,
+        private_path_prefixes=("/api/v1/me", "/api/v1/users"),
+    )
+
+    async with client_for(app) as client:
+        response = await client.get(path)
+
+    assert "cache-control" not in response.headers
+
+
 @pytest.mark.parametrize(
     ("header", "expected"),
     [

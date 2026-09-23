@@ -70,23 +70,25 @@ def org_with_admin(
 # --------------------------------------------------------------------------- #
 
 
-async def test_add_member_by_org_admin_commits_membership_and_event() -> None:
-    organization, admin, admin_membership = org_with_admin()
+async def test_add_member_by_platform_admin_commits_membership_and_event() -> None:
+    organization, org_admin, admin_membership = org_with_admin()
+    platform_admin = make_user(Role.ADMIN)
     newcomer = make_user(display_name="Newcomer")
     uow, factory = wire(
-        users=(admin, newcomer),
+        users=(org_admin, platform_admin, newcomer),
         organizations=(organization,),
         memberships=(admin_membership,),
     )
 
     summary = await AddMemberHandler(factory, clock(), ids())(
         AddMember(
-            actor=actor_of(admin, admin_membership),
+            actor=actor_of(platform_admin),
             organization_id=organization.id,
             user_id=newcomer.id,
         )
     )
 
+    assert summary.membership_id in uow.memberships.committed
     assert summary.user_id == newcomer.id
     assert summary.display_name == "Newcomer"
     assert summary.role is OrganizationRole.MEMBER
@@ -96,16 +98,42 @@ async def test_add_member_by_org_admin_commits_membership_and_event() -> None:
     assert event.user_id == newcomer.id
 
 
+async def test_add_member_by_org_admin_is_denied_until_members_can_consent() -> None:
+    organization, admin, admin_membership = org_with_admin()
+    newcomer = make_user()
+    uow, factory = wire(
+        users=(admin, newcomer),
+        organizations=(organization,),
+        memberships=(admin_membership,),
+    )
+
+    with pytest.raises(PermissionDeniedError) as raised:
+        await AddMemberHandler(factory, clock(), ids())(
+            AddMember(
+                actor=actor_of(admin, admin_membership),
+                organization_id=organization.id,
+                user_id=newcomer.id,
+            )
+        )
+
+    assert raised.value.details["policy"] == "IsAdmin"
+    assert factory.calls == 0
+    assert list(uow.memberships.committed) == [admin_membership.id]
+
+
 async def test_add_member_existing_member_raises_duplicate() -> None:
     organization, admin, admin_membership = org_with_admin()
+    platform_admin = make_user(Role.ADMIN)
     uow, factory = wire(
-        users=(admin,), organizations=(organization,), memberships=(admin_membership,)
+        users=(admin, platform_admin),
+        organizations=(organization,),
+        memberships=(admin_membership,),
     )
 
     with pytest.raises(DuplicateMembershipError):
         await AddMemberHandler(factory, clock(), ids())(
             AddMember(
-                actor=actor_of(admin, admin_membership),
+                actor=actor_of(platform_admin),
                 organization_id=organization.id,
                 user_id=admin.id,
             )
@@ -115,15 +143,14 @@ async def test_add_member_existing_member_raises_duplicate() -> None:
 
 
 async def test_add_member_unknown_user_raises_user_not_found() -> None:
-    organization, admin, admin_membership = org_with_admin()
-    _, factory = wire(
-        users=(admin,), organizations=(organization,), memberships=(admin_membership,)
-    )
+    organization = make_organization()
+    admin = make_user(Role.ADMIN)
+    _, factory = wire(users=(admin,), organizations=(organization,))
 
     with pytest.raises(UserNotFoundError):
         await AddMemberHandler(factory, clock(), ids())(
             AddMember(
-                actor=actor_of(admin, admin_membership),
+                actor=actor_of(admin),
                 organization_id=organization.id,
                 user_id=make_user().id,
             )
@@ -506,3 +533,67 @@ async def test_remove_member_suspended_actor_is_refused() -> None:
         )
 
     assert list(uow.memberships.committed) == [admin_membership.id]
+
+
+async def test_change_member_role_tag_of_replaced_membership_raises_precondition() -> (
+    None
+):
+    organization, admin, admin_membership = org_with_admin()
+    member = make_user()
+    current = make_membership(organization, member)
+    uow, factory = wire(
+        users=(admin, member),
+        organizations=(organization,),
+        memberships=(admin_membership, current),
+    )
+    # A tag for an earlier membership of the same user, at the same version.
+    command = change_role(
+        actor_of(admin, admin_membership),
+        organization,
+        member,
+        OrganizationRole.ADMIN,
+        version=current.version,
+    ).model_copy(update={"expected_membership_id": admin_membership.id})
+
+    with pytest.raises(PreconditionFailedError) as raised:
+        await ChangeMemberRoleHandler(factory, clock(), ids())(command)
+
+    assert raised.value.details == {"reason": "membership_replaced"}
+    assert uow.memberships.committed[current.id] == current
+
+
+async def test_remove_member_matching_membership_tag_removes_member() -> None:
+    organization, admin, admin_membership = org_with_admin()
+    member = make_user()
+    current = make_membership(organization, member)
+    uow, factory = wire(
+        users=(admin, member),
+        organizations=(organization,),
+        memberships=(admin_membership, current),
+    )
+    command = remove(
+        actor_of(admin, admin_membership), organization, member, version=1
+    ).model_copy(update={"expected_membership_id": current.id})
+
+    await RemoveMemberHandler(factory, clock(), ids())(command)
+
+    assert list(uow.memberships.committed) == [admin_membership.id]
+
+
+async def test_remove_member_tag_of_replaced_membership_raises_precondition() -> None:
+    organization, admin, admin_membership = org_with_admin()
+    member = make_user()
+    current = make_membership(organization, member)
+    uow, factory = wire(
+        users=(admin, member),
+        organizations=(organization,),
+        memberships=(admin_membership, current),
+    )
+    command = remove(
+        actor_of(admin, admin_membership), organization, member, version=1
+    ).model_copy(update={"expected_membership_id": admin_membership.id})
+
+    with pytest.raises(PreconditionFailedError):
+        await RemoveMemberHandler(factory, clock(), ids())(command)
+
+    assert len(uow.memberships.committed) == 2

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from starlette.types import Receive, Scope, Send
 from structlog.testing import capture_logs
 
@@ -160,7 +161,13 @@ async def test_redis_limiter_refusal_at_window_end_waits_one_second() -> None:
 
 
 @pytest.mark.parametrize(
-    "error", [RedisConnectionError("down"), OSError("unreachable")]
+    "error",
+    [
+        RedisConnectionError("down"),
+        RedisTimeoutError("slow"),
+        TimeoutError("socket timed out"),
+        OSError("unreachable"),
+    ],
 )
 async def test_redis_limiter_unavailable_fails_open_and_logs_type(
     error: Exception,

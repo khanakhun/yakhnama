@@ -32,12 +32,13 @@ class Principal(BaseModel):
     Attributes:
         subject: The token's ``sub``, stable for the user within one issuer.
         issuer: The token's ``iss``; ``(issuer, subject)`` identifies the user.
-        realm_roles: Role names granted by the identity provider: Keycloak's
-            ``realm_access.roles`` merged with a top-level ``roles`` claim. They are
-            the provider's names, not yet the identity module's ``Role`` values.
-        display_name: The ``name`` claim, else ``preferred_username``. Optional
-            personal data: it is never logged and is stored only by the identity
-            module, where the user can change it.
+        realm_roles: Role names granted by the identity provider, read from the
+            one claim path ``oidc_roles_claim`` (Keycloak: ``realm_access.roles``).
+            They are the provider's names, not yet the identity module's ``Role``
+            values.
+        display_name: The ``preferred_username`` claim only, never ``name`` (the
+            legal full name). Optional personal data: never logged; the identity
+            module mirrors new users without it.
         token_id: The token's ``jti``, when the provider sets one.
         expires_at: When the token expires (UTC).
     """

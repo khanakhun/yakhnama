@@ -188,7 +188,7 @@ tokens with a locally generated key and serve JWKS through a fake
 A token's roles come from Keycloak's `realm_access.roles`, merged with a top-level `roles`
 claim if present, into `Principal.realm_roles` (`platform/auth/principal.py`) — the only
 view the rest of the backend has of "who is calling", together with `subject`, `issuer`,
-`display_name` (from `name`, else `preferred_username`), `token_id` (`jti`) and
+`display_name` (from `preferred_username` only, never `name`, and never stored: users set a name through `PATCH /api/v1/me`), `token_id` (`jti`) and
 `expires_at`. `platform/auth` is the only place that knows these claim names (ADR 0005);
 everything past it deals only in `Principal` and, once mirrored, `Actor`.
 

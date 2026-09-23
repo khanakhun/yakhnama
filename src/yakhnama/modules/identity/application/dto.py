@@ -251,6 +251,8 @@ class MemberSummary(BaseModel):
     Implements: DTO.
 
     Attributes:
+        membership_id: The membership; with ``version`` it forms the member's
+            ``ETag``, so a tag never survives a removal and re-addition.
         user_id: The member.
         display_name: The member's optional display name.
         role: ``member`` or ``admin`` of the organisation.
@@ -260,6 +262,7 @@ class MemberSummary(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    membership_id: EntityId
     user_id: EntityId
     display_name: DisplayName | None
     role: OrganizationRole
@@ -278,6 +281,7 @@ class MemberSummary(BaseModel):
             The member's summary.
         """
         return cls(
+            membership_id=membership.id,
             user_id=user.id,
             display_name=user.display_name,
             role=membership.role,

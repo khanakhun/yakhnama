@@ -2,6 +2,8 @@
 
 Users are mirrored through the API itself: the first authenticated request of a
 subject creates its user, and realm roles on that first token become its roles.
+Members are added by a platform administrator: organisation admins may not add
+members until members can consent (Q-I9).
 """
 
 from collections.abc import AsyncIterator
@@ -62,16 +64,34 @@ async def _create_organization(
     return response
 
 
-async def _organization_with_member(client: httpx.AsyncClient) -> tuple[str, str]:
-    organization_id = (await _create_organization(client)).json()["id"]
-    member_id = (await _mirror(client, MEMBER))["id"]
+def _admin_headers() -> dict[str, str]:
+    return auth_headers(subject=ADMIN, roles=["admin"])
+
+
+async def _add_member(
+    client: httpx.AsyncClient, organization_id: str, user_id: str
+) -> httpx.Response:
     added = await client.post(
         f"{ORGANIZATIONS}/{organization_id}/members",
-        json={"user_id": member_id},
-        headers=auth_headers(subject=OWNER),
+        json={"user_id": user_id},
+        headers=_admin_headers(),
     )
     assert added.status_code == 201
+    return added
+
+
+async def _organization_with_member(client: httpx.AsyncClient) -> tuple[str, str]:
+    organization_id, member_id, _ = await _organization_with_member_tag(client)
     return organization_id, member_id
+
+
+async def _organization_with_member_tag(
+    client: httpx.AsyncClient,
+) -> tuple[str, str, str]:
+    organization_id = (await _create_organization(client)).json()["id"]
+    member_id = (await _mirror(client, MEMBER))["id"]
+    added = await _add_member(client, organization_id, member_id)
+    return organization_id, member_id, added.headers["etag"]
 
 
 # --------------------------------------------------------------------------- #
@@ -99,7 +119,8 @@ async def test_read_me_first_request_mirrors_user_with_known_realm_roles(
     body = response.json()
     assert response.status_code == 200
     assert set(body["roles"]) == {"citizen", "moderator"}
-    assert body["display_name"] == "Test Person"
+    # The token's name is never copied; the user sets one through PATCH /me.
+    assert body["display_name"] is None
     assert response.headers["etag"] == make_etag(body["version"], body["id"])
     assert len(api.identity.users.committed) == 1
 
@@ -219,6 +240,31 @@ async def test_update_me_with_invalid_body_returns_422_without_echo(
     assert response.status_code == 422
     assert "someone@example.test" not in response.text
     assert "x" * 121 not in response.text
+
+
+@pytest.mark.parametrize(
+    "escaped_name",
+    [
+        pytest.param(b"a\\ud800b", id="lone-surrogate"),
+        pytest.param(b"a\\u202eb", id="right-to-left-override"),
+        pytest.param(b"a\\u2066b", id="left-to-right-isolate"),
+    ],
+)
+async def test_update_me_with_surrogate_or_bidi_character_returns_422(
+    client: httpx.AsyncClient, api: ApiHarness, escaped_name: bytes
+) -> None:
+    me = await client.get(ME, headers=auth_headers())
+
+    response = await client.patch(
+        ME,
+        content=b'{"display_name": "' + escaped_name + b'"}',
+        headers=auth_headers()
+        | {"If-Match": me.headers["etag"], "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    (user,) = api.identity.users.committed.values()
+    assert user.display_name is None
 
 
 async def test_update_me_with_nul_character_returns_422_nul_problem(
@@ -475,7 +521,7 @@ async def test_rename_organization_anonymous_returns_401(
 # --------------------------------------------------------------------------- #
 
 
-async def test_add_member_by_organization_admin_returns_201_with_etag(
+async def test_add_member_by_platform_admin_returns_201_with_membership_etag(
     client: httpx.AsyncClient,
 ) -> None:
     organization_id = (await _create_organization(client)).json()["id"]
@@ -484,14 +530,34 @@ async def test_add_member_by_organization_admin_returns_201_with_etag(
     response = await client.post(
         f"{ORGANIZATIONS}/{organization_id}/members",
         json={"user_id": member_id, "role": "member"},
-        headers=auth_headers(subject=OWNER),
+        headers=_admin_headers(),
     )
 
     body = response.json()
     assert response.status_code == 201
     assert body["user_id"] == member_id
     assert body["role"] == "member"
-    assert response.headers["etag"] == make_etag(body["version"], UUID(member_id))
+    assert body["membership_id"] != member_id
+    assert response.headers["etag"] == make_etag(
+        body["version"], UUID(body["membership_id"])
+    )
+
+
+async def test_add_member_by_organization_admin_returns_403(
+    client: httpx.AsyncClient, api: ApiHarness
+) -> None:
+    organization_id = (await _create_organization(client)).json()["id"]
+    member_id = (await _mirror(client, MEMBER))["id"]
+
+    response = await client.post(
+        f"{ORGANIZATIONS}/{organization_id}/members",
+        json={"user_id": member_id},
+        headers=auth_headers(subject=OWNER),
+    )
+
+    assert response.status_code == 403
+    assert "display_name" not in response.text
+    assert len(api.identity.memberships.committed) == 1
 
 
 async def test_add_member_by_non_admin_returns_403(client: httpx.AsyncClient) -> None:
@@ -513,7 +579,7 @@ async def test_add_member_twice_returns_409(client: httpx.AsyncClient) -> None:
     response = await client.post(
         f"{ORGANIZATIONS}/{organization_id}/members",
         json={"user_id": member_id},
-        headers=auth_headers(subject=OWNER),
+        headers=_admin_headers(),
     )
 
     assert response.status_code == 409
@@ -524,11 +590,7 @@ async def test_list_members_by_member_walks_every_page(
 ) -> None:
     organization_id, member_id = await _organization_with_member(client)
     outsider_id = (await _mirror(client, OUTSIDER))["id"]
-    await client.post(
-        f"{ORGANIZATIONS}/{organization_id}/members",
-        json={"user_id": outsider_id},
-        headers=auth_headers(subject=OWNER),
-    )
+    await _add_member(client, organization_id, outsider_id)
     path = f"{ORGANIZATIONS}/{organization_id}/members"
 
     first = await client.get(
@@ -544,6 +606,11 @@ async def test_list_members_by_member_walks_every_page(
     ]
     assert first.status_code == 200
     assert len(seen) == len(set(seen)) == 3
+    assert all(
+        "membership_id" in item
+        for page in (first, second)
+        for item in page.json()["items"]
+    )
     assert {member_id, outsider_id} <= set(seen)
     assert second.json()["next_cursor"] is None
 
@@ -586,32 +653,77 @@ async def test_list_members_with_limit_above_max_returns_422(
 async def test_change_member_role_with_current_etag_promotes_member(
     client: httpx.AsyncClient,
 ) -> None:
-    organization_id, member_id = await _organization_with_member(client)
+    organization_id, member_id, tag = await _organization_with_member_tag(client)
     path = f"{ORGANIZATIONS}/{organization_id}/members/{member_id}"
 
     response = await client.patch(
         path,
         json={"role": "admin"},
-        headers=auth_headers(subject=OWNER)
-        | {"If-Match": make_etag(1, UUID(member_id))},
+        headers=auth_headers(subject=OWNER) | {"If-Match": tag},
     )
 
     body = response.json()
     assert response.status_code == 200
     assert body["role"] == "admin"
-    assert response.headers["etag"] == make_etag(body["version"], UUID(member_id))
+    assert response.headers["etag"] == make_etag(
+        body["version"], UUID(body["membership_id"])
+    )
+
+
+@pytest.mark.parametrize(
+    "if_match",
+    [
+        pytest.param("user", id="tag-naming-the-user-id"),
+        pytest.param("not-a-uuid", id="tag-without-uuid"),
+        pytest.param("weak", id="weak-tag"),
+    ],
+)
+async def test_change_member_role_with_foreign_tag_returns_412(
+    client: httpx.AsyncClient, if_match: str
+) -> None:
+    organization_id, member_id, tag = await _organization_with_member_tag(client)
+    headers = {
+        "user": make_etag(1, UUID(member_id)),
+        "not-a-uuid": '"member:1"',
+        "weak": f"W/{tag}",
+    }
+
+    response = await client.patch(
+        f"{ORGANIZATIONS}/{organization_id}/members/{member_id}",
+        json={"role": "admin"},
+        headers=auth_headers(subject=OWNER) | {"If-Match": headers[if_match]},
+    )
+
+    assert response.status_code == 412
+
+
+async def test_remove_member_with_tag_of_earlier_membership_returns_412(
+    client: httpx.AsyncClient, api: ApiHarness
+) -> None:
+    organization_id, member_id, old_tag = await _organization_with_member_tag(client)
+    path = f"{ORGANIZATIONS}/{organization_id}/members/{member_id}"
+    removed = await client.delete(path, headers=auth_headers(subject=OWNER))
+    assert removed.status_code == 204
+    await _add_member(client, organization_id, member_id)
+
+    response = await client.delete(
+        path, headers=auth_headers(subject=OWNER) | {"If-Match": old_tag}
+    )
+
+    assert response.status_code == 412
+    assert len(api.identity.memberships.committed) == 2
 
 
 async def test_change_member_role_with_stale_etag_returns_412(
     client: httpx.AsyncClient,
 ) -> None:
-    organization_id, member_id = await _organization_with_member(client)
+    organization_id, member_id, tag = await _organization_with_member_tag(client)
+    membership_id = UUID(tag.strip('"').partition(":")[0])
 
     response = await client.patch(
         f"{ORGANIZATIONS}/{organization_id}/members/{member_id}",
         json={"role": "admin"},
-        headers=auth_headers(subject=OWNER)
-        | {"If-Match": make_etag(4, UUID(member_id))},
+        headers=auth_headers(subject=OWNER) | {"If-Match": make_etag(4, membership_id)},
     )
 
     assert response.status_code == 412

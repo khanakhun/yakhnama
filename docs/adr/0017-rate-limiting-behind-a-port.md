@@ -52,7 +52,9 @@ and both fit behind one small port.
 - **Responses.** Over the limit: 429 `rate-limited` with `Retry-After`; every counted
   response carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`.
 - **Redis down.** The request is allowed and `rate_limiter_unavailable` is logged with the
-  error type ("fail open").
+  error type ("fail open"). The client uses `redis_socket_timeout_seconds` (0.05–5,
+  default 0.25) as connect and read timeout and makes no retries, so a slow Redis costs a
+  request at most that long.
 - **Readiness.** `/health/*` is not rate-limited, because orchestrators probe from a few
   addresses and a throttled probe takes a healthy process out of service. Instead
   `/health/ready` caches its result for one second per process (`ReadinessCache`), so the

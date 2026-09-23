@@ -147,6 +147,9 @@ def resolved_principal(request: Request) -> Principal | None:
 async def actor_for(principal: Principal, services: IdentityApiServices) -> Actor:
     """Ensure the principal's user mirror exists and return its actor.
 
+    The token's display name is not passed on: a new user starts without one and
+    sets it through ``PATCH /me``.
+
     Args:
         principal: The verified caller.
         services: Supplies the identity unit of work, clock and ids.
@@ -165,7 +168,6 @@ async def actor_for(principal: Principal, services: IdentityApiServices) -> Acto
             identity=ExternalIdentity(
                 issuer=principal.issuer, subject=principal.subject
             ),
-            display_name=principal.display_name,
             realm_roles=map_realm_roles(principal.realm_roles),
         )
     )

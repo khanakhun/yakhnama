@@ -8,6 +8,7 @@ Patterns: Settings (pydantic-settings ``BaseSettings``, proposed in ADR 0011).
 """
 
 import functools
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Final, Literal, Self
 from urllib.parse import urlsplit
@@ -55,6 +56,10 @@ DEVELOPMENT_TRUSTED_HOSTS: Final = (
 # The Scalar bundle location. scalar-fastapi ships no JavaScript, so the bundle comes
 # from this CDN unless an operator points it at a self-hosted copy (ADR 0014).
 SCALAR_CDN_URL: Final = "https://cdn.jsdelivr.net/npm/@scalar/api-reference"
+# Hosts of the in-process test clients; never valid for a deployed service.
+TEST_CLIENT_HOSTS: Final = frozenset({"testserver", "test"})
+# A dotted path into the token claims, e.g. "realm_access.roles".
+CLAIM_PATH_PATTERN: Final = r"^[A-Za-z0-9_:-]+(\.[A-Za-z0-9_:-]+)*$"
 KIBIBYTE: Final = 1024
 MEBIBYTE: Final = 1024 * KIBIBYTE
 
@@ -150,6 +155,8 @@ class Settings(BaseSettings):
             ``redis`` (shared by every process).
         redis_url: Redis DSN for the ``redis`` backend. It may carry a password,
             so it is excluded from ``repr`` and must never be logged.
+        redis_socket_timeout_seconds: Connect and read timeout of each Redis call;
+            a slow Redis then fails open quickly instead of stalling requests.
         rate_limit_anonymous_per_minute: Requests per minute for one client IP
             without a valid token.
         rate_limit_authenticated_per_minute: Requests per minute for one principal.
@@ -212,6 +219,9 @@ class Settings(BaseSettings):
     oidc_allowed_algorithms: list[SigningAlgorithm] = Field(
         default_factory=_default_algorithms, min_length=1, max_length=2
     )
+    oidc_roles_claim: str = Field(
+        default="realm_access.roles", max_length=200, pattern=CLAIM_PATH_PATTERN
+    )
     # A minute is generous for NTP-synchronised hosts; more would let an expired
     # token live on noticeably past its lifetime.
     oidc_leeway_seconds: int = Field(default=10, ge=0, le=60)
@@ -223,6 +233,9 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_backend: RateLimitBackend = "memory"
     redis_url: RedisDsn | None = Field(default=None, repr=False)
+    # A rate-limit check sits on every request; a quarter second is far above a
+    # healthy Redis round trip and bounds the added latency when it is not.
+    redis_socket_timeout_seconds: float = Field(default=0.25, ge=0.05, le=5.0)
     # Operational defaults, not domain facts: generous for a person or a script,
     # tight enough that one client cannot starve the rest. Tuned per deployment.
     rate_limit_anonymous_per_minute: int = Field(default=60, ge=1, le=100_000)
@@ -315,31 +328,66 @@ def production_problems(settings: Settings) -> list[str]:
     Returns:
         One short message per broken rule, naming the field but never its value.
     """
-    problems: list[str] = []
-    if settings.database_url == DEVELOPMENT_DATABASE_URL:
-        problems.append("database_url must not be the development default")
-    if settings.docs_enabled:
-        problems.append("docs_enabled must be false")
-    if settings.log_format != "json":
-        problems.append("log_format must be 'json'")
-    if settings.otel_exporter == "console":
-        problems.append("otel_exporter must not be 'console'")
-    if any(
-        origin == "*" or not is_secure_or_loopback_url(origin)
+    return [message for is_broken, message in PRODUCTION_RULES if is_broken(settings)]
+
+
+def _has_unsafe_cors_origin(settings: Settings) -> bool:
+    return any(
+        origin == "*" or not origin.startswith("https://")
         for origin in settings.cors_allow_origins
-    ):
-        problems.append(
-            "cors_allow_origins must hold only https or loopback origins, never '*'"
-        )
-    if settings.oidc_issuer is None:
-        problems.append("oidc_issuer must be set")
-    if not settings.rate_limit_enabled:
-        problems.append("rate_limit_enabled must be true")
-    if settings.rate_limit_backend != "redis":
-        problems.append("rate_limit_backend must be 'redis'")
-    if "*" in settings.trusted_hosts:
-        problems.append("trusted_hosts must not contain '*'")
-    return problems
+    )
+
+
+def _has_test_client_host(settings: Settings) -> bool:
+    return bool(
+        TEST_CLIENT_HOSTS.intersection(host.lower() for host in settings.trusted_hosts)
+    )
+
+
+# (is the rule broken?, message naming the field). A table rather than a chain of
+# ifs: each rule reads on one line and is tested on its own.
+PRODUCTION_RULES: Final[tuple[tuple[Callable[[Settings], bool], str], ...]] = (
+    (
+        lambda settings: settings.database_url == DEVELOPMENT_DATABASE_URL,
+        "database_url must not be the development default",
+    ),
+    (lambda settings: settings.docs_enabled, "docs_enabled must be false"),
+    (lambda settings: settings.log_format != "json", "log_format must be 'json'"),
+    (lambda settings: settings.log_level == "DEBUG", "log_level must not be 'DEBUG'"),
+    (lambda settings: settings.database_echo, "database_echo must be false"),
+    (
+        lambda settings: settings.otel_exporter == "console",
+        "otel_exporter must not be 'console'",
+    ),
+    (
+        _has_unsafe_cors_origin,
+        "cors_allow_origins must hold only https origins, never '*'",
+    ),
+    (lambda settings: settings.oidc_issuer is None, "oidc_issuer must be set"),
+    (
+        lambda settings: (
+            settings.oidc_issuer is not None
+            and not settings.oidc_issuer.startswith("https://")
+        ),
+        "oidc_issuer must use https",
+    ),
+    (
+        lambda settings: not settings.rate_limit_enabled,
+        "rate_limit_enabled must be true",
+    ),
+    (
+        lambda settings: settings.rate_limit_backend != "redis",
+        "rate_limit_backend must be 'redis'",
+    ),
+    (
+        lambda settings: "*" in settings.trusted_hosts,
+        "trusted_hosts must not contain '*'",
+    ),
+    (
+        _has_test_client_host,
+        "trusted_hosts must not contain the test client hosts",
+    ),
+)
 
 
 @functools.lru_cache(maxsize=1)

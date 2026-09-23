@@ -56,6 +56,8 @@ def test_settings_new_fields_without_environment_use_documented_defaults() -> No
     assert settings.max_request_body_bytes == MEBIBYTE
     assert settings.request_id_header == "X-Request-ID"
     assert settings.docs_scalar_js_url == SCALAR_CDN_URL
+    assert settings.oidc_roles_claim == "realm_access.roles"
+    assert settings.redis_socket_timeout_seconds == 0.25
 
 
 @pytest.mark.parametrize(
@@ -131,6 +133,11 @@ def test_settings_duplicate_algorithms_are_deduplicated_in_order() -> None:
         ("request_id_header", "X Request Id"),
         ("request_id_header", ""),
         ("trusted_hosts", []),
+        ("redis_socket_timeout_seconds", 0.01),
+        ("redis_socket_timeout_seconds", 5.1),
+        ("oidc_roles_claim", "roles..admin"),
+        ("oidc_roles_claim", "realm access"),
+        ("oidc_roles_claim", ""),
     ],
 )
 def test_settings_value_out_of_bounds_raises_validation_error(
@@ -206,6 +213,12 @@ def test_settings_safe_production_values_are_accepted() -> None:
         ({"rate_limit_enabled": False}, "rate_limit_enabled"),
         ({"rate_limit_backend": "memory"}, "rate_limit_backend"),
         ({"trusted_hosts": ["*"]}, "trusted_hosts"),
+        ({"trusted_hosts": ["api.yakhnama.org", "testserver"]}, "trusted_hosts"),
+        ({"trusted_hosts": ["TEST"]}, "trusted_hosts"),
+        ({"cors_allow_origins": ["http://localhost:3000"]}, "cors_allow_origins"),
+        ({"oidc_issuer": "http://localhost:8080/realms/yakhnama"}, "oidc_issuer"),
+        ({"log_level": "DEBUG"}, "log_level"),
+        ({"database_echo": True}, "database_echo"),
     ],
 )
 def test_settings_production_guard_each_rule_rejects_its_unsafe_value(
@@ -220,13 +233,17 @@ def test_settings_production_guard_each_rule_rejects_its_unsafe_value(
         Settings(_env_file=None, **values)
 
 
-def test_settings_production_guard_allows_loopback_http_cors_origin() -> None:
+def test_settings_production_guard_each_rule_is_reported_on_its_own() -> None:
     values = _safe_production_values()
-    values["cors_allow_origins"] = ["http://localhost:3000"]
+    values["log_level"] = "DEBUG"
 
-    settings = Settings(_env_file=None, **values)
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None, **values)
 
-    assert settings.cors_allow_origins == ["http://localhost:3000"]
+    message = str(caught.value)
+    assert "log_level must not be 'DEBUG'" in message
+    assert "database_echo" not in message
+    assert "oidc_issuer" not in message
 
 
 def test_settings_production_guard_reports_every_problem_without_values() -> None:

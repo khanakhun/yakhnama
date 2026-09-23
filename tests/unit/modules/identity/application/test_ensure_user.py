@@ -42,15 +42,10 @@ def handler(
 
 
 def ensure(
-    subject: str = "subject-1",
-    *,
-    display_name: str | None = "Test user",
-    realm_roles: frozenset[Role] = frozenset(),
+    subject: str = "subject-1", *, realm_roles: frozenset[Role] = frozenset()
 ) -> EnsureUserFromPrincipal:
     """Return the command for one verified token."""
-    return EnsureUserFromPrincipal(
-        identity=identity(subject), display_name=display_name, realm_roles=realm_roles
-    )
+    return EnsureUserFromPrincipal(identity=identity(subject), realm_roles=realm_roles)
 
 
 async def test_ensure_user_first_sight_mirrors_user_and_returns_actor() -> None:
@@ -61,7 +56,7 @@ async def test_ensure_user_first_sight_mirrors_user_and_returns_actor() -> None:
     (user,) = uow.users.committed.values()
     assert user.external_identity == identity()
     assert user.roles == {Role.CITIZEN, Role.MODERATOR}
-    assert user.display_name == "Test user"
+    assert user.display_name is None
     assert user.created_at == NOW
     assert actor.user_id == user.id
     assert actor.roles == user.roles
@@ -77,14 +72,12 @@ async def test_ensure_user_second_call_touches_without_new_user_or_role_sync() -
     (first,) = uow.users.committed.values()
     later = FrozenClock(NOW + timedelta(minutes=5))
 
-    actor = await handler(factory, later)(
-        ensure(display_name="Other name", realm_roles=frozenset({Role.ADMIN}))
-    )
+    actor = await handler(factory, later)(ensure(realm_roles=frozenset({Role.ADMIN})))
 
     (stored,) = uow.users.committed.values()
     assert stored.id == first.id
     assert stored.roles == frozenset({Role.CITIZEN})
-    assert stored.display_name == "Test user"
+    assert stored.display_name is None
     assert stored.version == first.version
     assert stored.updated_at == first.updated_at
     assert stored.last_seen_at == NOW + timedelta(minutes=5)
@@ -145,24 +138,18 @@ async def test_ensure_user_suspended_user_raises_after_recording_last_seen() -> 
     assert uow.users.touches == 1
 
 
-@pytest.mark.parametrize(
-    ("claim", "stored"),
-    [
-        ("  Spaced name  ", "Spaced name"),
-        ("bad\x00name", None),
-        ("   ", None),
-        (None, None),
-    ],
-)
-async def test_ensure_user_display_name_claim_is_normalised_or_dropped(
-    claim: str | None, stored: str | None
-) -> None:
-    uow, factory = wire()
+def test_ensure_user_command_has_no_display_name_field() -> None:
+    # The token's display name is never copied: users choose one via PATCH /me.
+    assert "display_name" not in EnsureUserFromPrincipal.model_fields
 
-    await handler(factory)(ensure(display_name=claim))
 
-    (user,) = uow.users.committed.values()
-    assert user.display_name == stored
+async def test_ensure_user_existing_display_name_is_kept_untouched() -> None:
+    user = make_user(subject="subject-1", display_name="Chosen by user")
+    uow, factory = wire(users=(user,))
+
+    await handler(factory)(ensure())
+
+    assert uow.users.committed[user.id].display_name == "Chosen by user"
 
 
 class RacingUserRepository(InMemoryUserRepository):

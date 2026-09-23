@@ -23,6 +23,8 @@ from datetime import timedelta
 import httpx
 from fastapi import Request
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from yakhnama.modules.geography.application.handlers import (
@@ -192,6 +194,7 @@ def build_token_validator(
         algorithms=settings.oidc_allowed_algorithms,
         leeway_seconds=settings.oidc_leeway_seconds,
         clock=clock,
+        roles_claim=settings.oidc_roles_claim,
     )
     return validator, http_client
 
@@ -202,15 +205,24 @@ def build_rate_limiter(
     """Bind the ``RateLimiter`` port to the configured backend.
 
     Args:
-        settings: Supplies ``rate_limit_backend`` and ``redis_url``.
+        settings: Supplies ``rate_limit_backend``, ``redis_url`` and
+            ``redis_socket_timeout_seconds``.
         clock: The in-memory limiter's clock.
 
     Returns:
         The limiter and the Redis client it owns (``None`` for ``memory``).
     """
     if settings.rate_limit_backend == "redis" and settings.redis_url is not None:
-        # from_url connects lazily, on the first command.
-        redis = Redis.from_url(str(settings.redis_url))
+        # from_url connects lazily, on the first command. Short timeouts and no
+        # retries: the limiter fails open (ADR 0017), so a slow or unreachable
+        # Redis must cost each request a bounded fraction of a second, not stall it.
+        timeout = settings.redis_socket_timeout_seconds
+        redis = Redis.from_url(
+            str(settings.redis_url),
+            socket_timeout=timeout,
+            socket_connect_timeout=timeout,
+            retry=Retry(NoBackoff(), 0),
+        )
         return RedisRateLimiter(redis), redis
     return InMemoryRateLimiter(clock), None
 

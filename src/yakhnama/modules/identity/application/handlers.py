@@ -21,9 +21,6 @@ Patterns: Command Handler, Unit of Work, Policy, Domain Events.
 
 from collections.abc import Callable
 
-from pydantic import TypeAdapter
-from pydantic import ValidationError as PydanticValidationError
-
 from yakhnama.modules.identity.application.authorisation import (
     require_allowed,
     self_policy,
@@ -74,7 +71,6 @@ from yakhnama.modules.identity.domain.policies import (
 )
 from yakhnama.modules.identity.domain.value_objects import (
     Actor,
-    DisplayName,
     OrganizationRole,
 )
 from yakhnama.shared_kernel.clock import Clock
@@ -85,8 +81,6 @@ from yakhnama.shared_kernel.errors import (
 )
 from yakhnama.shared_kernel.events import AggregateChange
 from yakhnama.shared_kernel.ids import EntityId, IdGenerator
-
-_DISPLAY_NAME: TypeAdapter[str] = TypeAdapter(DisplayName)
 
 type UserChange = Callable[[User], AggregateChange[User]]
 """Applies one domain change to a loaded user."""
@@ -128,6 +122,19 @@ async def _load_organization(
     return organization
 
 
+def _check_membership(
+    expected_id: EntityId | None, expected_version: int | None, current: Membership
+) -> None:
+    # The tag names the membership, not the user: a user removed and re-added gets
+    # a new membership starting again at version 1, which an old tag must not match.
+    if expected_id is not None and expected_id != current.id:
+        message = "the membership has changed since the client read it"
+        raise PreconditionFailedError(
+            message, details={"reason": "membership_replaced"}
+        )
+    _check_version(expected_version, current.version)
+
+
 def _check_version(expected: int | None, current: int) -> None:
     # The API turns If-Match into expected_version; comparing inside the unit of
     # work, after the load, closes the gap between the client's read and this write.
@@ -149,17 +156,6 @@ async def _active_memberships(
         if organization is not None and organization.is_active:
             kept.append(membership)
     return tuple(kept)
-
-
-def _usable_display_name(claim: str | None) -> str | None:
-    # A malformed claim (control characters, blank) is the provider's data, which
-    # the caller cannot fix; it is dropped so sign-in still works (proposed).
-    if claim is None:
-        return None
-    try:
-        return _DISPLAY_NAME.validate_python(claim)
-    except PydanticValidationError:
-        return None
 
 
 class _IdentityHandler:
@@ -212,11 +208,11 @@ class _IdentityHandler:
 class EnsureUserFromPrincipalHandler(_IdentityHandler):
     """Mirror a verified caller on first sight and return their actor.
 
-    The first request of an ``(issuer, subject)`` creates the user with the mapped
-    realm roles; later requests only record ``last_seen_at``: realm roles and the
-    display name are not re-synchronised (Q-I1), so a role removed at the provider
-    must also be revoked in Yakhnama. If a concurrent first request of the same
-    user wins the insert, the resulting conflict is retried once as a lookup.
+    The first request of an ``(issuer, subject)`` creates the user with the mapped realm
+    roles and no display name (the token's is never copied); later requests only record
+    ``last_seen_at``: realm roles are not re-synchronised (Q-I1), so a role removed at
+    the provider must also be revoked in Yakhnama. If a concurrent first request of the
+    same user wins the insert, the resulting conflict is retried once as a lookup.
 
     Implements: Command Handler.
     """
@@ -249,9 +245,10 @@ class EnsureUserFromPrincipalHandler(_IdentityHandler):
             user = await uow.users.get_by_identity(command.identity)
             memberships: tuple[Membership, ...] = ()
             if user is None:
+                # No display name: the user chooses one through RenameSelf.
                 change = UserFactory().mirror(
                     command.identity,
-                    _usable_display_name(command.display_name),
+                    None,
                     command.realm_roles,
                     ids=self._ids,
                     clock=self._clock,
@@ -534,7 +531,12 @@ class RenameOrganizationHandler(_IdentityHandler):
 
 
 class AddMemberHandler(_IdentityHandler):
-    """Add a user to an organisation; its admins and platform administrators only.
+    """Add a user to an organisation; platform administrators only.
+
+    Organisation admins may not add members yet: without the member's consent,
+    anyone could create an organisation, add arbitrary user ids and learn from the
+    response whether each id exists and what its display name is. ``IsAdmin`` stays
+    until an invitation-and-acceptance flow exists (Q-I9, security review).
 
     Implements: Command Handler.
     """
@@ -549,7 +551,7 @@ class AddMemberHandler(_IdentityHandler):
             The new member.
 
         Raises:
-            PermissionDeniedError: If the actor may not manage the organisation.
+            PermissionDeniedError: If the actor is not a platform administrator.
             AccountSuspendedError: If the acting user has been suspended.
             OrganizationNotFoundError: If the organisation does not exist.
             UserNotFoundError: If the user does not exist.
@@ -557,11 +559,7 @@ class AddMemberHandler(_IdentityHandler):
             UserSuspendedError: If the user is suspended.
             DuplicateMembershipError: If the user is already a member.
         """
-        require_allowed(
-            CanManageOrganization(command.organization_id),
-            command.actor,
-            action="add organisation members",
-        )
+        require_allowed(IsAdmin(), command.actor, action="add organisation members")
         async with self._uow_factory() as uow:
             await _load_acting_user(uow, command.actor)
             organization = await _load_organization(uow, command.organization_id)
@@ -599,7 +597,8 @@ class ChangeMemberRoleHandler(_IdentityHandler):
             AccountSuspendedError: If the acting user has been suspended.
             OrganizationNotFoundError: If the organisation does not exist.
             MembershipNotFoundError: If the user is not a member.
-            PreconditionFailedError: If ``expected_version`` is stale.
+            PreconditionFailedError: If ``expected_membership_id`` or
+                ``expected_version`` does not match the current membership.
             LastOrganizationAdminError: If this demotes the only admin.
             UserNotFoundError: If the member's user record is missing.
         """
@@ -612,8 +611,10 @@ class ChangeMemberRoleHandler(_IdentityHandler):
             await _load_acting_user(uow, command.actor)
             organization = await _load_organization(uow, command.organization_id)
             members = await uow.memberships.list_for_organization(organization.id)
-            _check_version(
-                command.expected_version, members.get(command.user_id).version
+            _check_membership(
+                command.expected_membership_id,
+                command.expected_version,
+                members.get(command.user_id),
             )
             change = members.change_role(
                 command.user_id, command.role, clock=self._clock, ids=self._ids
@@ -646,7 +647,8 @@ class RemoveMemberHandler(_IdentityHandler):
             AccountSuspendedError: If the acting user has been suspended.
             OrganizationNotFoundError: If the organisation does not exist.
             MembershipNotFoundError: If the user is not a member.
-            PreconditionFailedError: If ``expected_version`` is stale.
+            PreconditionFailedError: If ``expected_membership_id`` or
+                ``expected_version`` does not match the current membership.
             LastOrganizationAdminError: If this removes the only admin.
         """
         require_allowed(
@@ -659,7 +661,9 @@ class RemoveMemberHandler(_IdentityHandler):
             organization = await _load_organization(uow, command.organization_id)
             members = await uow.memberships.list_for_organization(organization.id)
             current = members.get(command.user_id)
-            _check_version(command.expected_version, current.version)
+            _check_membership(
+                command.expected_membership_id, command.expected_version, current
+            )
             members.remove(
                 command.user_id, clock=self._clock, ids=self._ids
             ).record_into(uow)

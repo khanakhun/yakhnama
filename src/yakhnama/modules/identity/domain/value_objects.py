@@ -172,7 +172,8 @@ ORGANIZATION_SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{1,63}$"
 
 OrganizationSlug = Annotated[str, StringConstraints(pattern=ORGANIZATION_SLUG_PATTERN)]
 """URL-safe organisation handle: 2 to 64 lower-case ASCII letters, digits or ``-``,
-starting with a letter or digit. Unique among organisations."""
+starting with a letter or digit. Unique among organisations. The ASCII-only pattern
+already excludes every control, surrogate and bidirectional formatting character."""
 
 SUBJECT_MAX_LENGTH = 255
 # OpenID Connect Core 1.0 §2: "sub" is at most 255 ASCII characters. Printable ASCII
@@ -243,12 +244,37 @@ Compared exactly, as OIDC requires. ``http`` is accepted only for loopback hosts
 DISPLAY_NAME_MAX_LENGTH = 120
 
 
+# Unicode categories refused in free text: control characters (``Cc``, NUL
+# included), which are unsafe in logs and exports, and lone surrogates (``Cs``), which
+# cannot be encoded as UTF-8 and would fail only later, at serialisation.
+FORBIDDEN_TEXT_CATEGORIES: Final = frozenset({"Cc", "Cs"})
+
+# Bidirectional embeddings, overrides (U+202A-U+202E) and isolates (U+2066-U+2069)
+# reorder the text around them, so a name could display differently from how it
+# is stored and compared ("Trojan Source", CVE-2021-42574).
+BIDI_CONTROL_CHARACTERS: Final = frozenset(
+    chr(code_point) for code_point in (*range(0x202A, 0x202F), *range(0x2066, 0x206A))
+)
+
+
+def _is_forbidden_character(character: str) -> bool:
+    return (
+        unicodedata.category(character) in FORBIDDEN_TEXT_CATEGORIES
+        or character in BIDI_CONTROL_CHARACTERS
+    )
+
+
 def _normalise_free_text(value: str) -> str:
-    # NFC so a name typed with combining characters equals the precomposed form, and
-    # no control characters (NUL included) so the text is safe in logs and exports.
+    # NFC so a name typed with combining characters equals its precomposed form. NFC
+    # never turns an allowed character into a forbidden one and keeps lone
+    # surrogates as they are, so checking after it (and after stripping, which
+    # keeps surrounding whitespace such as a tab acceptable) misses nothing.
     normalised = unicodedata.normalize("NFC", value).strip()
-    if any(unicodedata.category(character) == "Cc" for character in normalised):
-        message = "text must not contain control characters"
+    if any(_is_forbidden_character(character) for character in normalised):
+        message = (
+            "text must not contain control, surrogate or bidirectional "
+            "formatting characters"
+        )
         raise ValueError(message)
     return normalised
 

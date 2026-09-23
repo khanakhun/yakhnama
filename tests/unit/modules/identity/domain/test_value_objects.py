@@ -9,6 +9,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from tests.fakes.ids import SequentialIdGenerator
+from yakhnama.modules.identity.domain import value_objects
 from yakhnama.modules.identity.domain.value_objects import (
     Actor,
     DisplayName,
@@ -374,3 +375,55 @@ def test_actor_json_round_trip_is_lossless() -> None:
     result = Actor.model_validate_json(actor.model_dump_json())
 
     assert result == actor
+
+
+# --------------------------------------------------------------------------- #
+# Forbidden characters in free text and slugs                                 #
+# --------------------------------------------------------------------------- #
+
+_FREE_TEXT_TYPES: dict[str, TypeAdapter[str]] = {
+    "display_name": TypeAdapter(value_objects.DisplayName),
+    "organization_name": TypeAdapter(value_objects.OrganizationName),
+    "status_reason": TypeAdapter(value_objects.StatusReason),
+}
+_SLUG: TypeAdapter[str] = TypeAdapter(value_objects.OrganizationSlug)
+
+_CONTROL = st.characters(categories=["Cc"])
+_SURROGATE = st.characters(categories=["Cs"])
+_BIDI = st.sampled_from(sorted(value_objects.BIDI_CONTROL_CHARACTERS))
+_FORBIDDEN = st.one_of(_CONTROL, _SURROGATE, _BIDI)
+_SAFE_LETTERS = st.text(alphabet=st.characters(categories=["L"]), max_size=10)
+
+
+def test_bidi_control_characters_are_the_overrides_and_isolates() -> None:
+    expected = {chr(code) for code in range(0x202A, 0x202F)} | {
+        chr(code) for code in range(0x2066, 0x206A)
+    }
+
+    assert expected == value_objects.BIDI_CONTROL_CHARACTERS
+
+
+@pytest.mark.parametrize("kind", sorted(_FREE_TEXT_TYPES))
+@given(prefix=_SAFE_LETTERS, forbidden=_FORBIDDEN, suffix=_SAFE_LETTERS)
+def test_free_text_with_forbidden_character_inside_is_rejected(
+    kind: str, prefix: str, forbidden: str, suffix: str
+) -> None:
+    # Letters on both sides keep the character inside the text, where stripping
+    # cannot remove a control character such as a tab.
+    value = f"a{prefix}{forbidden}{suffix}z"
+
+    with pytest.raises(PydanticValidationError):
+        _FREE_TEXT_TYPES[kind].validate_python(value)
+
+
+@given(prefix=_SAFE_LETTERS, forbidden=_FORBIDDEN)
+def test_organization_slug_with_forbidden_character_is_rejected(
+    prefix: str, forbidden: str
+) -> None:
+    with pytest.raises(PydanticValidationError):
+        _SLUG.validate_python(f"ab{prefix.lower()}{forbidden}")
+
+
+@pytest.mark.parametrize("kind", sorted(_FREE_TEXT_TYPES))
+def test_free_text_surrounding_tab_is_stripped_not_rejected(kind: str) -> None:
+    assert _FREE_TEXT_TYPES[kind].validate_python("\tName\n") == "Name"

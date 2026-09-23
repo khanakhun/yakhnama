@@ -721,7 +721,7 @@
       },
       "MemberSummary": {
         "additionalProperties": false,
-        "description": "One member of an organisation in a listing.\n\nImplements: DTO.\n\nAttributes:\n    user_id: The member.\n    display_name: The member's optional display name.\n    role: ``member`` or ``admin`` of the organisation.\n    since: When the user joined, UTC.\n    version: The membership's optimistic-concurrency version.",
+        "description": "One member of an organisation in a listing.\n\nImplements: DTO.\n\nAttributes:\n    membership_id: The membership; with ``version`` it forms the member's\n        ``ETag``, so a tag never survives a removal and re-addition.\n    user_id: The member.\n    display_name: The member's optional display name.\n    role: ``member`` or ``admin`` of the organisation.\n    since: When the user joined, UTC.\n    version: The membership's optimistic-concurrency version.",
         "properties": {
           "display_name": {
             "anyOf": [
@@ -735,6 +735,11 @@
               }
             ],
             "title": "Display Name"
+          },
+          "membership_id": {
+            "format": "uuid",
+            "title": "Membership Id",
+            "type": "string"
           },
           "role": {
             "$ref": "#/components/schemas/OrganizationRole"
@@ -757,6 +762,7 @@
           }
         },
         "required": [
+          "membership_id",
           "user_id",
           "display_name",
           "role",
@@ -2409,7 +2415,7 @@
         ]
       },
       "post": {
-        "description": "Add a user to an organisation.\n\nArgs:\n    organization_id: The organisation.\n    body: The user and their role.\n    actor: The authenticated caller; ``CanManageOrganization`` decides.\n    response: Used to set the member's ``ETag``.\n    services: Identity services bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The new member.",
+        "description": "Add a user to an organisation.\n\nArgs:\n    organization_id: The organisation.\n    body: The user and their role.\n    actor: The authenticated caller; platform administrators only until\n        members can consent (Q-I9).\n    response: Used to set the member's ``ETag``.\n    services: Identity services bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The new member.",
         "operationId": "add_member_api_v1_organizations__organization_id__members_post",
         "parameters": [
           {

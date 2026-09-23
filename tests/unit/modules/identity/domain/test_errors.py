@@ -57,7 +57,7 @@ def test_identity_error_belongs_to_its_kernel_family(
     assert error_class.code == family.code
 
 
-def test_user_errors_for_id_carry_the_user_id() -> None:
+def test_user_errors_for_id_carry_the_id_in_details_never_the_message() -> None:
     errors: list[YakhnamaError] = [
         UserNotFoundError.for_id(USER_ID),
         UserSuspendedError.for_id(USER_ID),
@@ -67,22 +67,24 @@ def test_user_errors_for_id_carry_the_user_id() -> None:
 
     for error in errors:
         assert error.details == {"user_id": str(USER_ID)}
-        assert str(USER_ID) in error.message
+        assert str(USER_ID) not in error.message
 
 
-def test_organization_not_found_for_id_and_slug_carry_the_key() -> None:
+def test_organization_not_found_carries_the_key_in_details_only() -> None:
     by_id = OrganizationNotFoundError.for_id(ORGANIZATION_ID)
     by_slug = OrganizationNotFoundError.for_slug("test-org")
 
     assert by_id.details == {"organization_id": str(ORGANIZATION_ID)}
     assert by_slug.details == {"slug": "test-org"}
-    assert "test-org" in by_slug.message
+    assert "test-org" not in by_slug.message
+    assert str(ORGANIZATION_ID) not in by_id.message
 
 
 def test_organization_slug_taken_for_slug_carries_the_slug() -> None:
     error = OrganizationSlugTakenError.for_slug("test-org")
 
     assert error.details == {"slug": "test-org"}
+    assert error.message == "organisation slug is taken"
 
 
 @pytest.mark.parametrize(
@@ -100,6 +102,8 @@ def test_membership_errors_for_member_carry_both_ids(
         "organization_id": str(ORGANIZATION_ID),
         "user_id": str(USER_ID),
     }
+    assert str(USER_ID) not in error.message
+    assert str(ORGANIZATION_ID) not in error.message
 
 
 @pytest.mark.parametrize(
@@ -114,4 +118,5 @@ def test_organization_status_errors_carry_id_and_status(
         "organization_id": str(ORGANIZATION_ID),
         "status": "retired",
     }
-    assert "retired" in error.message
+    assert "retired" not in error.message
+    assert str(ORGANIZATION_ID) not in error.message

@@ -4,17 +4,19 @@
 administrator-only ``/api/v1/users/...``; ``moderation_router`` serves
 ``/api/v1/moderation/...``, where every route requires ``CanModerate``.
 
-Authorisation lives in the command handlers (``CanManageOrganization``, ``IsAdmin``,
-self rules); reads check the identity read policies here, before the query service
-is called, as ``IdentityQueryService`` requires. Errors are never mapped here: the
-handlers, policies and this router raise ``YakhnamaError`` subclasses and the
-exception handlers in ``main.py`` render Problem Details.
+Authorisation lives in the command handlers (``CanManageOrganization``, ``IsAdmin``
+(which also guards adding members until members can consent, Q-I9), self rules); reads
+check the identity read policies here, before the query service is called, as
+``IdentityQueryService`` requires. Errors are never mapped here: the handlers, policies
+and this router raise ``YakhnamaError`` subclasses and the exception handlers in
+``main.py`` render Problem Details.
 
-Concurrency: ``PATCH /me`` and ``PATCH /organizations/{id}`` require ``If-Match``
-(428 without it, 412 when stale). The member and administrator routes accept an
-optional ``If-Match`` and check it when sent. A member's tag names the member's user
-id and the membership version. ``POST`` routes are made idempotent by the platform
-middleware when an ``Idempotency-Key`` (a UUID) is sent.
+Concurrency: ``PATCH /me`` and ``PATCH /organizations/{id}`` require ``If-Match`` (428
+without it, 412 when stale). The member and administrator routes accept an optional
+``If-Match`` and check it when sent. A member's tag names the membership id and version,
+so a tag for a membership that was removed and re-added never matches. ``POST`` routes
+are made idempotent by the platform middleware when an ``Idempotency-Key`` (a UUID) is
+sent.
 
 Patterns: none from the catalog (thin transport layer over commands and queries).
 """
@@ -78,11 +80,18 @@ from yakhnama.modules.identity.public import (
 )
 from yakhnama.platform.auth.tokens import REJECTION_MESSAGE
 from yakhnama.platform.etag import (
+    PRECONDITION_FAILED_MESSAGE,
+    WEAK_PREFIX,
     expected_version_from_if_match,
     make_etag,
+    parse_if_match,
     set_etag,
 )
-from yakhnama.shared_kernel.errors import AuthenticationError, NotFoundError
+from yakhnama.shared_kernel.errors import (
+    AuthenticationError,
+    NotFoundError,
+    PreconditionFailedError,
+)
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
 
@@ -176,7 +185,39 @@ def _next_link(path: str, parameters: ListMembersParameters, cursor: str) -> str
 
 
 def _member_etag(member: MemberSummary) -> str:
-    return make_etag(member.version, member.user_id)
+    return make_etag(member.version, member.membership_id)
+
+
+def membership_precondition(
+    if_match: str | None,
+) -> tuple[UUID | None, int | None]:
+    """Return the membership id and version named by an optional ``If-Match``.
+
+    The member routes are addressed by user id, so the membership id cannot be
+    taken from the path; it is read from the tag and checked by the handler.
+
+    Args:
+        if_match: The header, or ``None`` when the client sent none.
+
+    Returns:
+        ``(membership_id, version)``, or ``(None, None)`` without the header.
+
+    Raises:
+        PreconditionFailedError: If the header is not one strong tag of the form
+            ``"<membership id>:<version>"``.
+    """
+    if if_match is None:
+        return None, None
+    tags = parse_if_match(if_match)
+    if len(tags) != 1 or tags[0].startswith(WEAK_PREFIX):
+        raise PreconditionFailedError(PRECONDITION_FAILED_MESSAGE)
+    # The version part is validated by expected_version_from_if_match below.
+    entity_text = tags[0].removeprefix('"').partition(":")[0]
+    try:
+        membership_id = UUID(entity_text)
+    except ValueError as error:
+        raise PreconditionFailedError(PRECONDITION_FAILED_MESSAGE) from error
+    return membership_id, expected_version_from_if_match(if_match, membership_id)
 
 
 def authenticated_user_id(actor: Actor) -> UUID:
@@ -460,7 +501,8 @@ async def add_member(  # noqa: PLR0913  # reason: FastAPI injects each input
     Args:
         organization_id: The organisation.
         body: The user and their role.
-        actor: The authenticated caller; ``CanManageOrganization`` decides.
+        actor: The authenticated caller; platform administrators only until
+            members can consent (Q-I9).
         response: Used to set the member's ``ETag``.
         services: Identity services bound by the composition root.
         idempotency_key: Documented here; the idempotency middleware acts on it.
@@ -511,6 +553,7 @@ async def change_member_role(  # noqa: PLR0913  # reason: FastAPI injects each i
     Returns:
         The member after the change.
     """
+    expected_membership_id, expected_version = membership_precondition(if_match)
     member = await ChangeMemberRoleHandler(
         services.identity_uow_factory, services.clock, services.id_generator
     )(
@@ -519,7 +562,8 @@ async def change_member_role(  # noqa: PLR0913  # reason: FastAPI injects each i
             organization_id=organization_id,
             user_id=user_id,
             role=body.role,
-            expected_version=optional_expected_version(if_match, user_id),
+            expected_membership_id=expected_membership_id,
+            expected_version=expected_version,
         )
     )
     set_etag(response, _member_etag(member))
@@ -547,6 +591,7 @@ async def remove_member(
         services: Identity services bound by the composition root.
         if_match: Optional member ETag the removal is based on.
     """
+    expected_membership_id, expected_version = membership_precondition(if_match)
     await RemoveMemberHandler(
         services.identity_uow_factory, services.clock, services.id_generator
     )(
@@ -554,7 +599,8 @@ async def remove_member(
             actor=actor,
             organization_id=organization_id,
             user_id=user_id,
-            expected_version=optional_expected_version(if_match, user_id),
+            expected_membership_id=expected_membership_id,
+            expected_version=expected_version,
         )
     )
 

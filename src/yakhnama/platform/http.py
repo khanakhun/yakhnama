@@ -14,7 +14,8 @@ ASGI app. ``yakhnama.main`` installs them in this order, outermost first:
    headers or the body, which can all carry personal data.
 3. ``SecurityHeadersMiddleware``: ``nosniff``, ``no-referrer``, ``DENY`` framing, a
    ``default-src 'none'`` CSP (a relaxed one only on the API reference page,
-   ADR 0014) and HSTS in production.
+   ADR 0014), HSTS in production, and ``Cache-Control: no-store`` on responses to
+   requests carrying ``Authorization`` and on the personal-data paths.
 4. ``TrustedHostMiddleware``: 400 ``invalid-host`` for a ``Host`` not in
    ``trusted_hosts``. It replaces Starlette's middleware of the same name only to
    answer with Problem Details instead of plain text.
@@ -87,6 +88,7 @@ CORS_EXPOSED_HEADERS: Final = (
 )
 CORS_MAX_AGE_SECONDS: Final = 600
 UNMATCHED_ROUTE: Final = "<unmatched>"
+NO_STORE: Final = "no-store"
 
 _ESCAPED_NUL: Final = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
 _RAW_NUL: Final = b"\x00"
@@ -253,6 +255,7 @@ class SecurityHeadersMiddleware:
         *,
         is_hsts_enabled: bool,
         page_policies: Mapping[str, str] | None = None,
+        private_path_prefixes: Sequence[str] = (),
     ) -> None:
         """Wrap ``app``.
 
@@ -262,10 +265,14 @@ class SecurityHeadersMiddleware:
                 origin would break development browsers for its whole max-age).
             page_policies: A CSP per exact path for HTML pages (the API
                 reference); every other response gets ``API_CONTENT_SECURITY_POLICY``.
+            private_path_prefixes: Paths (each also matching its subpaths) whose
+                responses always get ``Cache-Control: no-store``, for example
+                ``/api/v1/me``.
         """
         self._app = app
         self._is_hsts_enabled = is_hsts_enabled
         self._page_policies = dict(page_policies or {})
+        self._private_path_prefixes = tuple(private_path_prefixes)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Pass the request on and add the headers to its response.
@@ -282,6 +289,10 @@ class SecurityHeadersMiddleware:
             scope.get("path", ""), API_CONTENT_SECURITY_POLICY
         )
         headers = security_headers(policy, is_hsts_enabled=self._is_hsts_enabled)
+        path: str = scope.get("path", "")
+        is_private = "authorization" in Headers(scope=scope) or is_under_any(
+            path, self._private_path_prefixes
+        )
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -289,9 +300,28 @@ class SecurityHeadersMiddleware:
                 for name, value in headers.items():
                     if name not in response_headers:
                         response_headers[name] = value
+                if is_private:
+                    # Overrides whatever the route set: a response to a credentialed
+                    # request, or about a person, must never sit in a shared or
+                    # browser cache (security review, Phase 2).
+                    response_headers["Cache-Control"] = NO_STORE
             await send(message)
 
         await self._app(scope, receive, send_with_headers)
+
+
+def is_under_any(path: str, prefixes: Sequence[str]) -> bool:
+    """Tell whether ``path`` equals one of ``prefixes`` or lies below one.
+
+    Args:
+        path: A request path.
+        prefixes: Paths without a trailing slash, for example ``/api/v1/users``.
+
+    Returns:
+        ``True`` for ``/api/v1/users`` and ``/api/v1/users/1``, but not for
+        ``/api/v1/usersx``.
+    """
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in prefixes)
 
 
 def host_of(scope: Scope) -> str:

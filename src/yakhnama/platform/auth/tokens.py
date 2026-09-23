@@ -24,7 +24,7 @@ the PyJWT error type is logged, as ``reason``.
 Patterns: Adapter, Anti-Corruption Layer (claims to ``Principal``).
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Final
 
@@ -60,20 +60,25 @@ ALGORITHM_NOT_ALLOWED: Final = "algorithm_not_allowed"
 MISSING_KEY_ID: Final = "missing_key_id"
 UNKNOWN_KEY_ID: Final = "unknown_key_id"
 INVALID_CLAIMS: Final = "invalid_claims"
+DEFAULT_ROLES_CLAIM: Final = "realm_access.roles"
 
 
-class RealmAccessClaim(BaseModel):
-    """Keycloak's ``realm_access`` claim.
+def claim_at(claims: Mapping[str, object], path: str) -> object:
+    """Return the value at a dotted claim path, or ``None`` if any part is missing.
 
-    Implements: Anti-Corruption Layer (Keycloak access-token claim).
+    Args:
+        claims: The decoded token payload.
+        path: For example ``"realm_access.roles"``.
 
-    Attributes:
-        roles: Realm role names.
+    Returns:
+        The value, or ``None``.
     """
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    roles: tuple[RoleName, ...] = Field(default=(), max_length=MAX_ROLES)
+    value: object = claims
+    for part in path.split("."):
+        if not isinstance(value, Mapping) or part not in value:
+            return None
+        value = value[part]
+    return value
 
 
 class AccessTokenClaims(BaseModel):
@@ -91,10 +96,11 @@ class AccessTokenClaims(BaseModel):
         iat: Issue time, seconds since the epoch.
         nbf: Not-before time, seconds since the epoch, optional.
         jti: Token id, optional.
-        name: Full name, optional personal data.
-        preferred_username: Login name, optional personal data.
-        realm_access: Keycloak realm roles, optional.
-        roles: Provider-neutral role list, optional.
+        preferred_username: Login name, optional personal data; the only source
+            of ``display_name``.
+        realm_roles: The roles read from the configured claim path
+            (``oidc_roles_claim``); always set by ``TokenValidator``, never read
+            from a claim of this name.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -105,12 +111,10 @@ class AccessTokenClaims(BaseModel):
     iat: float = Field(ge=0, allow_inf_nan=False)
     nbf: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     jti: str | None = Field(default=None, min_length=1, max_length=TOKEN_ID_MAX_LENGTH)
-    name: str | None = Field(default=None, max_length=DISPLAY_NAME_MAX_LENGTH)
     preferred_username: str | None = Field(
         default=None, max_length=DISPLAY_NAME_MAX_LENGTH
     )
-    realm_access: RealmAccessClaim | None = None
-    roles: tuple[RoleName, ...] = Field(default=(), max_length=MAX_ROLES)
+    realm_roles: tuple[RoleName, ...] = Field(default=(), max_length=MAX_ROLES)
 
     def time_problem(self, now: float, leeway: float) -> str | None:
         """Return why the token is not valid at ``now``, or ``None`` if it is.
@@ -133,24 +137,20 @@ class AccessTokenClaims(BaseModel):
     def to_principal(self) -> Principal:
         """Map the claims to the API's ``Principal``.
 
+        ``display_name`` comes from ``preferred_username`` only, never from
+        ``name``: a login name is chosen by the user for display, while ``name``
+        is typically the legal full name, which the API has no need to hold
+        (security review, Phase 2).
+
         Returns:
-            The principal; ``display_name`` is the first non-blank of ``name`` and
-            ``preferred_username``.
+            The principal.
         """
-        realm_roles = self.realm_access.roles if self.realm_access is not None else ()
-        display_name = next(
-            (
-                candidate.strip()
-                for candidate in (self.name, self.preferred_username)
-                if candidate is not None and candidate.strip()
-            ),
-            None,
-        )
+        username = (self.preferred_username or "").strip()
         return Principal(
             subject=self.sub,
             issuer=self.iss,
-            realm_roles=frozenset((*realm_roles, *self.roles)),
-            display_name=display_name,
+            realm_roles=frozenset(self.realm_roles),
+            display_name=username or None,
             token_id=self.jti,
             expires_at=datetime.fromtimestamp(self.exp, UTC),
         )
@@ -171,6 +171,7 @@ class TokenValidator:
         algorithms: Sequence[str],
         leeway_seconds: int,
         clock: Clock,
+        roles_claim: str = DEFAULT_ROLES_CLAIM,
     ) -> None:
         """Create the validator.
 
@@ -181,6 +182,8 @@ class TokenValidator:
             algorithms: The allow-list of JWS algorithms.
             leeway_seconds: Clock-skew tolerance for the time claims.
             clock: Source of the current instant for the time claims.
+            roles_claim: The one dotted claim path roles are read from; no other
+                claim grants a role.
         """
         self._jwks_client = jwks_client
         self._issuer = issuer
@@ -188,6 +191,7 @@ class TokenValidator:
         self._algorithms = tuple(algorithms)
         self._leeway_seconds = leeway_seconds
         self._clock = clock
+        self._roles_claim = roles_claim
 
     async def validate(self, token: str) -> Principal:
         """Verify ``token`` and return the principal it authenticates.
@@ -235,7 +239,12 @@ class TokenValidator:
             # "from None": the PyJWT error text can quote claim values.
             raise _rejected(type(error).__name__) from None
         try:
-            claims = AccessTokenClaims.model_validate(payload)
+            # The roles field is always overwritten from the configured path, so a
+            # claim that happens to be named "realm_roles" grants nothing.
+            roles = claim_at(payload, self._roles_claim)
+            claims = AccessTokenClaims.model_validate(
+                {**payload, "realm_roles": [] if roles is None else roles}
+            )
             principal = claims.to_principal()
         # ValueError includes Pydantic's ValidationError (a claim out of bounds, too
         # many roles in total); OverflowError and OSError come from an ``exp`` too

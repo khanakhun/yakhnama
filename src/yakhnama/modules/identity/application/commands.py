@@ -12,7 +12,6 @@ Patterns: Command.
 from pydantic import BaseModel, ConfigDict, Field
 
 from yakhnama.modules.identity.domain.value_objects import (
-    DISPLAY_NAME_MAX_LENGTH,
     Actor,
     DisplayName,
     ExternalIdentity,
@@ -30,13 +29,15 @@ from yakhnama.shared_kernel.ids import EntityId
 class EnsureUserFromPrincipal(BaseModel):
     """Mirror the caller on first sight, touch them afterwards, return their actor.
 
+    The token's display-name claim is deliberately not part of the command: a new
+    user starts without a display name and sets one through ``RenameSelf``
+    (``PATCH /me``), so no personal data is copied from the provider without the
+    user choosing it (security review, Phase 2).
+
     Implements: Command.
 
     Attributes:
         identity: The verified token's ``(iss, sub)``.
-        display_name: The token's display-name claim, unvalidated: a claim that is
-            not a valid ``DisplayName`` is dropped, never rejected, because the
-            caller cannot fix their provider's data (**proposed**).
         realm_roles: Roles mapped from the token's realm roles by the platform;
             copied only when the user is first mirrored (Q-I1).
     """
@@ -44,7 +45,6 @@ class EnsureUserFromPrincipal(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     identity: ExternalIdentity
-    display_name: str | None = Field(default=None, max_length=DISPLAY_NAME_MAX_LENGTH)
     realm_roles: frozenset[Role] = Field(default=frozenset(), max_length=len(Role))
 
 
@@ -118,6 +118,9 @@ class ChangeMemberRole(BaseModel):
         organization_id: The organisation.
         user_id: The member.
         role: The new role.
+        expected_membership_id: The membership the client's ``If-Match`` tag
+            names; a membership removed and re-added has a new id, so a tag for
+            the old one never matches the new one even at the same version.
         expected_version: The membership version the client last saw.
     """
 
@@ -127,6 +130,7 @@ class ChangeMemberRole(BaseModel):
     organization_id: EntityId
     user_id: EntityId
     role: OrganizationRole
+    expected_membership_id: EntityId | None = None
     expected_version: RecordVersion | None = None
 
 
@@ -139,6 +143,9 @@ class RemoveMember(BaseModel):
         actor: Who asks.
         organization_id: The organisation.
         user_id: The member.
+        expected_membership_id: The membership the client's ``If-Match`` tag
+            names; a membership removed and re-added has a new id, so a tag for
+            the old one never matches the new one even at the same version.
         expected_version: The membership version the client last saw.
     """
 
@@ -147,6 +154,7 @@ class RemoveMember(BaseModel):
     actor: Actor
     organization_id: EntityId
     user_id: EntityId
+    expected_membership_id: EntityId | None = None
     expected_version: RecordVersion | None = None
 
 

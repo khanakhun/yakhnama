@@ -1,8 +1,10 @@
 """Errors of the ``identity`` bounded context.
 
 Every class subclasses one of the shared-kernel families, so the API maps it to Problem
-Details by family without importing this module (``AGENTS.md`` §2.3). Messages and
-details carry ids, slugs and roles only: never a display name, subject or issuer,
+Details by family without importing this module (``AGENTS.md`` §2.3). Messages are
+fixed strings that never repeat an input value, so nothing a client sent is echoed
+into logs or responses through the message; the ids, slugs and statuses a reader
+needs travel in ``details``. Neither carries a display name, subject or issuer,
 because those identify or describe a person (``AGENTS.md`` §5).
 
 Patterns: Domain Error (proposed in ADR 0012).
@@ -36,7 +38,7 @@ class UserNotFoundError(NotFoundError):
         Returns:
             The error, with the id in ``details``.
         """
-        return cls(f"no user with id {user_id}", details={"user_id": str(user_id)})
+        return cls("no such user", details={"user_id": str(user_id)})
 
 
 class OrganizationNotFoundError(NotFoundError):
@@ -56,7 +58,7 @@ class OrganizationNotFoundError(NotFoundError):
             The error, with the id in ``details``.
         """
         return cls(
-            f"no organisation with id {organization_id}",
+            "no such organisation",
             details={"organization_id": str(organization_id)},
         )
 
@@ -70,7 +72,7 @@ class OrganizationNotFoundError(NotFoundError):
         Returns:
             The error, with the slug in ``details``.
         """
-        return cls(f"no organisation with slug {slug!r}", details={"slug": slug})
+        return cls("no such organisation", details={"slug": slug})
 
 
 class MembershipNotFoundError(NotFoundError):
@@ -91,7 +93,7 @@ class MembershipNotFoundError(NotFoundError):
             The error, with both ids in ``details``.
         """
         return cls(
-            f"user {user_id} is not a member of organisation {organization_id}",
+            "the user is not a member of the organisation",
             details={"organization_id": str(organization_id), "user_id": str(user_id)},
         )
 
@@ -114,7 +116,7 @@ class DuplicateMembershipError(ConflictError):
             The error, with both ids in ``details``.
         """
         return cls(
-            f"user {user_id} is already a member of organisation {organization_id}",
+            "the user is already a member of the organisation",
             details={"organization_id": str(organization_id), "user_id": str(user_id)},
         )
 
@@ -137,7 +139,7 @@ class OrganizationSlugTakenError(ConflictError):
         Returns:
             The error, with the slug in ``details``.
         """
-        return cls(f"organisation slug {slug!r} is taken", details={"slug": slug})
+        return cls("organisation slug is taken", details={"slug": slug})
 
 
 class UserSuspendedError(InvalidTransitionError):
@@ -156,7 +158,7 @@ class UserSuspendedError(InvalidTransitionError):
         Returns:
             The error, with the id in ``details``.
         """
-        return cls(f"user {user_id} is suspended", details={"user_id": str(user_id)})
+        return cls("the user is suspended", details={"user_id": str(user_id)})
 
 
 class UserNotSuspendedError(InvalidTransitionError):
@@ -175,9 +177,7 @@ class UserNotSuspendedError(InvalidTransitionError):
         Returns:
             The error, with the id in ``details``.
         """
-        return cls(
-            f"user {user_id} is not suspended", details={"user_id": str(user_id)}
-        )
+        return cls("the user is not suspended", details={"user_id": str(user_id)})
 
 
 class AccountSuspendedError(PermissionDeniedError):
@@ -201,7 +201,7 @@ class AccountSuspendedError(PermissionDeniedError):
             The error, with the id in ``details``.
         """
         return cls(
-            f"the account of user {user_id} is suspended",
+            "the account is suspended",
             details={"user_id": str(user_id)},
         )
 
@@ -244,7 +244,7 @@ class LastOrganizationAdminError(InvariantViolationError):
             The error, with both ids in ``details``.
         """
         return cls(
-            f"user {user_id} is the only admin of organisation {organization_id}",
+            "the user is the only admin of the organisation",
             details={"organization_id": str(organization_id), "user_id": str(user_id)},
         )
 
@@ -267,7 +267,7 @@ class OrganizationNotActiveError(InvalidTransitionError):
             The error, with the id and status in ``details``.
         """
         return cls(
-            f"organisation {organization_id} is {status}",
+            "the organisation is not active",
             details={"organization_id": str(organization_id), "status": status},
         )
 
@@ -290,6 +290,6 @@ class OrganizationNotSuspendedError(InvalidTransitionError):
             The error, with the id and status in ``details``.
         """
         return cls(
-            f"organisation {organization_id} is {status}, not suspended",
+            "the organisation is not suspended",
             details={"organization_id": str(organization_id), "status": status},
         )

@@ -5,7 +5,8 @@ Signing keys are fetched from the identity provider's JWKS endpoint, cached for
 does not hold, which is how a key rotation reaches the API without a restart. That
 forced refetch is rate-limited to one per ``UNKNOWN_KID_REFETCH_INTERVAL``, so a
 stream of tokens with made-up ``kid`` values cannot turn the API into a load
-generator against the provider.
+generator against the provider. The same interval is a backoff after a failed
+fetch, and expired keys are served for one more TTL while the provider is down.
 
 When the JWKS URL is not configured it is discovered once from
 ``<issuer>/.well-known/openid-configuration`` (OpenID Connect Discovery 1.0), whose
@@ -50,6 +51,7 @@ INVALID_DISCOVERY_DOCUMENT: Final = "invalid_discovery_document"
 DISCOVERY_ISSUER_MISMATCH: Final = "discovery_issuer_mismatch"
 INSECURE_JWKS_URI: Final = "insecure_jwks_uri"
 DOCUMENT_TOO_LARGE: Final = "document_too_large"
+REFETCH_BACKOFF: Final = "refetch_backoff"
 
 
 class JwksClient(Protocol):
@@ -181,8 +183,11 @@ class HttpJwksClient:
         """Return the signing key ``key_id``, fetching the JWKS when needed.
 
         The cache is used while it is younger than the TTL. An unknown ``kid``
-        triggers one refetch, unless the last fetch attempt is more recent than the
-        refetch interval; a failed forced refetch keeps the fresh cache.
+        triggers one refetch. No fetch is attempted while the last attempt,
+        successful or not, is more recent than the refetch interval (backoff).
+        When a refresh of an expired cache fails, or is skipped by the backoff, the
+        expired keys are still served for one more TTL (``jwks_stale_served``);
+        after that the provider counts as unavailable.
 
         Args:
             key_id: The ``kid`` header of the token being checked.
@@ -192,23 +197,52 @@ class HttpJwksClient:
 
         Raises:
             IdentityProviderUnavailableError: If the keys cannot be fetched and no
-                fresh cache exists.
+                cache within its TTL plus the grace period exists.
         """
         async with self._lock:
             now = self._clock.now()
             cached = self._cached
             if cached is None or now - cached.fetched_at >= self._cache_ttl:
-                cached = await self._refresh(now)
+                cached = await self._refresh_expired(now, cached)
             key = cached.keys.get(key_id)
             if key is not None or not self._may_force_refetch(now):
                 return key
             try:
                 cached = await self._refresh(now)
             except IdentityProviderUnavailableError:
-                # The cache is still fresh, so the provider being down says nothing
-                # about this token except that its key is not among the known ones.
+                # The cache is still usable, so the provider being down says
+                # nothing about this token except that its key is not known.
                 return None
             return cached.keys.get(key_id)
+
+    async def _refresh_expired(
+        self, now: datetime, stale: _CachedKeys | None
+    ) -> _CachedKeys:
+        if self._may_force_refetch(now):
+            try:
+                return await self._refresh(now)
+            except IdentityProviderUnavailableError:
+                usable = self._within_grace(now, stale)
+                if usable is None:
+                    raise
+        else:
+            usable = self._within_grace(now, stale)
+            if usable is None:
+                raise self._unavailable(REFETCH_BACKOFF)
+        structlog.get_logger(__name__).warning(
+            "jwks_stale_served",
+            age_seconds=int((now - usable.fetched_at).total_seconds()),
+        )
+        return usable
+
+    def _within_grace(
+        self, now: datetime, stale: _CachedKeys | None
+    ) -> _CachedKeys | None:
+        # One more TTL after expiry: long enough to ride out a provider restart,
+        # short enough that a withdrawn key stops working within two TTLs.
+        if stale is not None and now - stale.fetched_at < 2 * self._cache_ttl:
+            return stale
+        return None
 
     def _may_force_refetch(self, now: datetime) -> bool:
         # Measured from the last attempt, successful or not, so an outage does not

@@ -25,6 +25,7 @@ from yakhnama.platform.auth.tokens import (
     REJECTION_MESSAGE,
     AccessTokenClaims,
     TokenValidator,
+    claim_at,
 )
 from yakhnama.shared_kernel.errors import AuthenticationError
 
@@ -75,9 +76,10 @@ async def _rejection_reason(validator: TokenValidator, token: str) -> str:
 
 async def test_validate_valid_token_returns_principal(clock: FrozenClock) -> None:
     claims = access_token_claims(
-        subject="user-1", realm_roles=["moderator"], name="  Amina  "
+        subject="user-1",
+        realm_roles=["moderator", "org_admin"],
+        overrides={"preferred_username": "  amina  "},
     )
-    claims["roles"] = ["org_admin"]
     token = issue_token(claims, session_key_pair())
 
     principal = await _validator(clock).validate(token)
@@ -86,7 +88,7 @@ async def test_validate_valid_token_returns_principal(clock: FrozenClock) -> Non
         subject="user-1",
         issuer=TEST_ISSUER,
         realm_roles=frozenset({"moderator", "org_admin"}),
-        display_name="Amina",
+        display_name="amina",
         token_id=EXPECTED_TOKEN_ID,
         expires_at=clock.now() + timedelta(minutes=5),
     )
@@ -115,15 +117,79 @@ async def test_validate_audience_list_containing_audience_is_accepted(
     assert principal.subject == "test-subject"
 
 
-async def test_validate_preferred_username_used_when_name_absent(
+async def test_validate_name_claim_is_never_used_as_display_name(
     clock: FrozenClock,
 ) -> None:
-    claims = access_token_claims(overrides={"preferred_username": "amina", "name": " "})
+    claims = access_token_claims(name="Amina Baig")
     token = issue_token(claims, session_key_pair())
 
     principal = await _validator(clock).validate(token)
 
-    assert principal.display_name == "amina"
+    assert principal.display_name is None
+
+
+async def test_validate_blank_preferred_username_gives_no_display_name(
+    clock: FrozenClock,
+) -> None:
+    claims = access_token_claims(overrides={"preferred_username": "   "})
+    token = issue_token(claims, session_key_pair())
+
+    principal = await _validator(clock).validate(token)
+
+    assert principal.display_name is None
+
+
+async def test_validate_top_level_roles_claim_grants_nothing(
+    clock: FrozenClock,
+) -> None:
+    claims = access_token_claims(
+        overrides={"roles": ["admin"], "realm_roles": ["admin"]}
+    )
+    token = issue_token(claims, session_key_pair())
+
+    principal = await _validator(clock).validate(token)
+
+    assert principal.realm_roles == frozenset()
+
+
+async def test_validate_roles_read_from_configured_claim_path(
+    clock: FrozenClock,
+) -> None:
+    claims = access_token_claims(
+        realm_roles=["ignored"],
+        overrides={"resource_access": {"yakhnama-api": {"roles": ["moderator"]}}},
+    )
+    token = issue_token(claims, session_key_pair())
+    validator = TokenValidator(
+        jwks_client=FakeJwksClient([session_key_pair()]),
+        issuer=TEST_ISSUER,
+        audience=TEST_AUDIENCE,
+        algorithms=["RS256"],
+        leeway_seconds=LEEWAY_SECONDS,
+        clock=clock,
+        roles_claim="resource_access.yakhnama-api.roles",
+    )
+
+    principal = await validator.validate(token)
+
+    assert principal.realm_roles == frozenset({"moderator"})
+
+
+@pytest.mark.parametrize(
+    ("claims", "path", "expected"),
+    [
+        ({"a": {"b": [1]}}, "a.b", [1]),
+        ({"a": {"b": [1]}}, "a.c", None),
+        ({"a": "text"}, "a.b", None),
+        ({}, "a", None),
+    ],
+)
+def test_claim_at_walks_dotted_path(
+    claims: dict[str, object], path: str, expected: object
+) -> None:
+    result = claim_at(claims, path)
+
+    assert result == expected
 
 
 async def test_validate_without_name_claims_has_no_display_name(
@@ -360,7 +426,8 @@ async def test_validate_oversized_token_is_rejected_without_parsing(
     [
         {"sub": ""},
         {"sub": "s" * 256},
-        {"roles": ["r"] * (MAX_ROLES + 1)},
+        {"realm_access": {"roles": ["r"] * (MAX_ROLES + 1)}},
+        {"realm_access": {"roles": "admin"}},
         {"realm_access": {"roles": [""]}},
         {"exp": 1e300},
     ],
@@ -369,19 +436,6 @@ async def test_validate_claims_out_of_bounds_are_rejected(
     clock: FrozenClock, overrides: dict[str, object]
 ) -> None:
     token = issue_token(access_token_claims(overrides=overrides), session_key_pair())
-
-    reason = await _rejection_reason(_validator(clock), token)
-
-    assert reason == "invalid_claims"
-
-
-async def test_validate_too_many_roles_in_total_is_rejected(
-    clock: FrozenClock,
-) -> None:
-    roles = [f"role-{index}" for index in range(MAX_ROLES)]
-    claims = access_token_claims(realm_roles=roles)
-    claims["roles"] = ["one-more"]
-    token = issue_token(claims, session_key_pair())
 
     reason = await _rejection_reason(_validator(clock), token)
 

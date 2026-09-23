@@ -57,13 +57,18 @@ refetch.
 - **JWKS.** `HttpJwksClient` fetches `oidc_jwks_url`, or discovers it once from
   `<issuer>/.well-known/openid-configuration`, whose `issuer` must equal the configured one
   and whose `jwks_uri` must be `https` (or loopback `http`). Keys are cached for
-  `jwks_cache_ttl_seconds` (60–86400, default 600). An unknown `kid` triggers one refetch,
-  at most once per 30 seconds measured from the last attempt; a failed forced refetch keeps
-  the fresh cache. Fetches are serialised by a lock, time out after
+  `jwks_cache_ttl_seconds` (60–86400, default 600). An unknown `kid` triggers one refetch;
+  no fetch is attempted within 30 seconds of the last attempt, successful or not, which is
+  also the backoff after a failure. A failed forced refetch keeps the fresh cache; when the
+  refresh of an expired cache fails or is skipped by the backoff, the expired keys are
+  served for one more TTL (`jwks_stale_served`, warning), then the provider counts as
+  unavailable. Fetches are serialised by a lock, time out after
   `oidc_http_timeout_seconds`, never follow redirects and refuse documents above 256 KiB.
 - **Principal.** The only view of a caller is the `Principal` DTO: `subject`, `issuer`,
-  `realm_roles` (Keycloak `realm_access.roles` merged with a top-level `roles` claim),
-  `display_name` (`name`, else `preferred_username`; optional personal data, never logged),
+  `realm_roles` (read from the one claim path `oidc_roles_claim`, default
+  `realm_access.roles`; no other claim grants a role), `display_name`
+  (`preferred_username` only, never `name`, the legal full name; optional personal data,
+  never logged),
   `token_id` (`jti`) and `expires_at`. `Principal.scope_key()` is a SHA-256 of issuer and
   subject, used by rate limiting and idempotency.
 - **Once per request.** `PrincipalResolutionMiddleware` validates the token once and keeps

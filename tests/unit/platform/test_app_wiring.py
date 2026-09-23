@@ -121,6 +121,13 @@ async def test_app_response_carries_request_id_and_security_headers(
     assert "x-ratelimit-limit" not in response.headers
 
 
+async def test_app_me_path_response_is_never_cached(app: FastAPI) -> None:
+    async with client_for(app) as client:
+        response = await client.get("/api/v1/me")
+
+    assert response.headers["cache-control"] == "no-store"
+
+
 async def test_app_untrusted_host_gets_400_with_request_id(app: FastAPI) -> None:
     async with client_for(app, base_url="http://evil.test") as client:
         response = await client.get("/health/live")

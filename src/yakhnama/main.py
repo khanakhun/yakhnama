@@ -82,6 +82,8 @@ API_PREFIX = "/api/v1"
 DOCS_PATH: Final = f"{API_PREFIX}/docs"
 OPENAPI_PATH: Final = f"{API_PREFIX}/openapi.json"
 WWW_AUTHENTICATE: Final = "WWW-Authenticate"
+# Responses about a person: never cacheable, even without an Authorization header.
+PRIVATE_PATH_PREFIXES: Final = (f"{API_PREFIX}/me", f"{API_PREFIX}/users")
 BEARER_CHALLENGE: Final = 'Bearer realm="yakhnama"'
 
 # Looked up along the raised error's MRO, so a module's subclass (for example
@@ -390,6 +392,7 @@ def install_middlewares(
         SecurityHeadersMiddleware,
         is_hsts_enabled=settings.environment == "production",
         page_policies=page_policies,
+        private_path_prefixes=PRIVATE_PATH_PREFIXES,
     )
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
