@@ -53,6 +53,7 @@ from yakhnama.modules.media.api.router import (
     moderation_router as media_moderation_router,
 )
 from yakhnama.modules.media.api.router import router as media_router
+from yakhnama.modules.media.infrastructure.adapters.s3_storage import StorageError
 from yakhnama.modules.provenance.api.router import (
     moderation_router as provenance_moderation_router,
 )
@@ -86,6 +87,7 @@ from yakhnama.platform.problem_details import (
 from yakhnama.platform.ratelimit.middleware import RateLimitMiddleware
 from yakhnama.platform.request_state import get_request_id
 from yakhnama.platform.settings import Settings, get_settings
+from yakhnama.platform.tasks.errors import TaskQueueUnavailableError
 from yakhnama.platform.telemetry import configure_telemetry
 from yakhnama.shared_kernel.errors import (
     AuthenticationError,
@@ -130,6 +132,13 @@ ERROR_STATUSES: Final[Mapping[type[YakhnamaError], tuple[HTTPStatus, str]]] = (
             InvariantViolationError: (HTTPStatus.CONFLICT, "invariant-violation"),
             InvalidTransitionError: (HTTPStatus.CONFLICT, "invalid-transition"),
             IdentityProviderUnavailableError: (
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "service-unavailable",
+            ),
+            # Object storage or the task broker could not be reached: the request
+            # was valid and may succeed on retry, so it is not a server bug (500).
+            StorageError: (HTTPStatus.SERVICE_UNAVAILABLE, "service-unavailable"),
+            TaskQueueUnavailableError: (
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "service-unavailable",
             ),

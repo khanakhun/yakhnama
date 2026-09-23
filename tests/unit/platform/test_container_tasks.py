@@ -16,8 +16,10 @@ from yakhnama.platform.outbox.writer import OutboxWriter
 from yakhnama.platform.settings import Settings
 from yakhnama.platform.tasks.handlers import (
     IDEMPOTENCY_PURGE_TASK,
+    MEDIA_SCAN_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
+    REPORTS_TRIAGE_TASK,
 )
 from yakhnama.platform.tasks.taskiq_adapter import TaskiqTaskQueue
 from yakhnama.shared_kernel.tasks import ScheduledTask, TaskId
@@ -46,12 +48,18 @@ def test_build_container_binds_taskiq_queue_on_the_configured_broker(
     assert isinstance(container.outbox_store, SqlAlchemyOutboxStore)
 
 
-def test_build_container_binds_the_platform_task_handlers(
+def test_build_container_binds_the_platform_and_module_task_handlers(
     container: Container,
 ) -> None:
     bound = container.task_handlers.bound()
 
-    assert set(bound) == {OUTBOX_RELAY_TASK, OUTBOX_PURGE_TASK, IDEMPOTENCY_PURGE_TASK}
+    assert set(bound) == {
+        OUTBOX_RELAY_TASK,
+        OUTBOX_PURGE_TASK,
+        IDEMPOTENCY_PURGE_TASK,
+        REPORTS_TRIAGE_TASK,
+        MEDIA_SCAN_TASK,
+    }
 
 
 async def test_container_aclose_shuts_the_task_broker_down(settings: Settings) -> None:

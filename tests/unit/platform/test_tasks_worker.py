@@ -95,7 +95,7 @@ async def test_create_worker_broker_startup_binds_handlers_and_runs_the_relay(
     assert container_broker.executor._shutdown is True
 
 
-async def test_create_worker_broker_unbound_task_is_logged_not_run(
+async def test_create_worker_broker_triage_task_runs_the_bound_reports_handler(
     settings: Settings,
 ) -> None:
     broker = create_worker_broker(settings, ContainerRecorder())
@@ -109,10 +109,12 @@ async def test_create_worker_broker_unbound_task_is_logged_not_run(
         await broker.wait_all()
     await broker.shutdown()
 
+    # The faked reports store is empty, so the bound RunTriageHandler itself
+    # answers: the task reached the reports use case, not "no handler bound".
     assert {
-        "event": "task_handler_not_bound",
-        "log_level": "error",
+        "event": "task_failed",
         "task": REPORTS_TRIAGE_TASK,
+        "error_type": "ReportNotFoundError",
     }.items() <= logs[-1].items()
 
 
