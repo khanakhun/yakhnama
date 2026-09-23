@@ -45,8 +45,9 @@ ObjectKey = Annotated[
 ]
 """A storage object key: lower-case ASCII letters, digits and ``/_.-``, 4-256 long.
 
-Keys are built by the platform (``original_object_key``, ``public_object_key``), never
-from a file name the uploader chose, so they carry no personal data.
+Keys are built by the platform (``upload_object_key``, ``original_object_key``,
+``public_object_key``), never from a file name the uploader chose, so they carry no
+personal data.
 """
 
 SHA256_PATTERN: Final = r"^[a-f0-9]{64}$"
@@ -79,6 +80,14 @@ class MimeType(StrEnum):
     MP4 = "video/mp4"
     PDF = "application/pdf"
 
+
+PUBLISHABLE_MIME_TYPES: Final = frozenset({MimeType.JPEG, MimeType.PNG, MimeType.WEBP})
+"""Types whose public copy can be stripped of embedded metadata.
+
+Images are re-encoded from pixels alone. No stripper exists yet for MP4 (``udta``
+boxes may hold a GPS position) or PDF (document information may name the author),
+so those stay private however they are moderated (Q-M13).
+"""
 
 MAX_MEDIA_BYTES: Final = 50 * 1024 * 1024
 """Largest accepted upload: 50 MiB (**proposed**, Q-M2)."""
@@ -252,8 +261,31 @@ def _object_key(variant: Variant, asset_id: UUID) -> str:
     return f"media/{variant.value}/{asset_id}"
 
 
+UPLOAD_KEY_PREFIX: Final = "media/upload/"
+"""Prefix of the keys clients upload to; the only keys a client URL ever covers."""
+
+
+def upload_object_key(asset_id: UUID) -> str:
+    """Return the key an asset's file is uploaded to through a presigned ``PUT``.
+
+    It is the only key a client is ever given a write URL for. A presigned URL
+    stays valid until it expires, so the upload key can be overwritten after
+    completion; completion therefore copies it to ``original_object_key``, which
+    no client URL covers, and everything afterwards reads the original.
+
+    Args:
+        asset_id: The asset's id.
+
+    Returns:
+        ``media/upload/<id>``.
+    """
+    return f"{UPLOAD_KEY_PREFIX}{asset_id}"
+
+
 def original_object_key(asset_id: UUID) -> str:
     """Return the storage key of an asset's private original.
+
+    Only the platform writes it, by copying the upload at completion.
 
     Args:
         asset_id: The asset's id.

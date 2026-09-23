@@ -15,6 +15,7 @@ from yakhnama.modules.provenance.application.authorisation import (
     reference_policy,
     registration_policy,
     source_editor_policy,
+    source_listing_specification,
     source_read_policy,
 )
 from yakhnama.modules.provenance.application.commands import (
@@ -31,6 +32,7 @@ from yakhnama.modules.provenance.application.handlers import (
 from yakhnama.modules.provenance.application.ports import (
     ProvenanceUnitOfWork,
     ProvenanceUnitOfWorkFactory,
+    SourceCitationChecker,
     SourceQueryService,
     SourceReferenceMarker,
     SourceRegistrar,
@@ -70,6 +72,7 @@ __all__ = [
     "RegisterSource",
     "RegisterSourceHandler",
     "Source",
+    "SourceCitationChecker",
     "SourceDetail",
     "SourceDetails",
     "SourceImmutableError",
@@ -87,5 +90,6 @@ __all__ = [
     "reference_policy",
     "registration_policy",
     "source_editor_policy",
+    "source_listing_specification",
     "source_read_policy",
 ]

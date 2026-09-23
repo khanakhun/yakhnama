@@ -1,7 +1,8 @@
 """Integration tests of the media adapters against a real MinIO.
 
 Uploads go through the presigned URLs exactly as a client would send them, with
-``httpx`` on the loopback address of the test container.
+``httpx`` on the loopback address of the test container, and always to the upload
+key; ``seal_upload`` then copies them to the original key.
 """
 
 import asyncio
@@ -28,6 +29,8 @@ from tests.unit.modules.media.infrastructure.adapters.images import (
     MINIMAL_PDF,
     gps_photo,
 )
+from yakhnama.modules.media.application.dto import StoredObject
+from yakhnama.modules.media.domain.errors import MediaContentChangedError
 from yakhnama.modules.media.domain.value_objects import MimeType, ScanStatus
 from yakhnama.modules.media.infrastructure.adapters.exif import (
     PillowExifReader,
@@ -47,17 +50,30 @@ from yakhnama.modules.media.infrastructure.adapters.scanner import (
 
 pytestmark = pytest.mark.integration
 
+UPLOAD = "media/upload/0197a000-0000-7000-8000-000000000001"
 ORIGINAL = "media/original/0197a000-0000-7000-8000-000000000001"
 PUBLIC = "media/public/0197a000-0000-7000-8000-000000000001"
 
 
-async def _upload(
-    storage: S3StoragePort, key: str, body: bytes, mime_type: MimeType
+async def put_through_presigned_url(
+    storage: S3StoragePort, body: bytes, mime_type: MimeType, key: str = UPLOAD
 ) -> httpx.Response:
+    """PUT ``body`` to ``key`` through a presigned URL, as a client does."""
     grant = await storage.presign_put(key, mime_type, len(body))
     headers = {header.name: header.value for header in grant.headers}
     async with httpx.AsyncClient(timeout=10.0) as client:
         return await client.put(grant.url, content=body, headers=headers)
+
+
+async def upload_and_seal(
+    storage: S3StoragePort, body: bytes, mime_type: MimeType
+) -> StoredObject:
+    """Upload ``body`` and seal it into the original, as the handlers do."""
+    response = await put_through_presigned_url(storage, body, mime_type)
+    assert response.status_code == httpx.codes.OK
+    sealed = await storage.seal_upload(UPLOAD, ORIGINAL)
+    assert sealed is not None
+    return sealed
 
 
 async def _download(url: str) -> httpx.Response:
@@ -65,28 +81,69 @@ async def _download(url: str) -> httpx.Response:
         return await client.get(url)
 
 
-async def test_s3_presigned_put_then_head_reports_the_sha256_of_the_upload(
+async def _public_object_count(server: MinioServer, buckets: Buckets) -> int:
+    async with admin_client(server) as client:
+        listing = await client.list_objects_v2(Bucket=buckets.public)
+    return listing.get("KeyCount", 0)
+
+
+async def test_s3_presigned_put_then_seal_reports_the_sha256_of_the_upload(
     storage: S3StoragePort,
 ) -> None:
     body = gps_photo()
 
-    response = await _upload(storage, ORIGINAL, body, MimeType.JPEG)
-    stored = await storage.head(ORIGINAL)
+    response = await put_through_presigned_url(storage, body, MimeType.JPEG)
+    sealed = await storage.seal_upload(UPLOAD, ORIGINAL)
 
     assert response.status_code == httpx.codes.OK
-    assert stored is not None
-    assert stored.sha256 == hashlib.sha256(body).hexdigest()
-    assert stored.byte_size == len(body)
-    assert stored.content_type == MimeType.JPEG.value
+    assert sealed is not None
+    assert sealed.sha256 == hashlib.sha256(body).hexdigest()
+    assert sealed.byte_size == len(body)
+    assert sealed.content_type == MimeType.JPEG.value
+    assert await storage.head(ORIGINAL) == sealed
+    assert await storage.head(UPLOAD) is None
 
 
-async def test_s3_presign_put_expiry_is_now_plus_ttl_and_url_is_private(
+async def test_s3_seal_repeated_after_the_upload_is_gone_describes_the_original(
+    storage: S3StoragePort,
+) -> None:
+    first = await upload_and_seal(storage, gps_photo(), MimeType.JPEG)
+
+    again = await storage.seal_upload(UPLOAD, ORIGINAL)
+
+    assert again == first
+
+
+async def test_s3_seal_without_any_upload_returns_none(
+    storage: S3StoragePort,
+) -> None:
+    sealed = await storage.seal_upload(UPLOAD, ORIGINAL)
+
+    assert sealed is None
+
+
+async def test_s3_overwriting_the_upload_after_sealing_changes_nothing_read(
+    storage: S3StoragePort,
+) -> None:
+    body = gps_photo()
+    sealed = await upload_and_seal(storage, body, MimeType.JPEG)
+
+    replaced = await put_through_presigned_url(
+        storage, gps_photo("JPEG") + b"replacement", MimeType.JPEG
+    )
+
+    assert replaced.status_code == httpx.codes.OK
+    assert await storage.read_original(ORIGINAL) == body
+    assert await storage.head(ORIGINAL) == sealed
+
+
+async def test_s3_presign_put_expiry_is_now_plus_ttl_and_url_is_the_upload_key(
     storage: S3StoragePort, buckets: Buckets
 ) -> None:
-    grant = await storage.presign_put(ORIGINAL, MimeType.PNG, 1024)
+    grant = await storage.presign_put(UPLOAD, MimeType.PNG, 1024)
 
     assert grant.expires_at == STORAGE_NOW + timedelta(seconds=PRESIGN_TTL_SECONDS)
-    assert f"/{buckets.private}/{ORIGINAL}" in grant.url
+    assert f"/{buckets.private}/{UPLOAD}" in grant.url
     assert [(header.name, header.value) for header in grant.headers] == [
         ("Content-Type", "image/png")
     ]
@@ -95,7 +152,7 @@ async def test_s3_presign_put_expiry_is_now_plus_ttl_and_url_is_private(
 async def test_s3_presigned_put_with_another_content_type_is_refused(
     storage: S3StoragePort,
 ) -> None:
-    grant = await storage.presign_put(ORIGINAL, MimeType.JPEG, 1024)
+    grant = await storage.presign_put(UPLOAD, MimeType.JPEG, 1024)
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.put(
@@ -103,7 +160,7 @@ async def test_s3_presigned_put_with_another_content_type_is_refused(
         )
 
     assert response.status_code == httpx.codes.FORBIDDEN
-    assert await storage.head(ORIGINAL) is None
+    assert await storage.head(UPLOAD) is None
 
 
 async def test_s3_head_missing_object_returns_none(storage: S3StoragePort) -> None:
@@ -112,30 +169,44 @@ async def test_s3_head_missing_object_returns_none(storage: S3StoragePort) -> No
     assert stored is None
 
 
-async def test_s3_oversize_object_is_reported_without_hashing_and_not_loaded(
+async def test_s3_oversize_upload_is_described_without_hashing_or_sealing(
     minio_server: MinioServer, buckets: Buckets
 ) -> None:
     storage = build_storage(minio_server, buckets, max_object_bytes=1024)
-    await _upload(storage, ORIGINAL, b"\x00" * 2048, MimeType.PDF)
+    await put_through_presigned_url(storage, b"\x00" * 2048, MimeType.PDF)
 
-    stored = await storage.head(ORIGINAL)
+    stored = await storage.seal_upload(UPLOAD, ORIGINAL)
 
     assert stored is not None
     assert stored.byte_size == 2048
     assert stored.sha256 == OVERSIZE_SHA256
+    assert await storage.head(ORIGINAL) is None
+
+
+async def test_s3_oversize_original_is_never_loaded(
+    minio_server: MinioServer, buckets: Buckets
+) -> None:
+    storage = build_storage(minio_server, buckets, max_object_bytes=1024)
+    async with admin_client(minio_server) as client:
+        await client.put_object(
+            Bucket=buckets.private, Key=ORIGINAL, Body=b"\x00" * 2048
+        )
+
     with pytest.raises(StorageError, match="larger than the size cap"):
         await storage.read_original(ORIGINAL)
     with pytest.raises(StorageError, match="larger than the size cap"):
-        await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+        await storage.copy_stripped_public(
+            ORIGINAL, PUBLIC, expected_sha256=OVERSIZE_SHA256
+        )
 
 
 async def test_s3_copy_stripped_public_removes_exif_and_keeps_the_original(
     storage: S3StoragePort,
 ) -> None:
     body = gps_photo()
-    await _upload(storage, ORIGINAL, body, MimeType.JPEG)
+    sealed = await upload_and_seal(storage, body, MimeType.JPEG)
 
-    await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+    await storage.copy_stripped_public(ORIGINAL, PUBLIC, expected_sha256=sealed.sha256)
 
     original = await storage.read_original(ORIGINAL)
     public = await _download((await storage.presign_get(PUBLIC)).url)
@@ -152,47 +223,69 @@ async def test_s3_copy_stripped_public_removes_exif_and_keeps_the_original(
 
 
 async def test_s3_copy_stripped_public_is_idempotent(storage: S3StoragePort) -> None:
-    await _upload(storage, ORIGINAL, gps_photo("PNG"), MimeType.PNG)
+    sealed = await upload_and_seal(storage, gps_photo("PNG"), MimeType.PNG)
 
-    await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+    await storage.copy_stripped_public(ORIGINAL, PUBLIC, expected_sha256=sealed.sha256)
     first = await _download((await storage.presign_get(PUBLIC)).url)
-    await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+    await storage.copy_stripped_public(ORIGINAL, PUBLIC, expected_sha256=sealed.sha256)
     second = await _download((await storage.presign_get(PUBLIC)).url)
 
     assert first.content == second.content
 
 
-async def test_s3_copy_non_image_is_byte_identical(storage: S3StoragePort) -> None:
-    await _upload(storage, ORIGINAL, MINIMAL_PDF, MimeType.PDF)
+async def test_s3_copy_of_a_pdf_is_refused_and_nothing_is_public(
+    storage: S3StoragePort, minio_server: MinioServer, buckets: Buckets
+) -> None:
+    sealed = await upload_and_seal(storage, MINIMAL_PDF, MimeType.PDF)
 
-    await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+    with pytest.raises(StorageError) as caught:
+        await storage.copy_stripped_public(
+            ORIGINAL, PUBLIC, expected_sha256=sealed.sha256
+        )
 
-    public = await _download((await storage.presign_get(PUBLIC)).url)
-    assert public.content == MINIMAL_PDF
-    assert public.headers["content-type"] == MimeType.PDF.value
+    assert caught.value.details["reason"] == "unsupported"
+    assert await _public_object_count(minio_server, buckets) == 0
+
+
+async def test_s3_copy_of_a_changed_original_is_refused_and_nothing_is_public(
+    storage: S3StoragePort, minio_server: MinioServer, buckets: Buckets
+) -> None:
+    sealed = await upload_and_seal(storage, gps_photo(), MimeType.JPEG)
+    async with admin_client(minio_server) as client:
+        await client.put_object(
+            Bucket=buckets.private, Key=ORIGINAL, Body=gps_photo("PNG")
+        )
+
+    with pytest.raises(MediaContentChangedError):
+        await storage.copy_stripped_public(
+            ORIGINAL, PUBLIC, expected_sha256=sealed.sha256
+        )
+
+    assert await _public_object_count(minio_server, buckets) == 0
 
 
 async def test_s3_copy_missing_or_disallowed_original_raises_storage_error(
     storage: S3StoragePort, minio_server: MinioServer, buckets: Buckets
 ) -> None:
+    digest = hashlib.sha256(b"text").hexdigest()
     with pytest.raises(StorageError, match="missing"):
-        await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+        await storage.copy_stripped_public(ORIGINAL, PUBLIC, expected_sha256=digest)
     async with admin_client(minio_server) as client:
         await client.put_object(Bucket=buckets.private, Key=ORIGINAL, Body=b"text")
 
     with pytest.raises(StorageError, match="not an allowed media type"):
-        await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+        await storage.copy_stripped_public(ORIGINAL, PUBLIC, expected_sha256=digest)
 
 
 async def test_s3_presign_get_downloads_the_private_original(
     storage: S3StoragePort, buckets: Buckets
 ) -> None:
-    await _upload(storage, ORIGINAL, MINIMAL_PDF, MimeType.PDF)
+    await upload_and_seal(storage, MINIMAL_PDF, MimeType.PDF)
 
     link = await storage.presign_get(ORIGINAL)
     response = await _download(link.url)
 
-    assert f"/{buckets.private}/" in link.url
+    assert f"/{buckets.private}/{ORIGINAL}" in link.url
     assert link.expires_at == STORAGE_NOW + timedelta(seconds=PRESIGN_TTL_SECONDS)
     assert response.content == MINIMAL_PDF
 
@@ -226,6 +319,22 @@ async def test_s3_iter_original_of_missing_object_raises_storage_error(
             pass
 
 
+async def test_s3_iter_original_checks_the_expected_digest(
+    storage: S3StoragePort,
+) -> None:
+    body = gps_photo()
+    sealed = await upload_and_seal(storage, body, MimeType.JPEG)
+
+    streamed = b"".join(
+        [chunk async for chunk in storage.iter_original(ORIGINAL, sealed.sha256)]
+    )
+    with pytest.raises(MediaContentChangedError):
+        async for _ in storage.iter_original(ORIGINAL, "0" * 64):
+            pass
+
+    assert streamed == body
+
+
 async def test_s3_wrong_credentials_raise_storage_error_without_the_secret(
     minio_server: MinioServer, buckets: Buckets
 ) -> None:
@@ -249,14 +358,6 @@ async def test_s3_failures_of_every_operation_map_to_storage_error(
 ) -> None:
     missing_buckets = Buckets(private="absent-private", public="absent-public")
     storage = build_storage(minio_server, missing_buckets)
-    await _upload(
-        build_storage(minio_server, buckets), ORIGINAL, MINIMAL_PDF, MimeType.PDF
-    )
-
-    with pytest.raises(StorageError, match="during read_prefix"):
-        await storage.read_original_prefix(ORIGINAL, 8)
-    with pytest.raises(StorageError, match="during read"):
-        await storage.read_original(ORIGINAL)
     unreachable = S3StoragePort(
         endpoint_url="http://127.0.0.1:9",
         region="us-east-1",
@@ -267,8 +368,17 @@ async def test_s3_failures_of_every_operation_map_to_storage_error(
         presign_ttl_seconds=60,
         clock=FrozenClock(STORAGE_NOW),
     )
+
+    with pytest.raises(StorageError, match="during read_prefix"):
+        await storage.read_original_prefix(ORIGINAL, 8)
+    with pytest.raises(StorageError, match="during read"):
+        await storage.read_original(ORIGINAL)
     with pytest.raises(StorageError, match="during read_prefix"):
         await unreachable.read_original_prefix(ORIGINAL, 8)
+    with pytest.raises(StorageError, match="during head"):
+        await unreachable.head(ORIGINAL)
+    with pytest.raises(StorageError, match="during seal"):
+        await unreachable.seal_upload(UPLOAD, ORIGINAL)
 
 
 async def test_s3_copy_into_missing_public_bucket_raises_storage_error(
@@ -277,16 +387,18 @@ async def test_s3_copy_into_missing_public_bucket_raises_storage_error(
     storage = build_storage(
         minio_server, Buckets(private=buckets.private, public="absent-public")
     )
-    await _upload(storage, ORIGINAL, MINIMAL_PDF, MimeType.PDF)
+    sealed = await upload_and_seal(storage, gps_photo(), MimeType.JPEG)
 
     with pytest.raises(StorageError, match="during copy"):
-        await storage.copy_stripped_public(ORIGINAL, PUBLIC)
+        await storage.copy_stripped_public(
+            ORIGINAL, PUBLIC, expected_sha256=sealed.sha256
+        )
 
 
 async def test_exif_reader_and_mime_sniffer_read_from_storage(
     storage: S3StoragePort,
 ) -> None:
-    await _upload(storage, ORIGINAL, gps_photo("WEBP"), MimeType.WEBP)
+    await upload_and_seal(storage, gps_photo("WEBP"), MimeType.WEBP)
     reader = PillowExifReader(storage.read_original)
     sniffer = FiletypeMimeSniffer(storage.read_original_prefix)
 
@@ -302,19 +414,20 @@ async def test_clamav_scanner_streams_the_original_to_a_clamd_over_tcp(
     storage: S3StoragePort,
 ) -> None:
     body = gps_photo()
-    await _upload(storage, ORIGINAL, body, MimeType.JPEG)
-    received = bytearray()
+    sealed = await upload_and_seal(storage, body, MimeType.JPEG)
+    received: list[bytes] = []
 
     async def fake_clamd(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         # A loopback stand-in for clamd: reads the INSTREAM framing, answers OK.
-        received.extend(await reader.readexactly(len(INSTREAM_COMMAND)))
+        stream = bytearray(await reader.readexactly(len(INSTREAM_COMMAND)))
         while True:
             (length,) = struct.unpack(">I", await reader.readexactly(4))
             if length == 0:
                 break
-            received.extend(await reader.readexactly(length))
+            stream.extend(await reader.readexactly(length))
+        received.append(bytes(stream))
         writer.write(b"stream: OK\x00")
         await writer.drain()
         writer.close()
@@ -328,7 +441,9 @@ async def test_clamav_scanner_streams_the_original_to_a_clamd_over_tcp(
     )
 
     async with server:
-        verdict = await scanner.scan(ORIGINAL)
+        verdict = await scanner.scan(ORIGINAL, expected_sha256=sealed.sha256)
+        with pytest.raises(MediaContentChangedError):
+            await scanner.scan(ORIGINAL, expected_sha256="0" * 64)
 
     assert verdict is ScanStatus.CLEAN
-    assert bytes(received) == INSTREAM_COMMAND + body
+    assert received[0] == INSTREAM_COMMAND + body

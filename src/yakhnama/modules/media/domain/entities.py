@@ -4,16 +4,18 @@ Lifecycle, in the order the application drives it:
 
 1. ``MediaAssetFactory.request_upload`` creates the asset (``upload_status`` =
    ``requested``) and the application hands the client a presigned upload URL for
-   ``original_key``.
+   ``upload_object_key(id)``, never for ``original_key``.
 2. ``complete_upload`` records the digest, size, media type detected from the file's
-   magic bytes and EXIF facts read from the private original; ``fail_upload`` records
-   that the file never arrived or did not match.
+   magic bytes and EXIF facts read from the private original, which the platform
+   copied from the upload key so no client URL can change it afterwards;
+   ``fail_upload`` records that the file never arrived or did not match.
 3. ``mark_scan`` records the malware scanner's verdict. An ``infected`` verdict also
    quarantines the asset, so an infected file can never stay approved.
 4. ``moderate`` records a moderator's approval or rejection and the sensitivity flag;
    ``quarantine`` isolates the asset at any point after completion.
 5. ``publish_public_copy`` records the key of the public copy once the scan is clean,
-   the asset is approved and no blocking sensitivity is set.
+   the asset is approved, no blocking sensitivity is set and its type can be
+   stripped of metadata (``PUBLISHABLE_MIME_TYPES``: images only, Q-M13).
 
 **The public copy has no EXIF.** It is a re-encoded file written by the image
 transcoder adapter without any metadata block, so the capture time, the camera and
@@ -68,6 +70,7 @@ from yakhnama.modules.media.domain.events import (
 )
 from yakhnama.modules.media.domain.value_objects import (
     PUBLICATION_BLOCKING_SENSITIVITIES,
+    PUBLISHABLE_MIME_TYPES,
     ByteSize,
     ExifFacts,
     MediaVersion,
@@ -105,8 +108,9 @@ class MediaAsset(BaseModel):
     - until the upload completes there is no digest, size, EXIF, scan verdict,
       moderation decision or public copy;
     - a completed upload has a digest and a size;
-    - a public copy exists only with a clean scan, an approval and no blocking
-      sensitivity, and its key is the asset's ``public`` variant key;
+    - a public copy exists only with a clean scan, an approval, no blocking
+      sensitivity and a strippable media type, and its key is the asset's
+      ``public`` variant key;
     - a rejected or quarantined asset has a moderation reason;
     - ``updated_at`` is never before ``created_at``.
 
@@ -204,10 +208,12 @@ class MediaAsset(BaseModel):
 
         Returns:
             ``True`` if the upload completed, the scan is clean, a moderator
-            approved and no blocking sensitivity is set.
+            approved, no blocking sensitivity is set and the media type is one
+            whose metadata can be stripped (never MP4 or PDF, Q-M13).
         """
         return (
-            self.upload_status is UploadStatus.COMPLETED
+            self.mime_type in PUBLISHABLE_MIME_TYPES
+            and self.upload_status is UploadStatus.COMPLETED
             and self.scan_status is ScanStatus.CLEAN
             and self.moderation_status is ModerationStatus.APPROVED
             and self.sensitivity not in PUBLICATION_BLOCKING_SENSITIVITIES

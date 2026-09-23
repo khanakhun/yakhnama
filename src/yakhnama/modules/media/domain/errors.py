@@ -8,9 +8,10 @@ EXIF facts never appear in an error.
 Patterns: Domain Error (proposed in ADR 0012).
 """
 
-from typing import Self
+from typing import Final, Self
 
 from yakhnama.shared_kernel.errors import (
+    ConflictError,
     InvalidTransitionError,
     NotFoundError,
     ValidationError,
@@ -177,3 +178,45 @@ class InvalidModerationDecisionError(ValidationError):
             The error, with the id in ``details``.
         """
         return cls(message, details={"media_id": str(asset_id)})
+
+
+CONTENT_CHANGED_REASON: Final = "media_content_changed"
+"""``details["reason"]`` of ``MediaContentChangedError``."""
+
+
+class MediaContentChangedError(ConflictError):
+    """The stored original no longer matches the SHA-256 recorded at completion.
+
+    Raised by the storage and scanner adapters when the bytes they read hash to a
+    different digest; the application then quarantines the asset. The digests
+    themselves are never put in the error.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def detected(cls) -> Self:
+        """Build the error as an adapter raises it, without an asset id.
+
+        Returns:
+            The error, with ``reason`` in ``details``.
+        """
+        return cls(
+            "the stored file no longer matches its recorded digest",
+            details={"reason": CONTENT_CHANGED_REASON},
+        )
+
+    @classmethod
+    def for_asset(cls, asset_id: EntityId) -> Self:
+        """Build the error for an asset, as the application raises it.
+
+        Args:
+            asset_id: The asset whose original changed.
+
+        Returns:
+            The error, with id and ``reason`` in ``details``.
+        """
+        return cls(
+            "the stored file no longer matches its recorded digest",
+            details={"media_id": str(asset_id), "reason": CONTENT_CHANGED_REASON},
+        )

@@ -41,6 +41,7 @@ from yakhnama.modules.media.domain.value_objects import (
     ModerationStatus,
     ScanStatus,
     original_object_key,
+    upload_object_key,
 )
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.value_objects import Coordinates
@@ -119,12 +120,16 @@ class Harness:
         )
 
     def upload(self, asset_id: EntityId, sha256: str | None = None) -> str:
-        """Put a JPEG with EXIF where the asset's original goes; return its digest."""
+        """Upload a JPEG with EXIF to the asset's upload key; return its digest.
+
+        The sniffer and EXIF reader answer for the original key, the only key
+        read after completion seals the upload there.
+        """
         digest = synthetic_sha256() if sha256 is None else sha256
-        key = original_object_key(asset_id)
-        self.storage.objects[key] = StoredObject(
+        self.storage.objects[upload_object_key(asset_id)] = StoredObject(
             sha256=digest, byte_size=2048, content_type="image/jpeg"
         )
+        key = original_object_key(asset_id)
         self.sniffer.types[key] = MimeType.JPEG
         self.exif.facts[key] = EXIF
         return digest

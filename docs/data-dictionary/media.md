@@ -30,10 +30,10 @@ Source code: `src/yakhnama/modules/media/domain/`.
 | `owner_id` | `UUID` (v7) | — | The uploading user. | Authenticated actor. | Phase 3 |
 | `report_id` | `UUID` (v7), nullable | — | The report the asset belongs to. | Application, at request. | Phase 3 |
 | `source_id` | `UUID` (v7) | — | The `provenance` source the asset is attributed to. | Application, at request. | Phase 3 |
-| `original_key` | `str`, object key | — | Storage key of the private original: `media/original/<id>` (**proposed** layout, Q-M6). Keys match `^[a-z0-9][a-z0-9/_.-]{3,255}$` and never contain `..`. | Platform. | Phase 3 |
+| `original_key` | `str`, object key | — | Storage key of the private original: `media/original/<id>` (**proposed** layout, Q-M6). Only the platform writes it, by copying the client's upload from `media/upload/<id>` at completion; no client URL ever covers it. Keys match `^[a-z0-9][a-z0-9/_.-]{3,255}$` and never contain `..`. | Platform. | Phase 3 |
 | `public_key` | `str`, object key, nullable | — | Storage key of the EXIF-stripped public copy, `media/public/<id>`. Set only while the asset is publishable; cleared when it stops being so. | Platform, after transcoding. | Phase 3 |
-| `sha256` | `str`, 64 hex, nullable | — | SHA-256 of the stored original, lower case. Set once the upload completed. | Platform, computed on the stored bytes. | Phase 3 |
-| `mime_type` | `MimeType` | — | Declared by the uploader at request; replaced at completion by the type detected from the file's magic bytes. Allow-list below. | Uploader, then platform. | Phase 3 |
+| `sha256` | `str`, 64 hex, nullable | — | SHA-256 of the stored original, lower case. Set once the upload completed. Checked again whenever the original is scanned or published; a mismatch quarantines the asset. Private (ADR 0009). | Platform, computed on the sealed original. | Phase 3 |
+| `mime_type` | `MimeType` | — | Declared by the uploader at request; the type detected from the file's magic bytes at completion must equal it, or the upload fails (`mime_mismatch`). Allow-list below. | Uploader, checked by the platform. | Phase 3 |
 | `byte_size` | `int`, 1–52 428 800, nullable | byte | Size of the stored original (maximum 50 MiB, **proposed**, Q-M2). Set once the upload completed. | Platform. | Phase 3 |
 | `exif.taken_at` | `DateWithPrecision`, nullable | UTC + precision | EXIF capture time. | EXIF reader adapter, from the original. | Phase 3 |
 | `exif.location` | `Coordinates` (WGS84), nullable | degrees | EXIF GPS position. **Private**. | EXIF reader adapter, from the original. | Phase 3 |
@@ -42,7 +42,7 @@ Source code: `src/yakhnama/modules/media/domain/`.
 | `scan_status` | `ScanStatus` | — | Malware scanner verdict: `pending`, `clean`, `infected`, `unavailable`. Only `clean` allows publication. | `MalwareScanner` port. | Phase 3 |
 | `moderation_status` | `ModerationStatus` | — | `pending`, `approved`, `rejected`, `quarantined`. | Moderator (and the platform, for an infected scan). | Phase 3 |
 | `sensitivity` | `SensitivityFlag` | — | `none`, `injured_or_deceased`, `identifiable_people`, `other` (**proposed** values, Q-M4). | Moderator. | Phase 3 |
-| `moderation_reason` | `str`, safe single-line text 1–500, nullable | — | Why the asset was rejected, quarantined or approved. Required for `rejected` and `quarantined`. | Moderator, or the fixed text "The malware scanner reported an infection." | Phase 3 |
+| `moderation_reason` | `str`, safe single-line text 1–500, nullable | — | Why the asset was rejected, quarantined or approved. Required for `rejected` and `quarantined`. | Moderator, or a fixed platform text: "The malware scanner reported an infection." or "The stored file no longer matches the digest recorded at upload." | Phase 3 |
 | `version` | `int`, 1–2³¹−1 | count | Optimistic-concurrency version, +1 per change with an effect. | Platform. | Phase 3 |
 | `created_at` | `datetime` (UTC) | UTC | When the upload was requested. | Platform `Clock`. | Phase 3 |
 | `updated_at` | `datetime` (UTC) | UTC | When the asset last changed; never before `created_at`. | Platform `Clock`. | Phase 3 |
@@ -51,17 +51,22 @@ Source code: `src/yakhnama/modules/media/domain/`.
 
 `image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `application/pdf`.
 
+Only `image/jpeg`, `image/png` and `image/webp` can be published
+(`PUBLISHABLE_MIME_TYPES`): their public copy is re-encoded from pixels alone. No
+metadata stripper exists yet for `video/mp4` or `application/pdf`, so those stay
+private however they are moderated (Q-M13, open).
+
 ### Lifecycle
 
 | operation | allowed from | effect |
 |-----------|--------------|--------|
-| `MediaAssetFactory.request_upload` | — | New asset, `requested`, key `media/original/<id>`. |
+| `MediaAssetFactory.request_upload` | — | New asset, `requested`, key `media/original/<id>`; the client uploads to `media/upload/<id>`. |
 | `complete_upload(stored)` | `requested` | Records digest, size, detected type, EXIF (empty EXIF stored as `null`). |
 | `fail_upload` | `requested` | `failed`. |
 | `mark_scan(verdict)` | completed | Records `clean`, `infected` or `unavailable`. `infected` also quarantines and withdraws any public copy (**proposed**, Q-M3). A later `clean` never lifts a quarantine. |
 | `moderate(approved \| rejected, sensitivity, reason)` | completed | Approval may lift a quarantine but is refused while `infected`. Rejection or a blocking sensitivity withdraws a public copy (Q-M8). |
 | `quarantine(reason)` | completed | `quarantined`; withdraws a public copy. |
-| `publish_public_copy(key)` | publishable | Records `media/public/<id>`. Publishable = completed, `clean`, `approved`, and sensitivity not `injured_or_deceased` or `identifiable_people` (**proposed**, Q-M5). |
+| `publish_public_copy(key)` | publishable | Records `media/public/<id>`. Publishable = completed, `clean`, `approved`, sensitivity not `injured_or_deceased` or `identifiable_people` (**proposed**, Q-M5), and a type in `PUBLISHABLE_MIME_TYPES` (images only, Q-M13). |
 
 ### Deduplication
 
@@ -99,6 +104,7 @@ an EXIF fact or a moderation reason.
 | `InfectedMediaError` | invalid transition | Approving an infected asset. |
 | `InvalidScanVerdictError` | validation | Recording `pending` as a scan result. |
 | `InvalidModerationDecisionError` | validation | A decision other than approved or rejected, or a rejection without a reason. |
+| `MediaContentChangedError` | conflict | The stored original no longer hashes to its recorded `sha256` when it is published; the asset is quarantined and nothing is published (`details.reason` = `media_content_changed`). |
 
 ## Persistence
 

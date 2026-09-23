@@ -639,3 +639,40 @@ def test_media_asset_any_operation_sequence_keeps_publication_safe(
     if asset.scan_status is ScanStatus.INFECTED:
         assert asset.moderation_status is not ModerationStatus.APPROVED
         assert asset.is_published is False
+
+
+@pytest.mark.parametrize("mime_type", [MimeType.MP4, MimeType.PDF])
+def test_media_asset_approved_clean_video_or_pdf_is_never_publishable(
+    mime_type: MimeType,
+) -> None:
+    completed = _requested().complete_upload(
+        stored_file(mime_type=mime_type), clock=_clock(), ids=_ids()
+    )
+    asset = (
+        completed.state.mark_scan(ScanStatus.CLEAN, clock=_clock(), ids=_ids())
+        .state.moderate(
+            ModerationStatus.APPROVED,
+            SensitivityFlag.NONE,
+            None,
+            clock=_clock(),
+            ids=_ids(),
+        )
+        .state
+    )
+
+    assert asset.moderation_status is ModerationStatus.APPROVED
+    assert not asset.is_publishable
+    with pytest.raises(MediaNotPublishableError):
+        asset.publish_public_copy(
+            public_object_key(asset.id), clock=_clock(), ids=_ids()
+        )
+
+
+@pytest.mark.parametrize("mime_type", [MimeType.MP4, MimeType.PDF])
+def test_media_asset_video_or_pdf_with_public_key_violates_invariant(
+    mime_type: MimeType,
+) -> None:
+    published = _published()
+
+    with pytest.raises(PydanticValidationError, match="publishable"):
+        MediaAsset.model_validate({**published.model_dump(), "mime_type": mime_type})

@@ -1529,3 +1529,43 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Proposed default:** Reject U+200B, U+FEFF, U+2028 and U+2029 too, tightening `SafeText` in a later, small change; not yet done, and not blocking because no known exploit depends on them today.
 - **Blocking:** no
 - **Status:** open (raised from the Phase 3 domain/security reports)
+
+## Q174 — JWKS response streaming cap
+
+- **Question:** JWKS response streaming cap?
+- **Why it matters:** The JWKS client checks the response size only after reading the whole body; a hostile or misconfigured provider could send a very large document.
+- **Proposed default:** Deferred to Phase 4: cap while streaming (`httpx` `aiter_bytes`) at the configured size.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q175 — Access-token `typ` check
+
+- **Question:** Access-token `typ` check?
+- **Why it matters:** Tokens whose `typ` header is not an access token (for example ID tokens) are accepted if otherwise valid.
+- **Proposed default:** Deferred to Phase 4: reject `typ` values other than `JWT`/`at+jwt` when present.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q176 — Account-creation limits
+
+- **Question:** Account-creation limits?
+- **Why it matters:** Any valid token from the provider creates a user on first sight; self-registration at the provider would let anyone create accounts at will.
+- **Proposed default:** Deferred to Phase 4: rate-limit first-sight mirroring per provider subject range, or require an invitation for non-citizen roles.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q177 — IPv6 rate-limit keys
+
+- **Question:** IPv6 rate-limit keys?
+- **Why it matters:** Anonymous rate limiting hashes the full client address, so an IPv6 caller can rotate through a /64 to evade limits.
+- **Proposed default:** Deferred to Phase 4: key anonymous limits on the /64 prefix for IPv6 and the /32 address for IPv4.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q178 — Source citation lookup for public reads
+
+- **Question:** How should the provenance read service learn whether a citizen or organisation source is cited by a published, verified event?
+- **Why it matters:** Until a `SourceCitationChecker` adapter exists, such sources are hidden from anonymous and non-member readers even when the citing event is public, so public event pages cannot link to their citizen sources.
+- **Proposed default:** No checker bound in Phase 3 (safe: nothing leaks). Phase 4 adds an events read `is_source_cited_by_public_event(source_id)` and wires it.
+- **Blocking:** no
+- **Status:** open (Phase 3 security review)

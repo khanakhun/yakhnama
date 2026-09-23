@@ -4,6 +4,7 @@ The repository stages writes until the unit of work commits and enforces the
 uniqueness and optimistic-concurrency rules the SQL adapter promises in
 ``yakhnama.modules.provenance.application.ports``. The query service reads only
 committed rows through the same specifications the SQL adapter compiles.
+``FakeSourceCitationChecker`` answers from an arranged set of cited sources.
 ``FakeSourceRegistrar`` and ``FakeSourceReferenceMarker`` stand in for the
 provenance handlers when another module's handler is under test; they record every
 command they receive.
@@ -210,6 +211,38 @@ class InMemorySourceQueryService:
             items=tuple(SourceSummary.from_entity(source) for source in window),
             next_cursor=next_cursor,
         )
+
+
+class FakeSourceCitationChecker:
+    """``SourceCitationChecker`` answering from an arranged set of cited sources.
+
+    Implements: Fake (of Adapter).
+
+    Attributes:
+        cited: Sources a published, verified event cites.
+        asked: Every source asked about, in order.
+    """
+
+    def __init__(self, cited: Iterable[EntityId] = ()) -> None:
+        """Create the checker.
+
+        Args:
+            cited: Sources a published, verified event cites.
+        """
+        self.cited = set(cited)
+        self.asked: list[EntityId] = []
+
+    async def is_cited_by_published_event(self, source_id: EntityId) -> bool:
+        """Tell whether ``source_id`` is arranged as cited.
+
+        Args:
+            source_id: The source.
+
+        Returns:
+            ``True`` if it is in ``cited``.
+        """
+        self.asked.append(source_id)
+        return source_id in self.cited
 
 
 class FakeSourceRegistrar:

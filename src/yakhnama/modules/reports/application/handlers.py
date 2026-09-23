@@ -85,18 +85,22 @@ from yakhnama.shared_kernel.ids import EntityId, IdGenerator
 from yakhnama.shared_kernel.tasks import TaskQueue
 
 # Platform-written titles and citations for the source behind each report
-# (**proposed**). They name the report, never the reporter, because a citizen
-# source must not identify the person (provenance data dictionary).
+# (**proposed**). They name neither the reporter nor the report: a citation is
+# shown wherever the source is, and a report id there would point at a private,
+# unverified report (security review, Phase 3). The report links to its source,
+# never the other way round.
 CITIZEN_SOURCE_TITLE: Final = "Community report"
 ORGANISATION_SOURCE_TITLE: Final = "Organisation report"
+CITIZEN_SOURCE_CITATION: Final = "Yakhnama community report"
+ORGANISATION_SOURCE_CITATION: Final = "Yakhnama organisation report"
 
 
-def _source_details(report_id: EntityId, *, is_organisation: bool) -> SourceDetails:
-    kind = "organisation" if is_organisation else "community"
-    return SourceDetails(
-        title=ORGANISATION_SOURCE_TITLE if is_organisation else CITIZEN_SOURCE_TITLE,
-        citation=f"Yakhnama {kind} report {report_id}",
-    )
+def _source_details(*, is_organisation: bool) -> SourceDetails:
+    if is_organisation:
+        return SourceDetails(
+            title=ORGANISATION_SOURCE_TITLE, citation=ORGANISATION_SOURCE_CITATION
+        )
+    return SourceDetails(title=CITIZEN_SOURCE_TITLE, citation=CITIZEN_SOURCE_CITATION)
 
 
 async def _load_report(uow: ReportsUnitOfWork, report_id: EntityId) -> Report:
@@ -212,8 +216,7 @@ class SubmitReportHandler:
                     else SourceType.ORGANISATION
                 ),
                 details=_source_details(
-                    command.client_report_id,
-                    is_organisation=command.organization_id is not None,
+                    is_organisation=command.organization_id is not None
                 ),
                 organization_id=command.organization_id,
             )

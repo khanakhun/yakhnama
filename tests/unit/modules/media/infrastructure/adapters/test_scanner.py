@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Sequence
 import pytest
 from structlog.testing import capture_logs
 
+from yakhnama.modules.media.domain.errors import MediaContentChangedError
 from yakhnama.modules.media.domain.value_objects import ScanStatus
 from yakhnama.modules.media.infrastructure.adapters.scanner import (
     CLAMD_CHUNK_BYTES,
@@ -93,11 +94,15 @@ class ChunkSource:
         """
         self._parts = tuple(parts)
         self.keys: list[str] = []
+        self.expected: list[str | None] = []
         self.is_closed = False
 
-    async def __call__(self, key: str) -> AsyncGenerator[bytes]:
-        """Yield the chunks of ``key``."""
+    async def __call__(
+        self, key: str, expected_sha256: str | None = None
+    ) -> AsyncGenerator[bytes]:
+        """Yield the chunks of ``key``, recording the digest it was asked for."""
         self.keys.append(key)
+        self.expected.append(expected_sha256)
         try:
             for part in self._parts:
                 yield part
@@ -160,10 +165,13 @@ async def test_clamav_scanner_frames_the_file_and_ends_the_stream() -> None:
     chunks = ChunkSource([b"head", b"", big])
     writer = FakeClamdWriter()
 
-    verdict = await _scanner(FakeClamdReader(), writer, chunks).scan("media/o/1")
+    verdict = await _scanner(FakeClamdReader(), writer, chunks).scan(
+        "media/o/1", expected_sha256="a" * 64
+    )
 
     frames = _decode_frames(bytes(writer.written))
     assert verdict is ScanStatus.CLEAN
+    assert chunks.expected == ["a" * 64]
     assert frames == [b"head", b"x" * CLAMD_CHUNK_BYTES, b"x" * 10, b""]
     assert chunks.keys == ["media/o/1"]
     assert writer.is_closed
@@ -248,8 +256,8 @@ async def test_clamav_scanner_slow_daemon_times_out_as_unavailable() -> None:
 async def test_clamav_scanner_storage_failure_propagates_and_closes() -> None:
     writer = FakeClamdWriter()
 
-    async def failing(key: str) -> AsyncGenerator[bytes]:
-        del key
+    async def failing(key: str, expected: str | None) -> AsyncGenerator[bytes]:
+        del key, expected
         yield b"part"
         message = "storage down"
         raise RuntimeError(message)
@@ -288,3 +296,22 @@ async def test_noop_scanner_can_answer_clean_for_local_publication() -> None:
     verdict = await scanner.scan("media/o/1")
 
     assert verdict is ScanStatus.CLEAN
+
+
+async def test_clamav_scanner_changed_content_propagates_and_closes() -> None:
+    writer = FakeClamdWriter()
+
+    async def changed(key: str, expected: str | None) -> AsyncGenerator[bytes]:
+        del key, expected
+        yield b"part"
+        raise MediaContentChangedError.detected()
+
+    async def connect() -> tuple[ClamdReader, ClamdWriter]:
+        return FakeClamdReader(), writer
+
+    scanner = ClamAvScanner(connect=connect, read_chunks=changed, timeout_seconds=1)
+
+    with pytest.raises(MediaContentChangedError):
+        await scanner.scan("media/o/1", expected_sha256="a" * 64)
+
+    assert writer.is_closed

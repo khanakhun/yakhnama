@@ -18,13 +18,12 @@ Patterns: Adapter + Anti-Corruption Layer.
 
 import math
 import re
-import struct
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Final
 
-from PIL import ExifTags, Image, UnidentifiedImageError
+from PIL import ExifTags, Image
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
@@ -32,6 +31,9 @@ from yakhnama.modules.media.domain.value_objects import (
     CAMERA_MAX_LENGTH,
     CameraModel,
     ExifFacts,
+)
+from yakhnama.modules.media.infrastructure.adapters.image_limits import (
+    MALFORMED_FILE_ERRORS,
 )
 from yakhnama.shared_kernel.value_objects import (
     Coordinates,
@@ -51,21 +53,6 @@ MAX_OFFSET: Final = timedelta(hours=14)
 MINUTES_PER_DEGREE: Final = 60
 SECONDS_PER_DEGREE: Final = 3600
 DMS_PARTS: Final = 3
-
-# Pillow and the struct module raise any of these on a truncated or malformed
-# file or EXIF block; the list is explicit so a programming error still surfaces.
-MALFORMED_FILE_ERRORS: Final = (
-    UnidentifiedImageError,
-    Image.DecompressionBombError,
-    OSError,
-    ValueError,
-    TypeError,
-    KeyError,
-    IndexError,
-    ZeroDivisionError,
-    SyntaxError,
-    struct.error,
-)
 
 _CAMERA_ADAPTER: Final = TypeAdapter(CameraModel)
 _TAKEN_AT_ADAPTER: Final = TypeAdapter(DateWithPrecision)

@@ -149,6 +149,10 @@ class StoragePort(Protocol):
     ) -> PresignedUpload:
         """Return a presigned upload for ``key`` in the private bucket.
 
+        ``key`` is always an upload key (``upload_object_key``), never an original:
+        the URL stays valid until it expires, so whatever it covers can be
+        overwritten after completion.
+
         The URL is bound to the content type and caps the size at ``max_bytes``
         (for example with a presigned POST policy or a signed content-length
         range), so storage itself refuses a larger file.
@@ -163,6 +167,27 @@ class StoragePort(Protocol):
         """
         ...
 
+    async def seal_upload(
+        self, upload_key: str, original_key: str
+    ) -> StoredObject | None:
+        """Copy the uploaded file to its original key and describe the original.
+
+        The digest, size and type describe the bytes at ``original_key``, which no
+        client URL covers, so they stay true however the upload key is written
+        later. If the upload key is gone but the original exists (a completion
+        that sealed and then failed to commit), the original is described. An
+        upload above the size cap is described but not copied.
+
+        Args:
+            upload_key: Where the client uploaded.
+            original_key: The private original to write.
+
+        Returns:
+            The original's digest, size and stored content type, or ``None`` if
+            neither key holds an object.
+        """
+        ...
+
     async def head(self, key: str) -> StoredObject | None:
         """Return what storage knows about ``key`` in the private bucket.
 
@@ -174,7 +199,9 @@ class StoragePort(Protocol):
         """
         ...
 
-    async def copy_stripped_public(self, original_key: str, public_key: str) -> None:
+    async def copy_stripped_public(
+        self, original_key: str, public_key: str, *, expected_sha256: str
+    ) -> None:
         """Write an EXIF-free re-encoding of the original to the public bucket.
 
         Idempotent: writing the same key again replaces the copy.
@@ -182,6 +209,11 @@ class StoragePort(Protocol):
         Args:
             original_key: The private original.
             public_key: Where the public copy goes.
+            expected_sha256: The digest recorded at completion; the bytes read
+                must hash to it.
+
+        Raises:
+            MediaContentChangedError: If the original's bytes hash differently.
         """
         ...
 
@@ -239,15 +271,21 @@ class MalwareScanner(Protocol):
     Implements: Adapter (port side).
     """
 
-    async def scan(self, key: str) -> ScanStatus:
+    async def scan(self, key: str, *, expected_sha256: str | None = None) -> ScanStatus:
         """Scan the original at ``key``.
 
         Args:
             key: The original's object key.
+            expected_sha256: The digest recorded at completion; when given, a
+                scanner that reads the file checks the bytes hash to it.
 
         Returns:
             ``clean``, ``infected``, or ``unavailable`` when no verdict could be
             reached (scanner down, file too large to scan); never ``pending``.
+
+        Raises:
+            MediaContentChangedError: If the bytes read hash differently from
+                ``expected_sha256``.
         """
         ...
 

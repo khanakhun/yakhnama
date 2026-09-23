@@ -3,7 +3,9 @@
 Patterns: Command.
 """
 
-from pydantic import BaseModel, ConfigDict
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.domain.value_objects import (
@@ -63,12 +65,25 @@ class RecordScanResult(BaseModel):
     Attributes:
         asset_id: The scanned asset.
         verdict: ``clean``, ``infected`` or ``unavailable``.
+        is_content_changed: The bytes the scanner read no longer hash to the
+            recorded digest; the asset is quarantined and the verdict must be
+            ``unavailable``, since it describes some other file.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     asset_id: EntityId
     verdict: ScanStatus
+    is_content_changed: bool = False
+
+    @model_validator(mode="after")
+    def _changed_content_has_no_verdict(self) -> Self:
+        # A verdict on bytes that are not the recorded file must never read as
+        # "clean" or "infected" for it.
+        if self.is_content_changed and self.verdict is not ScanStatus.UNAVAILABLE:
+            message = "a changed original can only have the verdict 'unavailable'"
+            raise ValueError(message)
+        return self
 
 
 class ModerateMedia(BaseModel):

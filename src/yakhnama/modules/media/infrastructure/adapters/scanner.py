@@ -37,9 +37,9 @@ INFECTED_SUFFIX: Final = " FOUND"
 CLAMD_CHUNK_BYTES: Final = 64 * 1024
 DEFAULT_CLAMD_PORT: Final = 3310
 
-type ChunkReader = Callable[[str], AsyncGenerator[bytes]]
-"""Streams the original at ``key`` in chunks, for example
-``S3StoragePort.iter_original``."""
+type ChunkReader = Callable[[str, str | None], AsyncGenerator[bytes]]
+"""Streams the original at ``key`` in chunks, checking it against the expected
+SHA-256 when one is given; for example ``S3StoragePort.iter_original``."""
 
 
 class ClamdReader(Protocol):
@@ -121,16 +121,20 @@ class NoOpMalwareScanner:
             detail="uploaded files are not scanned for malware",
         )
 
-    async def scan(self, key: str) -> ScanStatus:
+    async def scan(self, key: str, *, expected_sha256: str | None = None) -> ScanStatus:
         """Return the configured verdict without reading anything.
+
+        Nothing is read, so nothing is checked against ``expected_sha256``; the
+        publisher still checks the digest before any public copy is written.
 
         Args:
             key: The original's object key; unused.
+            expected_sha256: The recorded digest; unused.
 
         Returns:
             The configured verdict.
         """
-        del key
+        del key, expected_sha256
         return self._verdict
 
 
@@ -190,11 +194,13 @@ class ClamAvScanner:
         self._read_chunks = read_chunks
         self._timeout_seconds = timeout_seconds
 
-    async def scan(self, key: str) -> ScanStatus:
+    async def scan(self, key: str, *, expected_sha256: str | None = None) -> ScanStatus:
         """Stream the original at ``key`` to clamd and return its verdict.
 
         Args:
             key: The original's object key.
+            expected_sha256: The digest recorded at completion; the streamed
+                bytes must hash to it.
 
         Returns:
             ``clean`` or ``infected`` as clamd answers; ``unavailable`` if clamd
@@ -202,11 +208,13 @@ class ClamAvScanner:
 
         Raises:
             StorageError: If storage cannot deliver the original; the task retries.
+            MediaContentChangedError: If the streamed bytes hash differently from
+                ``expected_sha256``; clamd's reply is never read.
         """
         logger = structlog.get_logger(__name__)
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                reply = await self._exchange(key)
+                reply = await self._exchange(key, expected_sha256)
         except (TimeoutError, OSError, EOFError, asyncio.LimitOverrunError) as error:
             # EOFError covers asyncio.IncompleteReadError (clamd hung up).
             logger.warning("malware_scan_unavailable", reason=type(error).__name__)
@@ -218,12 +226,12 @@ class ClamAvScanner:
             logger.warning("malware_scan_infected")
         return verdict
 
-    async def _exchange(self, key: str) -> bytes:
+    async def _exchange(self, key: str, expected_sha256: str | None) -> bytes:
         reader, writer = await self._connect()
         try:
             writer.write(INSTREAM_COMMAND)
             # aclosing releases the storage stream even when clamd fails mid-file.
-            async with aclosing(self._read_chunks(key)) as chunks:
+            async with aclosing(self._read_chunks(key, expected_sha256)) as chunks:
                 async for chunk in chunks:
                     for start in range(0, len(chunk), CLAMD_CHUNK_BYTES):
                         piece = chunk[start : start + CLAMD_CHUNK_BYTES]

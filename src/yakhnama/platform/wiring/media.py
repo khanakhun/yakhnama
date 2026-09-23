@@ -3,24 +3,24 @@
 - ``ReportSourceAdapter`` (``ReportSourceLookup``): the source of a user's own
   report, from the reports facade, so an upload attached to a report cites it.
 - ``ScanTaskAdapter``: the ``media.scan`` task handler. It reloads the asset,
-  streams its original to the ``MalwareScanner`` and stores the verdict through
-  ``RecordScanResultHandler``.
-
-Internal import: ``MalwareScanner`` comes from ``media.application.ports`` because
-the media facade does not export it (only the composition root binds it). Adding
-it to ``media.public`` is an open question for the module owner.
+  streams its original to the ``MalwareScanner`` together with the digest recorded
+  at completion, and stores the verdict through ``RecordScanResultHandler``. If
+  the bytes read no longer hash to that digest, it records the change instead,
+  which quarantines the asset.
 
 Patterns: Adapter.
 """
 
 from pydantic import BaseModel, ConfigDict
 
-from yakhnama.modules.media.application.ports import MalwareScanner
 from yakhnama.modules.media.public import (
+    MalwareScanner,
     MediaAssetNotFoundError,
+    MediaContentChangedError,
     MediaQueryService,
     RecordScanResult,
     RecordScanResultHandler,
+    ScanStatus,
 )
 from yakhnama.modules.reports.public import ReportQueryService
 from yakhnama.shared_kernel.ids import EntityId
@@ -78,7 +78,9 @@ class ScanTaskAdapter:
     """The ``media.scan`` task handler: scan the original, record the verdict.
 
     Delivery is at least once; a repeated verdict commits nothing
-    (``RecordScanResultHandler``), so a repeat only costs a second scan.
+    (``RecordScanResultHandler``), so a repeat only costs a second scan. A
+    changed original is recorded, not raised, so the task does not retry a scan
+    that can never match.
 
     Implements: Adapter.
     """
@@ -117,7 +119,19 @@ class ScanTaskAdapter:
         record = await self._media.get_asset(payload.asset_id)
         if record is None:
             raise MediaAssetNotFoundError.for_id(payload.asset_id)
-        verdict = await self._scanner.scan(record.original_key)
+        try:
+            verdict = await self._scanner.scan(
+                record.original_key, expected_sha256=record.sha256
+            )
+        except MediaContentChangedError:
+            await self._record_scan_result(
+                RecordScanResult(
+                    asset_id=payload.asset_id,
+                    verdict=ScanStatus.UNAVAILABLE,
+                    is_content_changed=True,
+                )
+            )
+            return
         await self._record_scan_result(
             RecordScanResult(asset_id=payload.asset_id, verdict=verdict)
         )

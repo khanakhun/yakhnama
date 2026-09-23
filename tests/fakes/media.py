@@ -21,7 +21,9 @@ from yakhnama.modules.media.application.dto import (
     StoredObject,
 )
 from yakhnama.modules.media.domain.entities import MediaAsset
+from yakhnama.modules.media.domain.errors import MediaContentChangedError
 from yakhnama.modules.media.domain.value_objects import (
+    MAX_MEDIA_BYTES,
     ExifFacts,
     MimeType,
     UploadStatus,
@@ -213,6 +215,7 @@ class FakeStoragePort:
         objects: What ``head`` reports per key; tests put uploads here.
         presigned_puts: Keys presigned for upload, in order.
         presigned_gets: Keys presigned for download, in order.
+        seals: ``(upload_key, original_key)`` pairs sealed, in order.
         copies: ``(original_key, public_key)`` pairs copied, in order.
         on_copy: Called after each copy, to simulate concurrent work.
     """
@@ -226,6 +229,7 @@ class FakeStoragePort:
         self.objects: dict[str, StoredObject] = dict(objects or {})
         self.presigned_puts: list[str] = []
         self.presigned_gets: list[str] = []
+        self.seals: list[tuple[str, str]] = []
         self.copies: list[tuple[str, str]] = []
         self.on_copy: Callable[[], None] | None = None
 
@@ -263,20 +267,48 @@ class FakeStoragePort:
         """
         return self.objects.get(key)
 
-    async def copy_stripped_public(self, original_key: str, public_key: str) -> None:
+    async def seal_upload(
+        self, upload_key: str, original_key: str
+    ) -> StoredObject | None:
+        """Move the upload to the original key, as ``S3StoragePort`` copies it.
+
+        Args:
+            upload_key: Where the client uploaded.
+            original_key: The original to write.
+
+        Returns:
+            The original; the upload itself if it is above the size cap (not
+            moved); the original if only it exists; ``None`` if neither does.
+        """
+        upload = self.objects.get(upload_key)
+        if upload is None:
+            return self.objects.get(original_key)
+        if upload.byte_size > MAX_MEDIA_BYTES:
+            return upload
+        self.seals.append((upload_key, original_key))
+        self.objects[original_key] = self.objects.pop(upload_key)
+        return self.objects[original_key]
+
+    async def copy_stripped_public(
+        self, original_key: str, public_key: str, *, expected_sha256: str
+    ) -> None:
         """Record the copy and store a copy entry under ``public_key``.
 
         Args:
             original_key: The original.
             public_key: Where the copy goes.
+            expected_sha256: The digest the original must still have.
 
         Raises:
             NotFoundError: If the original is not stored.
+            MediaContentChangedError: If the stored digest differs.
         """
         original = self.objects.get(original_key)
         if original is None:
             message = f"no object at {original_key}"
             raise NotFoundError(message)
+        if original.sha256 != expected_sha256:
+            raise MediaContentChangedError.detected()
         self.copies.append((original_key, public_key))
         self.objects[public_key] = original
         if self.on_copy is not None:

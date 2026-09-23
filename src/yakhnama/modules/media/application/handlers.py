@@ -3,22 +3,30 @@
 The upload flow, in the order a client drives it:
 
 1. ``RequestUploadHandler`` creates the asset (``requested``) and returns a
-   presigned ``PUT`` for the private original. Its source is the report's source
+   presigned ``PUT`` for its **upload key** (``media/upload/<id>``), the only key a
+   client ever gets a URL for. Its source is the report's source
    when the file belongs to the uploader's report, otherwise a new ``citizen``
    source registered through the provenance facade.
-2. ``CompleteUploadHandler`` checks with storage that the file arrived, detects its
-   media type from its magic bytes, reads its EXIF and completes the asset, then
-   enqueues the ``media.scan`` task. **Deduplication:** if the uploader already has
-   a completed asset with the same SHA-256 (``MediaAsset.is_duplicate_of``), the new
-   asset is marked ``failed`` and the existing asset is returned instead, so one
-   file is stored, scanned and moderated once. The duplicate original stays in the
-   private bucket until a storage clean-up removes it (open question).
-3. ``RecordScanResultHandler`` stores the scanner's verdict (system task).
+2. ``CompleteUploadHandler`` has storage copy the upload to the private original
+   (``seal_upload``), so the recorded digest describes bytes no client URL can
+   overwrite, then detects the media type from the magic bytes (it must equal the
+   declared type), reads the EXIF and completes the asset, then enqueues the
+   ``media.scan`` task. Everything afterwards reads the original.
+   **Deduplication:** if the uploader already has a completed asset with the
+   same SHA-256 (``MediaAsset.is_duplicate_of``), the new asset is marked
+   ``failed`` and the existing asset is returned instead, so one file is stored,
+   scanned and moderated once. The duplicate original stays in the private bucket
+   until a storage clean-up removes it (open question).
+3. ``RecordScanResultHandler`` stores the scanner's verdict (system task). If the
+   scanner found that the original no longer hashes to the recorded digest, the
+   asset is quarantined instead.
 4. ``ModerateMediaHandler`` records the moderator's decision; when the asset is
    then publishable (clean, approved, no blocking sensitivity) it writes the
    EXIF-stripped public copy and records it. The decision is committed first and
    the copy published in a second unit of work, so a failed copy never loses the
-   decision and repeating the command completes the publication.
+   decision and repeating the command completes the publication. If the original
+   no longer hashes to the recorded digest, nothing is published and the asset is
+   quarantined (``MediaContentChangedError``).
 
 Storage, EXIF and MIME adapters do network I/O; they are called outside a unit of
 work where the result does not decide what is staged, and before staging where it
@@ -52,14 +60,19 @@ from yakhnama.modules.media.application.ports import (
     StoragePort,
 )
 from yakhnama.modules.media.domain.entities import MediaAsset
-from yakhnama.modules.media.domain.errors import MediaAssetNotFoundError
+from yakhnama.modules.media.domain.errors import (
+    MediaAssetNotFoundError,
+    MediaContentChangedError,
+)
 from yakhnama.modules.media.domain.factories import MediaAssetFactory
 from yakhnama.modules.media.domain.value_objects import (
     MAX_MEDIA_BYTES,
     MediaAttribution,
+    ScanStatus,
     StoredFile,
     UploadStatus,
     public_object_key,
+    upload_object_key,
 )
 from yakhnama.modules.provenance.public import (
     MarkSourceReferenced,
@@ -71,6 +84,7 @@ from yakhnama.modules.provenance.public import (
 )
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import (
+    InvariantViolationError,
     PermissionDeniedError,
     ValidationError,
 )
@@ -80,6 +94,11 @@ from yakhnama.shared_kernel.tasks import TaskQueue
 # Platform-written text for the source of a file uploaded without a report
 # (**proposed**); it never names the uploader.
 UPLOAD_SOURCE_TITLE = "Community media upload"
+
+CONTENT_CHANGED_QUARANTINE_REASON = (
+    "The stored file no longer matches the digest recorded at upload."
+)
+"""Reason recorded when a changed original quarantines an asset automatically."""
 
 
 def _upload_source_details(now: datetime) -> SourceDetails:
@@ -104,6 +123,33 @@ async def _load_asset(uow: MediaUnitOfWork, asset_id: EntityId) -> MediaAsset:
     asset = await uow.media_assets.get(asset_id)
     if asset is None:
         raise MediaAssetNotFoundError.for_id(asset_id)
+    return asset
+
+
+def _recorded_digest(asset: MediaAsset) -> str:
+    # A completed asset always has a digest (MediaAsset invariant); this narrows
+    # the type and fails loudly should that ever stop holding.
+    if asset.sha256 is None:
+        message = "a completed media asset has no recorded digest"
+        raise InvariantViolationError(message, details={"media_id": str(asset.id)})
+    return asset.sha256
+
+
+async def _quarantine_changed_content(
+    uow: MediaUnitOfWork, asset: MediaAsset, *, clock: Clock, ids: IdGenerator
+) -> MediaAsset:
+    # The scan verdict, whatever it was, describes bytes that are no longer the
+    # recorded file, so it becomes "unavailable" (never publishable) as well.
+    rescan = asset.mark_scan(ScanStatus.UNAVAILABLE, clock=clock, ids=ids)
+    if rescan.events:
+        asset = rescan.record_into(uow)
+        await uow.media_assets.save(asset)
+    quarantine = asset.quarantine(
+        CONTENT_CHANGED_QUARANTINE_REASON, clock=clock, ids=ids
+    )
+    if quarantine.events:
+        asset = quarantine.record_into(uow)
+        await uow.media_assets.save(asset)
     return asset
 
 
@@ -178,7 +224,7 @@ class RequestUploadHandler:
                 MarkSourceReferenced(actor=command.actor, source_id=source_id)
             )
         upload = await self._storage.presign_put(
-            asset.original_key, command.mime_type, MAX_MEDIA_BYTES
+            upload_object_key(asset.id), command.mime_type, MAX_MEDIA_BYTES
         )
         return UploadGrant(
             asset_id=asset.id,
@@ -261,8 +307,9 @@ class CompleteUploadHandler:
             PermissionDeniedError: If the actor is not the uploader.
             MediaAssetNotFoundError: If the asset does not exist.
             ValidationError: If the file has not arrived (nothing changes, so the
-                client may retry), or is empty, too large or not an allowed media
-                type (the asset is marked ``failed``).
+                client may retry), or is empty, too large, not an allowed media
+                type or not the declared type (``mime_mismatch``); the asset is
+                then marked ``failed``.
             MediaUploadNotPendingError: If the upload already failed.
         """
         rejection: ValidationError | None = None
@@ -305,7 +352,7 @@ class CompleteUploadHandler:
 
     async def _stored_file(self, asset: MediaAsset) -> StoredFile | ValidationError:
         key = asset.original_key
-        stored = await self._storage.head(key)
+        stored = await self._storage.seal_upload(upload_object_key(asset.id), key)
         if stored is None:
             # Nothing is staged: the client may still be uploading.
             message = "the file has not been uploaded yet"
@@ -320,6 +367,13 @@ class CompleteUploadHandler:
             return ValidationError(
                 "the file is not an allowed media type",
                 details={"reason": "mime_type"},
+            )
+        if mime_type is not asset.mime_type:
+            # A file declared as a photo must not become a video or a PDF after
+            # upload: the declared type is what the client and moderators saw.
+            return ValidationError(
+                "the file is not of the declared media type",
+                details={"reason": "mime_mismatch"},
             )
         return StoredFile(
             sha256=stored.sha256,
@@ -368,10 +422,17 @@ class RecordScanResultHandler:
         """
         async with self._uow_factory() as uow:
             asset = await _load_asset(uow, command.asset_id)
-            change = asset.mark_scan(command.verdict, clock=self._clock, ids=self._ids)
-            if change.events:
-                asset = change.record_into(uow)
-                await uow.media_assets.save(asset)
+            if command.is_content_changed:
+                asset = await _quarantine_changed_content(
+                    uow, asset, clock=self._clock, ids=self._ids
+                )
+            else:
+                change = asset.mark_scan(
+                    command.verdict, clock=self._clock, ids=self._ids
+                )
+                if change.events:
+                    asset = change.record_into(uow)
+                    await uow.media_assets.save(asset)
             await uow.commit()
         return MediaAssetDetail.from_entity(asset)
 
@@ -419,6 +480,9 @@ class ModerateMediaHandler:
                 rejection has no reason.
             MediaUploadNotCompletedError: If the upload has not completed.
             InfectedMediaError: If an infected asset would be approved.
+            MediaContentChangedError: If the original no longer hashes to its
+                recorded digest; the decision stays, the asset is quarantined and
+                nothing is published.
         """
         require_allowed(moderation_policy(), command.actor, action="moderate media")
         async with self._uow_factory() as uow:
@@ -442,7 +506,20 @@ class ModerateMediaHandler:
         public_key = public_object_key(asset.id)
         # The copy is written before the record so a published asset always has
         # an object behind it; a failure here leaves the approval committed.
-        await self._storage.copy_stripped_public(asset.original_key, public_key)
+        try:
+            await self._storage.copy_stripped_public(
+                asset.original_key,
+                public_key,
+                expected_sha256=_recorded_digest(asset),
+            )
+        except MediaContentChangedError as error:
+            async with self._uow_factory() as uow:
+                current = await _load_asset(uow, asset.id)
+                await _quarantine_changed_content(
+                    uow, current, clock=self._clock, ids=self._ids
+                )
+                await uow.commit()
+            raise MediaContentChangedError.for_asset(asset.id) from error
         async with self._uow_factory() as uow:
             current = await _load_asset(uow, asset.id)
             change = current.publish_public_copy(

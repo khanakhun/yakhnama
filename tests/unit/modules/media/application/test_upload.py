@@ -32,6 +32,7 @@ from yakhnama.modules.media.domain.value_objects import (
     MimeType,
     UploadStatus,
     original_object_key,
+    upload_object_key,
 )
 from yakhnama.modules.provenance.public import SourceType
 from yakhnama.shared_kernel.errors import PermissionDeniedError, ValidationError
@@ -57,12 +58,13 @@ async def test_request_upload_without_report_registers_and_cites_source() -> Non
     assert [type(event) for event in harness.uow.committed_events] == [UploadRequested]
 
 
-async def test_request_upload_grants_presigned_put_for_private_original() -> None:
+async def test_request_upload_grants_presigned_put_for_the_upload_key_only() -> None:
     harness = Harness()
 
     grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.PNG))
 
-    assert harness.storage.presigned_puts == [original_object_key(grant.asset_id)]
+    assert harness.storage.presigned_puts == [upload_object_key(grant.asset_id)]
+    assert original_object_key(grant.asset_id) not in grant.upload_url
     assert grant.max_bytes == MAX_MEDIA_BYTES
     assert ("Content-Type", "image/png") in [(h.name, h.value) for h in grant.headers]
     assert "private" in grant.upload_url
@@ -121,7 +123,7 @@ async def test_request_upload_anonymous_raises_permission_denied() -> None:
 
 async def test_complete_upload_stored_file_completes_and_enqueues_scan() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.PNG))
+    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
     digest = harness.upload(grant.asset_id)
 
     result = await harness.complete()(
@@ -131,13 +133,43 @@ async def test_complete_upload_stored_file_completes_and_enqueues_scan() -> None
     asset = harness.uow.media_assets.committed[grant.asset_id]
     assert asset.upload_status is UploadStatus.COMPLETED
     assert asset.sha256 == digest
-    assert asset.mime_type is MimeType.JPEG  # detected, not declared
+    assert asset.mime_type is MimeType.JPEG
     assert asset.exif == EXIF
     [task] = harness.tasks.of(SCAN_TASK)
     assert dict(task.payload) == {"asset_id": grant.asset_id}
     assert UploadCompleted in [type(event) for event in harness.uow.committed_events]
     assert result.upload_status is UploadStatus.COMPLETED
     assert "exif" not in type(result).model_fields
+
+
+async def test_complete_upload_seals_the_upload_into_the_private_original() -> None:
+    harness = Harness()
+    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    harness.upload(grant.asset_id)
+
+    await harness.complete()(CompleteUpload(actor=OWNER, asset_id=grant.asset_id))
+
+    upload_key = upload_object_key(grant.asset_id)
+    original_key = original_object_key(grant.asset_id)
+    assert harness.storage.seals == [(upload_key, original_key)]
+    assert upload_key not in harness.storage.objects
+    assert harness.sniffer.types.get(original_key) is MimeType.JPEG
+    assert harness.exif.reads == [original_key]
+
+
+async def test_complete_upload_other_type_than_declared_marks_failed() -> None:
+    harness = Harness()
+    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.PNG))
+    harness.upload(grant.asset_id)
+
+    with pytest.raises(ValidationError) as raised:
+        await harness.complete()(CompleteUpload(actor=OWNER, asset_id=grant.asset_id))
+
+    asset = harness.uow.media_assets.committed[grant.asset_id]
+    assert raised.value.details["reason"] == "mime_mismatch"
+    assert asset.upload_status is UploadStatus.FAILED
+    assert asset.mime_type is MimeType.PNG
+    assert harness.tasks.enqueued == []
 
 
 async def test_complete_upload_repeated_returns_asset_without_second_scan() -> None:
@@ -184,7 +216,7 @@ async def test_complete_upload_empty_file_marks_failed_and_raises() -> None:
     harness = Harness()
     grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
     harness.upload(grant.asset_id)
-    key = original_object_key(grant.asset_id)
+    key = upload_object_key(grant.asset_id)
     harness.storage.objects[key] = harness.storage.objects[key].model_copy(
         update={"byte_size": 0}
     )

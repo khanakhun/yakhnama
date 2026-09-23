@@ -2,8 +2,8 @@
 
 Other modules, the API and the composition root import only this file: the
 commands, query, DTOs and handlers, the ports the composition root binds (storage,
-EXIF, MIME, the report-source lookup) and the read port the reports adapters use
-for photo evidence and media ownership.
+EXIF, MIME, the malware scanner, the report-source lookup) and the read port the
+reports adapters use for photo evidence and media ownership.
 
 Patterns: Facade.
 """
@@ -30,6 +30,7 @@ from yakhnama.modules.media.application.dto import (
     UploadGrant,
 )
 from yakhnama.modules.media.application.handlers import (
+    CONTENT_CHANGED_QUARANTINE_REASON,
     UPLOAD_SOURCE_TITLE,
     CompleteUploadHandler,
     ModerateMediaHandler,
@@ -39,6 +40,7 @@ from yakhnama.modules.media.application.handlers import (
 from yakhnama.modules.media.application.ports import (
     SCAN_TASK,
     ExifReader,
+    MalwareScanner,
     MediaAssetRepository,
     MediaQueryService,
     MediaUnitOfWork,
@@ -57,12 +59,14 @@ from yakhnama.modules.media.domain.errors import (
     InvalidModerationDecisionError,
     InvalidScanVerdictError,
     MediaAssetNotFoundError,
+    MediaContentChangedError,
     MediaNotPublishableError,
     MediaUploadNotCompletedError,
     MediaUploadNotPendingError,
 )
 from yakhnama.modules.media.domain.value_objects import (
     MAX_MEDIA_BYTES,
+    PUBLISHABLE_MIME_TYPES,
     ExifFacts,
     MimeType,
     ModerationStatus,
@@ -71,10 +75,13 @@ from yakhnama.modules.media.domain.value_objects import (
     UploadStatus,
     original_object_key,
     public_object_key,
+    upload_object_key,
 )
 
 __all__ = [
+    "CONTENT_CHANGED_QUARANTINE_REASON",
     "MAX_MEDIA_BYTES",
+    "PUBLISHABLE_MIME_TYPES",
     "SCAN_TASK",
     "UPLOAD_SOURCE_TITLE",
     "AuthorisedMediaQueryService",
@@ -87,11 +94,13 @@ __all__ = [
     "InfectedMediaError",
     "InvalidModerationDecisionError",
     "InvalidScanVerdictError",
+    "MalwareScanner",
     "MediaAsset",
     "MediaAssetDetail",
     "MediaAssetNotFoundError",
     "MediaAssetRecord",
     "MediaAssetRepository",
+    "MediaContentChangedError",
     "MediaNotPublishableError",
     "MediaQueryService",
     "MediaUnitOfWork",
@@ -121,5 +130,6 @@ __all__ = [
     "original_view_policy",
     "public_object_key",
     "public_view_policy",
+    "upload_object_key",
     "uploader_policy",
 ]

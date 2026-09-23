@@ -88,17 +88,59 @@ async def test_get_source_anonymous_returns_detail_with_etag() -> None:
     assert response.headers["etag"] == etag_of(response.json())
 
 
-async def test_get_citizen_source_of_a_report_does_not_name_the_reporter() -> None:
+async def test_get_citizen_source_of_a_report_anonymous_returns_404() -> None:
     api = recording_app()
 
     async with api.client() as client:
         report = await submit_report(client)
         response = await client.get(f"{SOURCES}/{report['source_id']}")
 
+    assert response.status_code == 404
+    assert report["id"] not in response.text
+
+
+async def test_get_citizen_source_of_a_report_as_its_reporter_returns_404() -> None:
+    api = recording_app()
+
+    async with api.client() as client:
+        report = await submit_report(client)
+        response = await client.get(
+            f"{SOURCES}/{report['source_id']}", headers=reporter_headers()
+        )
+
+    assert response.status_code == 404
+
+
+async def test_get_citizen_source_as_moderator_names_neither_reporter_nor_report() -> (
+    None
+):
+    api = recording_app()
+
+    async with api.client() as client:
+        report = await submit_report(client)
+        response = await client.get(
+            f"{SOURCES}/{report['source_id']}", headers=moderator_headers()
+        )
+
     body = response.json()
     assert response.status_code == 200
     assert body["source_type"] == "citizen"
     assert report["reporter_id"] not in response.text
+    assert report["id"] not in response.text
+
+
+async def test_list_sources_anonymous_omits_citizen_sources_of_reports() -> None:
+    api = recording_app()
+
+    async with api.client() as client:
+        report = await submit_report(client)
+        news = await register_source(client, "news")
+        response = await client.get(SOURCES)
+
+    ids = [item["id"] for item in response.json()["items"]]
+    assert response.status_code == 200
+    assert news in ids
+    assert report["source_id"] not in ids
 
 
 async def test_get_source_when_missing_returns_404() -> None:

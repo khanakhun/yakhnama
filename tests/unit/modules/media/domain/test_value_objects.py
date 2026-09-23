@@ -2,6 +2,7 @@
 
 import re
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from hypothesis import given
@@ -13,6 +14,7 @@ from tests.factories.base import FACTORY_IDS
 from yakhnama.modules.media.domain.value_objects import (
     CAMERA_MAX_LENGTH,
     MAX_MEDIA_BYTES,
+    PUBLISHABLE_MIME_TYPES,
     ByteSize,
     ExifFacts,
     MediaAttribution,
@@ -22,6 +24,7 @@ from yakhnama.modules.media.domain.value_objects import (
     StoredFile,
     original_object_key,
     public_object_key,
+    upload_object_key,
 )
 from yakhnama.shared_kernel.value_objects import (
     Coordinates,
@@ -165,3 +168,22 @@ def test_media_attribution_without_report_defaults_to_none() -> None:
     )
 
     assert attribution.report_id is None
+
+
+def test_upload_key_is_distinct_from_original_and_public_keys() -> None:
+    asset_id = UUID("0197a000-0000-7000-8000-000000000001")
+
+    keys = {
+        upload_object_key(asset_id),
+        original_object_key(asset_id),
+        public_object_key(asset_id),
+    }
+
+    assert upload_object_key(asset_id) == f"media/upload/{asset_id}"
+    assert len(keys) == 3
+
+
+def test_publishable_mime_types_are_the_strippable_images_only() -> None:
+    assert frozenset({MimeType.JPEG, MimeType.PNG, MimeType.WEBP}) == (
+        PUBLISHABLE_MIME_TYPES
+    )

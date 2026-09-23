@@ -8,7 +8,7 @@ other way: they describe ``RegisterSourceHandler`` and
 events, impacts) can depend on the shape through ``provenance.public`` and receive
 the real handlers from the composition root, and their tests can use fakes.
 
-Patterns: Repository (port side), Unit of Work, Query Service.
+Patterns: Repository (port side), Unit of Work, Query Service, Adapter (port side).
 """
 
 from typing import Protocol
@@ -122,6 +122,29 @@ class SourceQueryService(Protocol):
 
         Raises:
             ValidationError: If the cursor is invalid.
+        """
+        ...
+
+
+class SourceCitationChecker(Protocol):
+    """Tells whether a published, verified event cites a source.
+
+    Answered by the events and verification side in the composition root. Until
+    one is bound, ``AuthorisedSourceQueryService`` treats every source as uncited,
+    which keeps citizen and organisation sources private (fail closed).
+
+    Implements: Adapter (port side).
+    """
+
+    async def is_cited_by_published_event(self, source_id: EntityId) -> bool:
+        """Tell whether a published and verified event cites ``source_id``.
+
+        Args:
+            source_id: The source.
+
+        Returns:
+            ``True`` if at least one such event cites it, directly or through a
+            linked report or impact claim.
         """
         ...
 

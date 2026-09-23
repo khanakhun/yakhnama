@@ -143,6 +143,8 @@ class MediaAssetRecord(BaseModel):
         source_id: The provenance source.
         original_key: Storage key of the private original.
         public_key: Storage key of the public copy, once published.
+        sha256: Digest of the original, once completed; private (ADR 0009), used
+            to check the bytes the scanner and the publisher read.
         mime_type: The detected (or, before completion, declared) media type.
         byte_size: Size of the original, once completed.
         exif: EXIF facts of the original, if any; private.
@@ -161,6 +163,7 @@ class MediaAssetRecord(BaseModel):
     source_id: EntityId
     original_key: ObjectKey
     public_key: ObjectKey | None
+    sha256: Sha256 | None = None
     mime_type: MimeType
     byte_size: ByteSize | None
     exif: ExifFacts | None
@@ -187,6 +190,7 @@ class MediaAssetRecord(BaseModel):
             source_id=asset.source_id,
             original_key=asset.original_key,
             public_key=asset.public_key,
+            sha256=asset.sha256,
             mime_type=asset.mime_type,
             byte_size=asset.byte_size,
             exif=asset.exif,

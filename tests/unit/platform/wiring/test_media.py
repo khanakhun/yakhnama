@@ -47,11 +47,12 @@ class RecordingScanner:
         self._verdict = verdict
         self.scanned: list[str] = []
 
-    async def scan(self, key: str) -> ScanStatus:
+    async def scan(self, key: str, *, expected_sha256: str | None = None) -> ScanStatus:
         """Record ``key`` and return the verdict.
 
         Args:
             key: The original's key.
+            expected_sha256: Ignored by the fake; the real scanner verifies it.
 
         Returns:
             The configured verdict.

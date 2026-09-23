@@ -28,7 +28,6 @@ to every domain event type of every module (``wiring.audit``).
 Internal (non-facade) imports this composition root needs besides module
 infrastructure: the ``*UnitOfWorkFactory``/query-service ports not exported by
 older facades (geography, hazards, impacts, identity; unchanged since Phase 1),
-``media.application.ports.MalwareScanner`` (not in the media facade), and the
 adapters' own internal imports named in their module docstrings.
 
 Patterns: Composition Root, Dependency Injection.

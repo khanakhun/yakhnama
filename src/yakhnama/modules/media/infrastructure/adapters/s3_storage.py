@@ -19,13 +19,26 @@ What the adapter can and cannot enforce:
 - **Digest.** An S3 ``ETag`` is not a SHA-256 (it is an MD5, or a hash of part
   hashes for multipart uploads), so ``head`` streams the object through
   ``hashlib.sha256``: one full read per completion, at most ``MAX_MEDIA_BYTES``.
+- **Upload versus original.** Clients only ever get a URL for the upload key
+  (``media/upload/<id>``). A presigned ``PUT`` stays valid until it expires and S3
+  overwrites, so ``seal_upload`` copies the upload server-side to the original key
+  (``media/original/<id>``), which no client URL covers, and hashes the original;
+  every later read uses the original. The copy is pinned to the ``ETag`` the
+  ``HEAD`` saw, and the upload key is deleted afterwards (a still-valid URL can
+  recreate it; nothing ever reads it again, and a bucket lifecycle rule should
+  expire the prefix, Q-M20).
+- **Integrity.** ``copy_stripped_public`` and ``iter_original`` take the digest
+  recorded at completion and raise ``MediaContentChangedError`` if the bytes they
+  read hash differently.
 - **Metadata.** JPEG, PNG and WebP are decoded and re-encoded from pixels alone,
   so EXIF, XMP, IPTC, ICC profiles and text chunks are all dropped; the EXIF
   orientation is applied to the pixels first so the copy displays upright. JPEG
-  and lossy WebP re-encoding loses a little quality (quality 95). PDF and MP4 are
-  copied **byte for byte with no metadata stripping** (open question
-  Q-M13): a PDF's document information or an MP4's ``udta`` box
-  may still carry an author or a GPS position.
+  and lossy WebP re-encoding loses a little quality (quality 95). No other type
+  is ever copied to the public bucket: ``strip_metadata`` refuses PDF and MP4
+  (``unsupported``), whose document information or ``udta`` box may carry an
+  author or a GPS position (Q-M13), and the domain never makes them publishable.
+- **Decompression bombs.** Before any pixel is decoded, the declared canvas,
+  frame count and total pixels are checked against ``image_limits``.
 
 No credential, presigned URL or object key is ever logged or put in an error
 message.
@@ -36,7 +49,7 @@ Patterns: Adapter + Anti-Corruption Layer.
 import asyncio
 import hashlib
 from collections.abc import AsyncGenerator
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, aclosing
 from datetime import timedelta
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, Final, Self
@@ -54,13 +67,18 @@ from yakhnama.modules.media.application.dto import (
     PresignedUpload,
     StoredObject,
 )
+from yakhnama.modules.media.domain.errors import MediaContentChangedError
 from yakhnama.modules.media.domain.value_objects import (
     MAX_MEDIA_BYTES,
+    UPLOAD_KEY_PREFIX,
     MimeType,
     ObjectKey,
     Variant,
 )
-from yakhnama.modules.media.infrastructure.adapters.exif import MALFORMED_FILE_ERRORS
+from yakhnama.modules.media.infrastructure.adapters.image_limits import (
+    MALFORMED_FILE_ERRORS,
+    exceeded_limit,
+)
 from yakhnama.modules.media.infrastructure.adapters.mime import (
     SNIFF_BYTES,
     detect_mime_type,
@@ -71,6 +89,7 @@ from yakhnama.shared_kernel.errors import YakhnamaError
 
 if TYPE_CHECKING:
     from types_aiobotocore_s3 import S3Client
+    from types_aiobotocore_s3.type_defs import HeadObjectOutputTypeDef
 
 STREAM_CHUNK_BYTES: Final = 1024 * 1024
 """Bytes read per step when hashing or loading an object."""
@@ -129,21 +148,39 @@ def strip_metadata(data: bytes, mime_type: MimeType) -> bytes:
         mime_type: Its sniffed media type.
 
     Returns:
-        A re-encoding from pixels alone for JPEG, PNG and WebP; ``data`` unchanged
-        for PDF and MP4, which are not stripped (see the module docstring).
+        A re-encoding from pixels alone for JPEG, PNG and WebP.
 
     Raises:
-        StorageError: If an image cannot be decoded or re-encoded.
+        StorageError: If the type has no stripper (``unsupported``: PDF, MP4),
+            the image exceeds the decoding limits (``too_large``), or it cannot
+            be decoded or re-encoded (``malformed``).
     """
     image_format = _REENCODED_FORMATS.get(mime_type)
     if image_format is None:
-        return data
+        # Copying unstripped bytes would publish whatever metadata they carry.
+        message = "this media type cannot be stripped of metadata"
+        raise StorageError(
+            message, details={"operation": "strip", "reason": "unsupported"}
+        )
     try:
         with Image.open(BytesIO(data), formats=[image_format]) as image:
+            limit = exceeded_limit(image)
+            if limit is not None:
+                message = "the image exceeds the decoding limits"
+                raise StorageError(
+                    message,
+                    details={
+                        "operation": "strip",
+                        "reason": "too_large",
+                        "limit": limit,
+                    },
+                )
             return _reencode(image, image_format)
     except MALFORMED_FILE_ERRORS as error:
         message = "the original image could not be re-encoded"
-        raise StorageError(message, details={"operation": "strip"}) from error
+        raise StorageError(
+            message, details={"operation": "strip", "reason": "malformed"}
+        ) from error
 
 
 def _reencode(image: Image.Image, image_format: str) -> bytes:
@@ -177,6 +214,12 @@ def _pixels_only(frame: Image.Image) -> Image.Image:
     # A new image from raw pixels has an empty ``info`` and no EXIF, so no plugin
     # can copy metadata from the original, whatever its defaults.
     return Image.frombytes(upright.mode, upright.size, upright.tobytes())
+
+
+def _is_same_digest(actual: str, expected: str) -> bool:
+    # Digests are stored lower-case (Sha256); comparing case-insensitively keeps
+    # a hand-built upper-case value from reading as a change.
+    return actual == expected.lower()
 
 
 def _is_missing(error: ClientError) -> bool:
@@ -303,7 +346,7 @@ class S3StoragePort:
         client contract, enforced when the upload is completed (module docstring).
 
         Args:
-            key: The original's object key.
+            key: The upload key (``media/upload/<id>``); nothing else is signed.
             mime_type: The declared media type.
             max_bytes: Largest accepted file, checked on completion.
 
@@ -311,10 +354,16 @@ class S3StoragePort:
             The URL, the ``Content-Type`` header it requires and its expiry.
 
         Raises:
-            StorageError: If the key is invalid or signing fails.
+            StorageError: If the key is invalid or not an upload key, or signing
+                fails.
         """
         del max_bytes
         checked = self._checked_key(key)
+        if not checked.startswith(UPLOAD_KEY_PREFIX):
+            # A write URL for an original or a public copy would let a client
+            # replace a file after the platform recorded its digest.
+            message = "uploads are presigned only for upload keys"
+            raise StorageError(message, details={"operation": "presign_put"})
         # Taken before signing, so the reported expiry is never later than the
         # one botocore signs from its own, slightly later, clock reading.
         expires_at = self._clock.now() + self._ttl
@@ -366,7 +415,7 @@ class S3StoragePort:
         """Return the size, stored type and SHA-256 of ``key`` in the private bucket.
 
         Args:
-            key: The original's object key.
+            key: An object key in the private bucket.
 
         Returns:
             The object's facts, ``None`` if it is absent. Above the size cap the
@@ -378,29 +427,79 @@ class S3StoragePort:
         checked = self._checked_key(key)
         try:
             async with self._client() as client:
-                try:
-                    meta = await client.head_object(
-                        Bucket=self._private_bucket, Key=checked
-                    )
-                except ClientError as error:
-                    if _is_missing(error):
-                        return None
-                    raise
-                size = meta["ContentLength"]
-                content_type: str | None = meta.get("ContentType")
-                if content_type is not None and (
-                    len(content_type) > CONTENT_TYPE_MAX_LENGTH
-                ):
-                    content_type = None
-                if size > self._max_object_bytes:
-                    return StoredObject(
-                        sha256=OVERSIZE_SHA256,
-                        byte_size=size,
-                        content_type=content_type,
-                    )
-                digest, read = await self._digest(client, checked, meta["ETag"])
+                return await self._describe(client, checked)
         except (ClientError, BotoCoreError) as error:
             raise _storage_error(error, operation="head") from error
+
+    async def seal_upload(
+        self, upload_key: str, original_key: str
+    ) -> StoredObject | None:
+        """Copy the upload to the original key and describe the original.
+
+        Args:
+            upload_key: Where the client uploaded (``media/upload/<id>``).
+            original_key: The private original to write.
+
+        Returns:
+            The original's facts; for an upload above the size cap, the upload's
+            facts with ``OVERSIZE_SHA256`` and nothing copied; if the upload key
+            is gone, the original's facts (a completion that sealed but did not
+            commit); ``None`` if neither exists.
+
+        Raises:
+            StorageError: If a key is invalid or of the wrong kind, the upload
+                changed during the copy, or storage fails.
+        """
+        upload = self._checked_key(upload_key)
+        original = self._checked_key(original_key)
+        if not upload.startswith(UPLOAD_KEY_PREFIX) or original.startswith(
+            (UPLOAD_KEY_PREFIX, PUBLIC_KEY_PREFIX)
+        ):
+            message = "sealing needs an upload key and an original key"
+            raise StorageError(message, details={"operation": "seal"})
+        try:
+            async with self._client() as client:
+                meta = await self._head_or_none(client, upload)
+                if meta is None:
+                    return await self._describe(client, original)
+                if meta["ContentLength"] > self._max_object_bytes:
+                    return await self._describe(client, upload)
+                # Server-side copy pinned to the ETag HEAD saw: a replacement in
+                # between fails with 412 instead of sealing an unmeasured file.
+                await client.copy_object(
+                    Bucket=self._private_bucket,
+                    Key=original,
+                    CopySource={"Bucket": self._private_bucket, "Key": upload},
+                    CopySourceIfMatch=meta["ETag"],
+                )
+                await client.delete_object(Bucket=self._private_bucket, Key=upload)
+                return await self._describe(client, original)
+        except (ClientError, BotoCoreError) as error:
+            raise _storage_error(error, operation="seal") from error
+
+    async def _head_or_none(
+        self, client: "S3Client", key: str
+    ) -> "HeadObjectOutputTypeDef | None":
+        try:
+            return await client.head_object(Bucket=self._private_bucket, Key=key)
+        except ClientError as error:
+            if _is_missing(error):
+                return None
+            raise
+
+    async def _describe(self, client: "S3Client", key: str) -> StoredObject | None:
+        meta = await self._head_or_none(client, key)
+        if meta is None:
+            return None
+        size = meta["ContentLength"]
+        content_type: str | None = meta.get("ContentType")
+        if content_type is not None and len(content_type) > CONTENT_TYPE_MAX_LENGTH:
+            content_type = None
+        if size > self._max_object_bytes:
+            return StoredObject(
+                sha256=OVERSIZE_SHA256, byte_size=size, content_type=content_type
+            )
+        digest, read = await self._digest(client, key, meta["ETag"])
         return StoredObject(sha256=digest, byte_size=read, content_type=content_type)
 
     async def _digest(self, client: "S3Client", key: str, etag: str) -> tuple[str, int]:
@@ -469,11 +568,15 @@ class S3StoragePort:
         except BotoCoreError as error:
             raise _storage_error(error, operation="read_prefix") from error
 
-    def iter_original(self, key: str) -> AsyncGenerator[bytes]:
+    def iter_original(
+        self, key: str, expected_sha256: str | None = None
+    ) -> AsyncGenerator[bytes]:
         """Stream the original at ``key`` in chunks of ``STREAM_CHUNK_BYTES``.
 
         Args:
             key: The original's object key.
+            expected_sha256: The digest recorded at completion; when given, the
+                streamed bytes are hashed and checked once the stream ends.
 
         Returns:
             An async generator of the object's bytes; close it (``aclosing``) if
@@ -482,8 +585,23 @@ class S3StoragePort:
         Raises:
             StorageError: When iterated, if the object is absent, above the size
                 cap, or storage fails.
+            MediaContentChangedError: After the last chunk, if the bytes hash
+                differently from ``expected_sha256``.
         """
-        return self._stream(key, missing_ok=False)
+        return self._verified_stream(key, expected_sha256)
+
+    async def _verified_stream(
+        self, key: str, expected_sha256: str | None
+    ) -> AsyncGenerator[bytes]:
+        digest = hashlib.sha256()
+        async with aclosing(self._stream(key, missing_ok=False)) as chunks:
+            async for chunk in chunks:
+                digest.update(chunk)
+                yield chunk
+        if expected_sha256 is not None and not _is_same_digest(
+            digest.hexdigest(), expected_sha256
+        ):
+            raise MediaContentChangedError.detected()
 
     async def _stream(self, key: str, *, missing_ok: bool) -> AsyncGenerator[bytes]:
         checked = self._checked_key(key)
@@ -509,7 +627,9 @@ class S3StoragePort:
         except (ClientError, BotoCoreError) as error:
             raise _storage_error(error, operation="read") from error
 
-    async def copy_stripped_public(self, original_key: str, public_key: str) -> None:
+    async def copy_stripped_public(
+        self, original_key: str, public_key: str, *, expected_sha256: str
+    ) -> None:
         """Write a metadata-free copy of the original to the public bucket.
 
         Idempotent: the same ``public_key`` is overwritten with the same bytes.
@@ -517,10 +637,14 @@ class S3StoragePort:
         Args:
             original_key: The private original.
             public_key: Where the public copy goes.
+            expected_sha256: The digest recorded at completion.
 
         Raises:
-            StorageError: If the original is absent, is not an allowed type, cannot
-                be re-encoded, or storage fails.
+            MediaContentChangedError: If the original hashes differently from
+                ``expected_sha256``; nothing is written.
+            StorageError: If the original is absent, is not an allowed type, has
+                no metadata stripper, exceeds the decoding limits, cannot be
+                re-encoded, or storage fails.
         """
         checked_public = self._checked_key(public_key)
         if not checked_public.startswith(PUBLIC_KEY_PREFIX):
@@ -531,6 +655,8 @@ class S3StoragePort:
         if data is None:
             message = "the original is missing"
             raise StorageError(message, details={"operation": "copy"})
+        if not _is_same_digest(hashlib.sha256(data).hexdigest(), expected_sha256):
+            raise MediaContentChangedError.detected()
         mime_type = detect_mime_type(data[:SNIFF_BYTES])
         if mime_type is None:
             message = "the original is not an allowed media type"

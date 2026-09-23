@@ -11,8 +11,17 @@
   the source is referenced, whoever asks.
 - **Mark referenced.** Any authenticated actor: the command is internal and reached
   only through other modules' handlers, which run their own policies first.
-- **Read.** Everyone (``CanReadVerifiedData``): sources are the provenance of the
-  open dataset, and the DTOs omit the owning user.
+- **Read.** Sources of the ranked types (``government``, ``news``, ``research``,
+  ``dataset``, ``satellite``) are read by everyone (``CanReadVerifiedData``): they
+  are the provenance of the open dataset. A ``citizen`` or ``organisation`` source
+  exists because someone submitted a raw, unverified report or upload, so its mere
+  existence, timestamps and organisation reveal that private record (security
+  review, Phase 3). It is read only by moderators, by members of the organisation
+  it was registered for, or by anyone once a published and verified event cites
+  it (checked through ``SourceCitationChecker`` by the query service). Everyone
+  else is told it does not exist. Listings follow the same rule, except that
+  non-moderators never see citizen or organisation sources there (see
+  ``source_listing_specification``).
 
 Patterns: Policy.
 """
@@ -20,6 +29,7 @@ Patterns: Policy.
 from typing import Final
 
 from yakhnama.modules.identity.public import (
+    Actor,
     ActorPolicy,
     CanModerate,
     CanReadVerifiedData,
@@ -28,9 +38,14 @@ from yakhnama.modules.identity.public import (
     IsSelf,
     require_allowed,
 )
+from yakhnama.modules.provenance.application.dto import SourceDetail
+from yakhnama.modules.provenance.application.specifications import (
+    SourceTypeSpecification,
+)
 from yakhnama.modules.provenance.domain.entities import Source
 from yakhnama.modules.provenance.domain.value_objects import SourceType
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.specification import Specification, TrueSpecification
 
 __all__ = [
     "SELF_REGISTERED_SOURCE_TYPES",
@@ -38,6 +53,7 @@ __all__ = [
     "registration_policy",
     "require_allowed",
     "source_editor_policy",
+    "source_listing_specification",
     "source_read_policy",
 ]
 
@@ -95,10 +111,44 @@ def reference_policy() -> ActorPolicy:
     return IsAuthenticated()
 
 
-def source_read_policy() -> ActorPolicy:
-    """Return who may read sources.
+def source_read_policy(source: SourceDetail) -> ActorPolicy:
+    """Return who may read ``source`` without it being cited by a public event.
+
+    Args:
+        source: The source.
 
     Returns:
-        ``CanReadVerifiedData()``: everyone.
+        ``CanReadVerifiedData()`` for the ranked types; for ``citizen`` and
+        ``organisation`` sources ``CanModerate()``, or
+        ``CanModerate() | IsMemberOf(organization_id)`` when it was registered
+        for an organisation.
     """
-    return CanReadVerifiedData()
+    if source.source_type not in SELF_REGISTERED_SOURCE_TYPES:
+        return CanReadVerifiedData()
+    if source.organization_id is None:
+        return CanModerate()
+    return CanModerate() | IsMemberOf(source.organization_id)
+
+
+def source_listing_specification(actor: Actor) -> Specification[Source]:
+    """Return the visibility filter every source listing is conjoined with.
+
+    A per-row citation or membership check cannot be compiled into the listing
+    query without reading other modules' tables, and filtering a page after the
+    query would leak hidden sources' ids through the cursor. So non-moderators
+    see only the ranked types in listings; a cited citizen or organisation source
+    is still readable by id (for example from the event that cites it).
+
+    Args:
+        actor: Who lists.
+
+    Returns:
+        A specification every source satisfies for moderators; otherwise one
+        that excludes ``citizen`` and ``organisation`` sources.
+    """
+    if CanModerate().is_allowed(actor):
+        return TrueSpecification[Source]()
+    return ~(
+        SourceTypeSpecification(SourceType.CITIZEN)
+        | SourceTypeSpecification(SourceType.ORGANISATION)
+    )

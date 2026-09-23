@@ -20,7 +20,9 @@ from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.provenance.public import SourceType
 from yakhnama.modules.reports.application.commands import SubmitReport
 from yakhnama.modules.reports.application.handlers import (
+    CITIZEN_SOURCE_CITATION,
     CITIZEN_SOURCE_TITLE,
+    ORGANISATION_SOURCE_CITATION,
     ORGANISATION_SOURCE_TITLE,
 )
 from yakhnama.modules.reports.application.ports import RUN_TRIAGE_TASK
@@ -65,7 +67,8 @@ async def test_submit_report_new_report_registers_and_cites_citizen_source() -> 
     [registration] = harness.registrar.commands
     assert registration.source_type is SourceType.CITIZEN
     assert registration.details.title == CITIZEN_SOURCE_TITLE
-    assert str(submission.client_report_id) in registration.details.citation
+    assert registration.details.citation == CITIZEN_SOURCE_CITATION
+    assert str(submission.client_report_id) not in registration.details.citation
     assert harness.marker.marked_ids == (result.source_id,)
     assert harness.uow.reports.committed[result.id].source_id == result.source_id
 
@@ -147,6 +150,7 @@ async def test_submit_report_for_organisation_by_member_uses_organisation_source
     [registration] = harness.registrar.commands
     assert registration.source_type is SourceType.ORGANISATION
     assert registration.details.title == ORGANISATION_SOURCE_TITLE
+    assert registration.details.citation == ORGANISATION_SOURCE_CITATION
     assert registration.organization_id == ORGANIZATION_ID
     assert result.organization_id == ORGANIZATION_ID
 
