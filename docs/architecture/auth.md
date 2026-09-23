@@ -128,9 +128,110 @@ These are read by `platform/settings.py` and consumed by the JWKS client and
 `TokenValidator` in `platform/auth/` (phase-2 plan T4); see `docs/adr/0005-oidc-only-authentication.md`
 for the validation rules (`iss`, `aud`, `exp`, `nbf`, algorithm allow-list).
 
+## The backend side
+
+This section documents what `platform/auth/` and `modules/identity/` do with a token once
+it reaches the backend, as implemented in Phase 2 (ADR 0015 is the design record; this is
+the as-built summary). See `docs/architecture/api.md` for how authentication fits into the
+rest of the API (errors, the route table, rate limiting).
+
+### Validator checks
+
+`TokenValidator` (`platform/auth/tokens.py`) rejects a token unless, in order:
+
+1. It is at most 8192 characters (a longer value is refused unparsed, to bound the work a
+   hostile client can force).
+2. Its header's `alg` is in `oidc_allowed_algorithms` (`RS256` and/or `ES256` only — `none`
+   and the symmetric `HS*` family cannot even be configured, closing algorithm confusion by
+   construction).
+3. Its `kid` resolves to a JWK of the matching key type in the cached JWKS (symmetric and
+   encryption-use keys are dropped when the JWKS is parsed, so they can never be selected).
+4. PyJWT verifies the signature against that key and checks that `iss`, `aud`, `exp`,
+   `iat` and `sub` are present, that `iss` equals `oidc_issuer` exactly (character for
+   character — see "The exact-issuer pitfall" above) and that `aud` contains
+   `oidc_audience`.
+5. `exp`, `nbf` (when present) and `iat` are checked again by `TokenValidator` against the
+   platform's injected `Clock` (never the wall clock, so tests control time) with
+   `oidc_leeway_seconds` (0–60, default 10) of tolerance.
+6. Bounds on individual claims: `sub` at most 255 characters, each role name at most 100,
+   at most 100 roles, `display_name` at most 200.
+
+Every rejection raises the same `AuthenticationError` (HTTP 401,
+`WWW-Authenticate: Bearer realm="yakhnama"`) with a fixed, generic message; only the reason
+(a PyJWT error type or a fixed slug) is logged, as `bearer_token_rejected` — the token text
+itself is never logged. A provider that cannot be reached raises
+`IdentityProviderUnavailableError` (HTTP 503) instead, because the token is not at fault.
+`oidc_issuer = None` (the setting's default) disables authentication outright: every
+presented token is rejected and every protected route answers 401, which is why local
+development must set `YAKHNAMA_OIDC_ISSUER` to use anything beyond the public reference
+data.
+
+### JWKS cache and rotation
+
+`HttpJwksClient` (`platform/auth/jwks.py`) fetches `oidc_jwks_url`, or discovers it once
+from `<issuer>/.well-known/openid-configuration` (whose own `issuer` must equal the
+configured one and whose `jwks_uri` must be `https`, or `http` on a loopback host — the
+same rule `Settings` applies to `oidc_issuer` and `oidc_jwks_url` themselves). Keys are
+cached for `jwks_cache_ttl_seconds` (60–86400, default 600, `YAKHNAMA_JWKS_CACHE_TTL_SECONDS`
+in `.env.example`). An unknown `kid` — the sign that Keycloak rotated its signing key —
+triggers exactly one refetch, at most once per 30 seconds measured from the last attempt,
+so a flood of made-up `kid` values cannot turn the API into a load generator against the
+identity provider; a failed forced refetch keeps serving the still-fresh cache rather than
+failing every request. Concurrent fetches are serialised by a lock, time out after
+`oidc_http_timeout_seconds`, never follow redirects, and refuse a document larger than
+256 KiB. No test in this repository ever reaches a real identity provider: tests sign
+tokens with a locally generated key and serve JWKS through a fake
+(`AGENTS.md` §5, ADR 0015).
+
+### Role mapping
+
+A token's roles come from Keycloak's `realm_access.roles`, merged with a top-level `roles`
+claim if present, into `Principal.realm_roles` (`platform/auth/principal.py`) — the only
+view the rest of the backend has of "who is calling", together with `subject`, `issuer`,
+`display_name` (from `name`, else `preferred_username`), `token_id` (`jti`) and
+`expires_at`. `platform/auth` is the only place that knows these claim names (ADR 0005);
+everything past it deals only in `Principal` and, once mirrored, `Actor`.
+
+`map_realm_roles` (`modules/identity/api/dependencies.py`) then maps each realm role name
+to a `Role` by exact value match; names that are not one of Yakhnama's roles (Keycloak's
+own `offline_access`, `default-roles-*` and the like) are silently ignored rather than
+rejected, since a realm can carry roles unrelated to this application.
+
+### First-sight mirroring
+
+The first time a request from a given `(issuer, subject)` pair passes authentication,
+`EnsureUserFromPrincipalHandler` mirrors it into a `User` row (`identity.user_mirrored`),
+copying the mapped realm roles and the display name at that moment. Every later request
+from the same subject reuses the existing `User` and does **not** re-copy realm roles: a
+role added or removed at the identity provider after first sight has no effect on the
+mirrored user until an admin changes it inside Yakhnama. This is a deliberate Phase 2
+scope decision, not an oversight — see `docs/open-questions.md` Q50 (`docs/data-dictionary/identity.md`
+Q-I1) for why, and what re-synchronisation would need before production.
+
+### The production guard
+
+`Settings`' `_guard_production` validator (`platform/settings.py`) refuses to start with
+`environment = "production"` unless, among the other Phase 1 security-review rules:
+
+- `oidc_issuer` is set (authentication cannot be silently disabled in production);
+- `rate_limit_enabled` is true and `rate_limit_backend` is `redis` (an in-memory limiter
+  would not be shared across production processes);
+- `docs_enabled` is false (no Scalar page, and therefore no CDN-loaded bundle, in
+  production — see `docs/open-questions.md` Q68);
+- `cors_allow_origins` holds only `https` or loopback origins, never `*`;
+- `log_format` is `json` and `otel_exporter` is not `console`;
+- `database_url` is not the development default and `trusted_hosts` does not contain `*`.
+
+Every broken rule is collected and reported together (`production_problems`), by field name
+only, never by value, so an operator sees every mistake in one failed start instead of one
+per redeploy.
+
 ## More information
 
 - `docs/adr/0005-oidc-only-authentication.md` — the decision and its trade-offs.
+- `docs/adr/0015-jwt-validation-with-pyjwt-and-a-cached-jwks.md` — the validator and JWKS
+  client design record this section summarises as built.
+- `docs/architecture/api.md` — how authentication fits the rest of the API surface.
 - `docs/plans/phase-2.md` §7 (Q1, Q2) — the `aud` value and realm-role-vs-module-role
-  open questions.
+  open questions, also recorded as Q72–Q73 in `docs/open-questions.md`.
 - `docker/keycloak/yakhnama-realm.json` — the realm export imported on `poe up`.

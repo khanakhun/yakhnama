@@ -56,3 +56,60 @@ were written by hand because there is no release yet.
   source-or-`proposed` provenance convention.
 - Test infrastructure: `tests/factories/` (polyfactory), consolidated `tests/fakes/`, and
   shared PostGIS/MinIO testcontainer fixtures.
+
+### Phase 2
+
+- `identity` domain: `User` (mirrored from the OIDC `sub`/`iss` at first sight),
+  `Organization`, `Membership`, the `Role` enum, the `Actor` value object, and the
+  composable Specification-style policies every module authorises through
+  (`IsAdmin`, `IsModerator`, `IsMemberOf`, `IsOrgAdminOf`, `IsSelf`,
+  `CanManageReferenceData`, `CanModerate`, `CanManageOrganization`,
+  `CanReadVerifiedData`).
+- `identity` application and persistence: commands (`EnsureUserFromPrincipal`,
+  `CreateOrganization`, `AddMember`, `ChangeMemberRole`, `RemoveMember`, `GrantRole`,
+  `RevokeRole`, `SuspendUser`, `ReinstateUser`, `RenameSelf`, `RenameOrganization`),
+  queries (`GetMe`, `GetOrganization`, `ListOrganizationMembers`), a `public.py` facade,
+  ORM, repositories and migration `0005_identity`; the placeholder `AdminOnlyPolicy`
+  duplicated in `geography`, `hazards` and `impacts` is replaced by identity policies
+  through the facade.
+- Platform authentication (`platform/auth/`): an in-house `HttpJwksClient` with a TTL
+  cache and rate-limited refetch on key rotation, a PyJWT-based `TokenValidator` (`RS256`/
+  `ES256` only, exact `iss`/`aud` checks, clock-skew leeway from the injected `Clock`),
+  the `Principal` DTO and `PrincipalResolutionMiddleware` resolving the bearer token once
+  per request (ADR 0015).
+- Platform idempotency (`platform/idempotency/`): a PostgreSQL-backed `IdempotencyStore`
+  (reservation-first, migration `0006_idempotency_keys`) and `IdempotencyMiddleware`
+  replaying the stored response of a repeated `Idempotency-Key` on an authenticated
+  creating `POST`, with a 72-hour default retention (ADR 0016).
+- Platform concurrency (`platform/etag.py`): strong `ETag`s from an aggregate's `version`
+  and `If-Match` checks (`PreconditionFailedError` 412, `PreconditionRequiredError` 428).
+- Platform rate limiting (`platform/ratelimit/`): a `RateLimiter` port with an in-memory
+  token-bucket adapter and a Redis fixed-window adapter, per-principal and per-hashed-IP
+  keys, `429` Problem Details with `Retry-After` (ADR 0017).
+- Platform HTTP hardening (`platform/http.py`): pure-ASGI request id, request logging (no
+  personal data), security headers and CSP, `TrustedHostMiddleware`, CORS options and
+  request body guard (size limit and NUL-character rejection) middlewares; extended
+  exception handlers in `main.py` for `RequestValidationError`, 404/405 and a catch-all
+  500 that adds its own request id and security headers; a production settings validator
+  (`platform/settings.py`) that collects every unsafe-for-production setting into one
+  error.
+- Self-hosted Scalar API reference at `/api/v1/docs`, gated by `docs_enabled`, replacing
+  Swagger UI and ReDoc, with a page-specific Content-Security-Policy computed from its own
+  rendered HTML (ADR 0014).
+- First public read endpoints: `GET /hazard-types`, `/hazard-types/{code}`,
+  `/impact-metrics`, `/impact-metrics/{code}`, `/places` (with GeoJSON content
+  negotiation), `/places/{place_id}`; the identity endpoints `GET`/`PATCH /me`,
+  `POST`/`GET`/`PATCH /organizations[/{id}]`, the organisation member endpoints, the
+  administrator-only user-role and suspension endpoints, and the `/moderation` router
+  scaffold (`GET /moderation/ping`).
+- The committed OpenAPI snapshot (`tests/contract/openapi.json`) and its contract test,
+  plus the `openapi-snapshot` and `contract` Poe tasks.
+- Local Keycloak development realm (`docker/keycloak/yakhnama-realm.json`): the
+  `yakhnama-api` and `yakhnama-dev-cli` clients, the platform roles, and two demo users;
+  `docs/architecture/auth.md` documents the token flow, the realm and the backend's
+  validation rules.
+- ADRs 0014 (Scalar API reference), 0015 (JWT validation with PyJWT and a cached JWKS),
+  0016 (idempotency keys in PostgreSQL) and 0017 (rate limiting behind a port).
+- `docs/architecture/api.md`: the `/api/v1` conventions (authentication, Problem Details,
+  pagination, idempotency, `ETag`/`If-Match`, content negotiation, rate limiting, the
+  route table and the OpenAPI workflow).

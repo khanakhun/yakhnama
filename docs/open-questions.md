@@ -520,3 +520,227 @@ or the module's `application/` code.
 - **Proposed default:** None needed; this entry exists only to record explicitly that the envelope is test data, not a sourced boundary, so nobody promotes it by mistake.
 - **Blocking:** no
 - **Status:** open (raised from the T12 report)
+
+---
+
+The entries below were raised while building the `identity` module and the platform HTTP
+foundations in Phase 2 (tasks T3–T9). Q50–Q57 are copied from
+`docs/data-dictionary/identity.md` (Q-I1–Q-I8), which remains the source of truth for them;
+Q58–Q71 come from the T5, T7 and T4 reports; Q72–Q76 are the Phase 2 plan's own open
+questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
+
+## Q50 — Re-synchronising realm roles on every sign-in
+
+- **Question:** Realm roles are copied from the token only at first sight (Phase 2 plan Q2). A role removed at the provider later, such as a demoted admin, stays in Yakhnama. Should roles be re-synchronised on every sign-in?
+- **Why it matters:** A user demoted at the identity provider keeps the role inside Yakhnama until an admin also demotes them there, which is a real privilege-drift risk.
+- **Proposed default:** Keep first-sight mirroring for Phase 2. Demote in both places. Before production, record which roles came from the provider, so they can be re-synchronised without touching roles granted in Yakhnama.
+- **Blocking:** no (security-relevant)
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I1)
+
+## Q51 — Role implication order
+
+- **Question:** Is the `Role` implication order right (`admin` implies `moderator`; `org_admin` implies `org_member`; nothing else, in particular `admin` does not imply `trusted_reporter`)?
+- **Why it matters:** Every policy in `modules/identity/domain/policies.py` composes over this order; a wrong implication either over- or under-grants access.
+- **Proposed default:** The order as implemented; see `docs/data-dictionary/identity.md`, "Role" table.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I2)
+
+## Q52 — Meaning of the realm-level `org_member` and `org_admin` roles
+
+- **Question:** What do the realm-level `org_member` and `org_admin` roles mean, given per-organisation memberships?
+- **Why it matters:** If they were read as a general "trust this person with any organisation" signal instead of markers, they would silently widen every `CanManageOrganization` check.
+- **Proposed default:** Markers only. Per-organisation rights come only from `Membership` records.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I3)
+
+## Q53 — Organisation types
+
+- **Question:** Which organisation types exist?
+- **Why it matters:** `OrganizationType` is stored on every organisation; the list is easy to extend but a wrong initial member is harder to withdraw once organisations exist.
+- **Proposed default:** `government`, `ngo`, `research`, `media`, `community`, `other`.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I4; same list also recorded as the Phase 2 plan's Q3, see Q74 below)
+
+## Q54 — Removing or demoting the only admin of an organisation
+
+- **Question:** May the only admin of an organisation be removed or demoted?
+- **Why it matters:** Without a last-admin rule, an organisation could be left with no admin able to manage it, other than a platform administrator.
+- **Proposed default:** No. Another admin must be appointed first; this also applies to a platform admin acting on the organisation. An organisation may start with no admin.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I5)
+
+## Q55 — Plain `http` issuers
+
+- **Question:** May an OIDC issuer use plain `http`?
+- **Why it matters:** A token endpoint reachable over plain `http` could be intercepted or spoofed on the path.
+- **Proposed default:** Only for loopback hosts, for the development realm; the production settings validator requires `https` for the configured issuer.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I6)
+
+## Q56 — What suspension does
+
+- **Question:** What does suspending a user do to their roles, memberships and `last_seen_at`? Do members of a suspended organisation keep their membership rights?
+- **Why it matters:** Fixes what every policy sees for a suspended user or a member of a suspended organisation.
+- **Proposed default:** A suspended user keeps their roles and memberships but gets no `Actor`, so every request needing one is refused; their record and memberships cannot change until reinstated; `last_seen_at` is still recorded. Suspending an organisation blocks renaming it and adding members. Memberships of inactive (suspended or retired) organisations are left out of the actor, so a member of a suspended organisation is treated as a non-member until it is reinstated.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I7)
+
+## Q57 — Whether a contact channel is ever needed
+
+- **Question:** Is a contact channel (email or phone) ever needed, for example for moderation follow-up?
+- **Why it matters:** The identity module deliberately stores no personal data beyond an optional display name (`AGENTS.md` §5); adding a contact field later is a privacy-relevant schema change.
+- **Proposed default:** No. None is stored. Any future need goes through the maintainer and a privacy review.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/identity.md`, Q-I8)
+
+## Q58 — Who may create an organisation
+
+- **Question:** Who may call `POST /api/v1/organizations`?
+- **Why it matters:** `CreateOrganizationHandler` needs an authorisation rule, and none was specified by the Phase 2 plan beyond "an account is required to write" (Q10).
+- **Proposed default:** Any authenticated, active user (any holder of `citizen`, which every active user holds). The creator becomes the organisation's first admin.
+- **Blocking:** no
+- **Status:** open (raised from the T5 report)
+
+## Q59 — Who may list members and read organisation details
+
+- **Question:** Who may call `GET /api/v1/organizations/{id}` and `GET /api/v1/organizations/{id}/members`?
+- **Why it matters:** The member list shows display names, which is the one piece of personal data the module stores; the organisation detail does not.
+- **Proposed default:** Organisation detail is public (`organization_read_policy`, anonymous callers included). The member list is restricted to the organisation's own members and platform administrators (`member_list_policy`).
+- **Blocking:** no
+- **Status:** open (raised from the T5 report)
+
+## Q60 — May a member leave an organisation on their own
+
+- **Question:** May a member remove their own membership, without an organisation admin or a platform admin acting on their behalf?
+- **Why it matters:** `RemoveMemberHandler` currently authorises only through `CanManageOrganization`; there is no self-service path yet.
+- **Proposed default:** Not in Phase 2. Add an `IsSelf`-based self-removal path later; `IsSelf(user_id)` already exists as a policy building block (`docs/data-dictionary/identity.md`, "Policies").
+- **Blocking:** no
+- **Status:** open (raised from the T5 report)
+
+## Q61 — May an admin suspend themselves or revoke the last admin role
+
+- **Question:** May an administrator suspend their own account, or revoke the platform `admin` role from the only remaining admin?
+- **Why it matters:** Either could leave the platform with no administrator able to reverse the action.
+- **Proposed default:** No guard exists yet in Phase 2's `SuspendUserHandler` or `RevokeRoleHandler`. Decide and implement a guard before production.
+- **Blocking:** no
+- **Status:** open (raised from the T5 report)
+
+## Q62 — Invalid display-name claims are dropped to `None`
+
+- **Question:** When a token's name claim fails `User`'s `display_name` validation (for example it is empty after stripping, or contains a control character), should mirroring the user fail, or should the invalid value be dropped and the field left unset?
+- **Why it matters:** Failing the request would turn a cosmetic, untrusted provider claim into an outage for the affected user.
+- **Proposed default:** Drop the invalid claim to `None` and continue mirroring; the user can still set a display name themselves.
+- **Blocking:** no
+- **Status:** open (raised from the T5 report)
+
+## Q63 — Members of suspended organisations are treated as non-members
+
+- **Question:** Should a `Membership` of a suspended organisation still count in the member's `Actor.memberships`, for policies such as `IsMemberOf`?
+- **Why it matters:** Counting it would let a member of a suspended organisation keep acting on its behalf while it is suspended.
+- **Proposed default:** No; the actor's memberships include only memberships of active organisations (also recorded as part of Q56/Q-I7).
+- **Blocking:** no
+- **Status:** open (raised from the T5 report)
+
+## Q64 — Replayed idempotent creates return 201, not 200
+
+- **Question:** When `IdempotencyMiddleware` replays a stored response for a repeated `POST` (for example `POST /organizations`), should the replayed status stay `201 Created`, or become `200 OK` because nothing was created this time?
+- **Why it matters:** `IETF draft-ietf-httpapi-idempotency-key-header` and ADR 0016 do not fix this; a client polling on status code could behave differently either way.
+- **Proposed default:** Keep `201`: the middleware replays the stored response byte for byte, including its original status code, so the response describes what happened the first time, with `Idempotent-Replayed: true` marking the replay.
+- **Blocking:** no
+- **Status:** open (raised from the T7 report)
+
+## Q65 — Member `ETag` shape
+
+- **Question:** `MemberSummary`'s `ETag` is `make_etag(member.version, member.user_id)` (the *user's* id, not the membership's). Should it instead be keyed on a stable membership id, so that removing and re-adding the same user does not silently reuse the tag shape of a different membership row?
+- **Why it matters:** `Membership.id` exists (`docs/data-dictionary/identity.md`) but is not yet exposed on `MemberSummary` or used in its tag.
+- **Proposed default:** Keep the current `(user_id, version)` tag in Phase 2; expose a membership id on `MemberSummary` and switch the tag to it in a later phase, as a documented, non-breaking addition.
+- **Blocking:** no
+- **Status:** open (raised from the T7 report)
+
+## Q66 — `If-Match` is optional on the member and administrator routes
+
+- **Question:** `PATCH`/`DELETE` on organisation members (`.../members/{user_id}`) and on user roles and suspension (`/users/{user_id}/...`) accept `If-Match` but do not require it, unlike `PATCH /me` and `PATCH /organizations/{id}`, which return 428 without it. Should they also require it?
+- **Why it matters:** Without a required `If-Match`, two concurrent role or suspension changes can race silently instead of the second one getting 412.
+- **Proposed default:** Keep `If-Match` optional on these routes in Phase 2 (moderation and admin actions are comparatively rare and usually sequential); revisit before any of them sees high-concurrency use.
+- **Blocking:** no
+- **Status:** open (raised from the T7 report)
+
+## Q67 — No coordinate rounding applied yet on the public places endpoints
+
+- **Question:** `GET /api/v1/places` and `GET /api/v1/places/{id}` return each place's stored centroid at full precision; `Settings.public_coordinate_decimals` (Q3) exists but is not yet applied to this response.
+- **Why it matters:** Q3 proposes rounding public coordinates to protect reporter locations; reference-data places (administrative centroids, not reporter locations) may not need the same protection, but the setting currently has no effect anywhere.
+- **Proposed default:** None for reference-data centroids specifically; apply `public_coordinate_decimals` when reporter- or event-linked coordinates are served, from Phase 3, and have the security reviewer confirm whether administrative centroids need it too.
+- **Blocking:** no
+- **Status:** open (raised from the T7 report)
+
+## Q68 — Self-hosting the Scalar bundle with an integrity hash
+
+- **Question:** Should the Scalar API reference bundle be self-hosted (a pinned version of the npm package `@scalar/api-reference`, served as a static asset or from `yakhnama.org`) with a Subresource Integrity hash, instead of loading the latest, unpinned bundle from the jsDelivr CDN?
+- **Why it matters:** ADR 0014 accepted the CDN only as a stopgap: by default a developer's browser loads unpinned, third-party JavaScript, which the CDN could serve any current version of.
+- **Proposed default:** Keep the CDN for development only, as ADR 0014 already records; non-blocking because production has `docs_enabled = false` and serves no docs page at all.
+- **Blocking:** no
+- **Status:** open (raised in ADR 0014, "More information"; recorded here per the docs-writer brief)
+
+## Q69 — What schedules `purge_expired` for idempotency rows
+
+- **Question:** `IdempotencyStore.purge_expired(now)` deletes lapsed `idempotency_keys` rows (ADR 0016) but nothing calls it yet; what process runs it, and how often?
+- **Why it matters:** Stored response bodies can carry personal data for up to 72 hours (`idempotency_ttl_hours`); without a scheduled purge, expired rows are simply never deleted, which both wastes storage and keeps stale data past its documented retention.
+- **Proposed default:** A Taskiq job in Phase 3, once the task-queue port (ADR 0008) exists; run at least daily.
+- **Blocking:** no
+- **Status:** open (raised from the T4 report)
+
+## Q70 — `platform/auth/dependencies.py` importing the container
+
+- **Question:** `platform/auth/dependencies.py` imports `platform/container.py` to build its FastAPI dependencies, which is why every module's `api/dependencies.py` reads the container through its own module-local Protocol instead of importing `platform.auth.dependencies` directly (see the `geography`/`identity` dependency-module docstrings). Should the principal be read from request state entirely inside `platform` instead, so no `api` layer needs this workaround?
+- **Why it matters:** The workaround is documented and does not break the layer contract (`lint-imports` passes), but it is friction every module's `api` layer repeats, and it signals that `platform/auth/dependencies.py` sits slightly wrong relative to the container.
+- **Proposed default:** Read the principal from request state directly inside `platform` (as `platform/auth/resolution.py`'s `get_principal_resolution` already does) and move the `current_actor`-equivalent helpers there in Phase 3, removing the need for each module to route around the container import.
+- **Blocking:** no
+- **Status:** open (raised from the T4 report)
+
+## Q71 — Keycloak's custom user-profile override
+
+- **Question:** The development realm's user-profile component (`docker/keycloak/yakhnama-realm.json`) is customised to drop the default `firstName`/`lastName` requirements and make `email` optional (Keycloak does not allow removing the `email` attribute entirely). Should this override be kept as the realm evolves?
+- **Why it matters:** The override exists only so demo users need no personal data, matching the backend's rule of storing none (`AGENTS.md` §5); if the realm is later extended or replaced, this constraint has to travel with it.
+- **Proposed default:** Keep it, and carry the same constraint (no required name or email) into whatever production identity provider is chosen (Q5).
+- **Blocking:** no
+- **Status:** open (raised from the T4 report; see also `docs/architecture/auth.md`, "The `yakhnama` realm")
+
+## Q72 — Audience value for the API (`aud` claim)
+
+- **Question:** Is `yakhnama-api` the right `aud` value for access tokens the backend accepts?
+- **Why it matters:** `Settings.oidc_audience` defaults to it and the development realm's audience mapper adds it; changing it later requires updating every deployed client and the realm configuration together.
+- **Proposed default:** `yakhnama-api`, from settings.
+- **Blocking:** no
+- **Status:** open (raised in the Phase 2 plan, §7 Q1)
+
+## Q73 — Are `moderator` and `admin` granted through OIDC realm roles or only through the identity module?
+
+- **Question:** Should `moderator` and `admin` ever be granted purely through a Keycloak realm role, or only ever by an admin acting inside the identity module?
+- **Why it matters:** Determines how much trust the identity provider's role assignment carries for the platform's most sensitive roles, and interacts with Q50 (re-synchronisation).
+- **Proposed default:** Realm roles are mirrored on the token at first sight; roles beyond what the realm grants are added only by an admin inside Yakhnama, and module-granted roles are never downgraded by a later token.
+- **Blocking:** no
+- **Status:** open (raised in the Phase 2 plan, §7 Q2; see also Q50)
+
+## Q74 — Organisation types (Phase 2 plan copy)
+
+- **Question:** Same question as Q53/Q-I4: are `government`, `ngo`, `research`, `media`, `community` (plus `other`, added during implementation) the right organisation types?
+- **Why it matters:** Recorded here because the Phase 2 plan lists it as its own open question, §7 Q3; see Q53 for the full entry, which is the one to update if this is answered.
+- **Proposed default:** See Q53.
+- **Blocking:** no
+- **Status:** open (raised in the Phase 2 plan, §7 Q3; duplicate of Q53/Q-I4)
+
+## Q75 — Storing `display_name` from the token
+
+- **Question:** Should the backend store `display_name` from the token at all?
+- **Why it matters:** It is the one piece of personal data the identity module stores (`docs/data-dictionary/identity.md`, "Personal data"); the Phase 2 plan raised it as an explicit yes/no before implementation, distinct from Q57/Q-I8 (whether a contact channel is needed).
+- **Proposed default:** Yes, optional, editable by the user; never email or phone.
+- **Blocking:** no
+- **Status:** open (raised in the Phase 2 plan, §7 Q4)
+
+## Q76 — Idempotency scope for anonymous callers
+
+- **Question:** What idempotency scope applies to an anonymous caller's `POST`?
+- **Why it matters:** `IdempotencyMiddleware` scopes reservations to `Principal.scope_key()`, which only an authenticated caller has.
+- **Proposed default:** None: anonymous `POST`s are rejected with 401 before idempotency would matter, since every creating route requires an account (Q10).
+- **Blocking:** no
+- **Status:** open (raised in the Phase 2 plan, §7 Q5)

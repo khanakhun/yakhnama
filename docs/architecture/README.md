@@ -217,11 +217,88 @@ sequenceDiagram
     Relay->>DB: mark published_at (or increment attempts)
 ```
 
+## Phase 2 state
+
+Phase 2 (`docs/plans/phase-2.md`) added the `identity` module, the platform HTTP
+foundations every later endpoint relies on, and the first public read endpoints. This
+section records what actually exists after Phase 2; `docs/architecture/api.md` is the
+detailed companion for the API surface itself, and `docs/architecture/auth.md` for
+authentication.
+
+### Module map (Phase 2 addition)
+
+| Module | Owns | Key rule | Status |
+|--------|------|----------|--------|
+| `identity` | `User`, `Organization`, `Membership`, `Role`, `Actor`, the authorisation policies | A user is mirrored from its OIDC token at first sight and never deleted; a suspended user keeps its roles but gets no `Actor`, so no policy allows it anything (`src/yakhnama/modules/identity/domain/`, `docs/data-dictionary/identity.md`). | domain + application + persistence + API |
+
+The placeholder `AdminOnlyPolicy` duplicated in `geography`, `hazards` and `impacts`
+(`docs/open-questions.md` Q41) is replaced by identity policies (`IsAdmin`,
+`CanManageReferenceData`, ...) exposed through `modules/identity/public.py`, per the
+Facade rule in `AGENTS.md` §2.1.
+
+### Platform pieces added in Phase 2
+
+- **`platform/auth/`** — `HttpJwksClient` (a TTL-cached, rate-limited-refetch JWKS
+  client over `httpx`), `TokenValidator` (PyJWT-based signature and claim checks against
+  the injected `Clock`), the `Principal` DTO, and `PrincipalResolutionMiddleware`, which
+  validates the bearer token once per request and stores the outcome in request state for
+  the rate limiter, the idempotency middleware and every route to read (ADR 0015; full
+  detail in `docs/architecture/auth.md`, "The backend side").
+- **`platform/idempotency/`** — the `IdempotencyStore` port, a PostgreSQL adapter
+  (`idempotency_keys`, migration `0006_idempotency_keys`) and `IdempotencyMiddleware`,
+  which replays the stored response of a repeated `Idempotency-Key` on an authenticated
+  creating `POST` (ADR 0016).
+- **`platform/etag.py`** — strong ETags (`"<id>:<version>"`) from an aggregate's
+  `version`, and the `If-Match` checks that raise `PreconditionFailedError` (412) or
+  `PreconditionRequiredError` (428).
+- **`platform/ratelimit/`** — the `RateLimiter` port, an in-memory token-bucket adapter
+  (development and tests) and a Redis fixed-window adapter (production, shared across
+  processes), keyed per principal or per hashed client IP, with `RateLimitMiddleware`
+  answering `429` Problem Details with `Retry-After` (ADR 0017).
+- **`platform/http.py`** — the pure-ASGI hardening middlewares: request id, request
+  logging (no personal data), security headers and CSP, `TrustedHostMiddleware`, CORS
+  options, and `RequestBodyGuardMiddleware` (body size limit and NUL-character rejection).
+- **`platform/api_docs.py`** — renders the self-hosted Scalar API reference page served at
+  `/api/v1/docs` when `docs_enabled`, with a page-specific CSP computed from its own
+  rendered HTML (ADR 0014); Swagger UI and ReDoc are never served.
+- Extended error handling in `main.py`: `RequestValidationError` never echoes rejected
+  input, 404/405 render as Problem Details, and the catch-all 500 handler adds the request
+  id and security headers itself, because it runs outside every other middleware
+  (Starlette's `ServerErrorMiddleware`).
+- A production settings validator (`platform/settings.py`, `_guard_production` /
+  `production_problems`) that refuses to start with unsafe production settings, collecting
+  every broken rule into one message.
+
+### Middleware order
+
+`install_middlewares` (`main.py`) calls `add_middleware` innermost first (idempotency, body
+guard, rate limit, principal resolution, CORS, trusted host, security headers, request
+logging, request id, in that call order), so each new middleware wraps the ones already
+added and the actual request-time order is the reverse — outermost first: request id,
+request logging, security headers, trusted host, CORS, principal resolution, rate limit,
+body guard, idempotency, then the routes (see `platform/http.py`'s module docstring for the
+request-time explanation of each layer).
+
+```mermaid
+flowchart LR
+    Client --> RequestId --> RequestLogging --> SecurityHeaders --> TrustedHost --> CORS --> PrincipalResolution --> RateLimit --> BodyGuard --> Idempotency --> Routes
+```
+
+### The API layer conventions
+
+Every route under `/api/v1` follows the same conventions for authentication, errors,
+pagination, idempotency, concurrency and content negotiation. See
+[`api.md`](api.md) for the full reference, including the route table with each route's
+authentication and authorisation requirement.
+
 ## Further reading
 
 - Architecture decisions: [`../adr/`](../adr/README.md) (MADR format).
 - Data dictionary conventions and the module pages:
   [`../data-dictionary/README.md`](../data-dictionary/README.md).
-- Open questions raised while building Phase 1: [`../open-questions.md`](../open-questions.md).
+- API conventions: [`api.md`](api.md).
+- Authentication and the development realm: [`auth.md`](auth.md).
+- Open questions raised while building Phase 1 and Phase 2:
+  [`../open-questions.md`](../open-questions.md).
 - External data source adapters: `data-sources.md`, added in Phase 4 alongside the
   `add-source-adapter` skill.
