@@ -138,3 +138,8 @@ skeleton, OpenTelemetry and the container in `platform`; the `geography`, `hazar
 (registry only) modules with versioned YAML seed data and an idempotent loader; Alembic with the
 `migrate` task, `/health/ready`, testcontainers for PostGIS and MinIO, and the per-layer coverage gate.
 The plan will be written to `docs/plans/phase-1.md` for approval.
+
+Maintainer decision recorded 2026-09-23: the API reference UI will be **Scalar** (via
+`scalar-fastapi`) mounted at `/api/v1/docs`, replacing Swagger UI and ReDoc, gated by a setting
+and self-hosted rather than CDN-loaded. It lands in Phase 2 with the API foundations and gets an
+ADR because it adds a dependency.
