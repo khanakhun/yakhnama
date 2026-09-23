@@ -1,6 +1,6 @@
 # Phase 1 plan — Shared kernel and reference data
 
-Status: **awaiting maintainer approval**
+Status: **approved by the maintainer on 2026-09-23** ("approved and go")
 Branch: `phase/1-shared-kernel` (from `main` at the Phase 0 merge, PR #1)
 Lead: Fable 5.1 (orchestration, integration glue). Implementers on Opus 5.5, `docs-writer` on Sonnet.
 

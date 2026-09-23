@@ -18,7 +18,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: GIS",
   "Typing :: Typed",
 ]
-dependencies = ["fastapi (>=0.141.1,<0.142.0)", "uvicorn[standard] (>=0.53.0,<0.54.0)", "pydantic (>=2.13.5,<3.0.0)", "pydantic-settings (>=2.15.0,<3.0.0)", "geojson-pydantic (>=2.2.0,<3.0.0)", "sqlalchemy[asyncio] (>=2.0.54,<3.0.0)", "asyncpg (>=0.31.0,<0.32.0)", "geoalchemy2 (>=0.20.0,<0.21.0)", "alembic (>=1.20.0,<2.0.0)", "shapely (>=2.1.2,<3.0.0)", "structlog (>=26.1.0,<27.0.0)", "httpx (>=0.28.1,<0.29.0)", "opentelemetry-api (>=1.44.0,<2.0.0)", "opentelemetry-sdk (>=1.44.0,<2.0.0)", "opentelemetry-instrumentation-fastapi (>=0.65b0,<0.66)", "prometheus-client (>=0.26.0,<0.27.0)"]
+dependencies = ["fastapi (>=0.141.1,<0.142.0)", "uvicorn[standard] (>=0.53.0,<0.54.0)", "pydantic (>=2.13.5,<3.0.0)", "pydantic-settings (>=2.15.0,<3.0.0)", "geojson-pydantic (>=2.2.0,<3.0.0)", "sqlalchemy[asyncio] (>=2.0.54,<3.0.0)", "asyncpg (>=0.31.0,<0.32.0)", "geoalchemy2 (>=0.20.0,<0.21.0)", "alembic (>=1.20.0,<2.0.0)", "shapely (>=2.1.2,<3.0.0)", "structlog (>=26.1.0,<27.0.0)", "httpx (>=0.28.1,<0.29.0)", "opentelemetry-api (>=1.44.0,<2.0.0)", "opentelemetry-sdk (>=1.44.0,<2.0.0)", "opentelemetry-instrumentation-fastapi (>=0.65b0,<0.66)", "prometheus-client (>=0.26.0,<0.27.0)", "pyyaml (>=6.0.3,<7.0.0)", "opentelemetry-instrumentation-sqlalchemy (>=0.65b0,<0.66)"]
 
 [project.urls]
 Homepage = "https://github.com/khanakhun/yakhnama"
@@ -37,6 +37,8 @@ poethepoet = "^0.48.0"
 pre-commit = "^4.6.2"
 commitizen = "^4.19.0"
 pip-audit = "^2.10.1"
+types-pyyaml = "^6.0.12.20260906"
+types-shapely = "^2.1.0.20260728"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^9.1.1"
@@ -45,6 +47,7 @@ pytest-cov = "^7.1.0"
 diff-cover = "^10.6.0"
 hypothesis = "^6.168.0"
 polyfactory = "^3.3.0"
+testcontainers = {extras = ["minio", "postgres"], version = "^4.15.0"}
 
 [tool.poetry.group.docs.dependencies]
 mkdocs-material = "^9.7.7"
@@ -141,6 +144,91 @@ type = "forbidden"
 source_modules = ["yakhnama.platform"]
 forbidden_modules = ["yakhnama.main"]
 
+[[tool.importlinter.contracts]]
+name = "modules are independent except through each other's public facade"
+type = "independence"
+modules = [
+  "yakhnama.modules.geography",
+  "yakhnama.modules.hazards",
+  "yakhnama.modules.impacts",
+]
+ignore_imports = [
+  "yakhnama.modules.** -> yakhnama.modules.geography.public",
+  "yakhnama.modules.** -> yakhnama.modules.hazards.public",
+  "yakhnama.modules.** -> yakhnama.modules.impacts.public",
+]
+# The facades are empty until modules have content, so unmatched ignores are expected.
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "hexagonal layers inside every module (api and infrastructure never import each other)"
+type = "layers"
+containers = [
+  "yakhnama.modules.geography",
+  "yakhnama.modules.hazards",
+  "yakhnama.modules.impacts",
+]
+layers = [
+  "api | infrastructure",
+  "application",
+  "domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "domain layers are framework-free and never import platform"
+type = "forbidden"
+source_modules = [
+  "yakhnama.modules.geography.domain",
+  "yakhnama.modules.hazards.domain",
+  "yakhnama.modules.impacts.domain",
+]
+forbidden_modules = [
+  "yakhnama.platform",
+  "fastapi",
+  "starlette",
+  "sqlalchemy",
+  "geoalchemy2",
+  "alembic",
+  "asyncpg",
+  "httpx",
+  "shapely",
+  "boto3",
+  "botocore",
+  "structlog",
+]
+
+[[tool.importlinter.contracts]]
+name = "application layers never import platform or frameworks"
+type = "forbidden"
+source_modules = [
+  "yakhnama.modules.geography.application",
+  "yakhnama.modules.hazards.application",
+  "yakhnama.modules.impacts.application",
+]
+forbidden_modules = [
+  "yakhnama.platform",
+  "fastapi",
+  "starlette",
+  "sqlalchemy",
+  "geoalchemy2",
+  "alembic",
+  "asyncpg",
+  "httpx",
+  "shapely",
+  "boto3",
+  "botocore",
+]
+
+[[tool.importlinter.contracts]]
+name = "api layers never import persistence or storage libraries"
+type = "forbidden"
+source_modules = [
+  "yakhnama.modules.geography.api",
+  "yakhnama.modules.hazards.api",
+  "yakhnama.modules.impacts.api",
+]
+forbidden_modules = ["sqlalchemy", "geoalchemy2", "alembic", "asyncpg", "boto3", "botocore", "shapely"]
+
 # --------------------------------------------------------------------------- #
 # pytest and coverage (§11)                                                   #
 # --------------------------------------------------------------------------- #
@@ -234,6 +322,21 @@ cmd = "pytest tests/api tests/architecture"
 help = "All non-integration tests with the coverage gate"
 cmd = "pytest tests/unit tests/api tests/architecture --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
 
+[tool.poe.tasks.cov-layers]
+help = "Per-layer gate: >= 95% branch coverage in every module's domain and application layer"
+sequence = [
+  { cmd = "coverage report --include='*/yakhnama/modules/*/domain/*' --fail-under=95" },
+  { cmd = "coverage report --include='*/yakhnama/modules/*/application/*' --fail-under=95" },
+]
+
+[tool.poe.tasks.migrate]
+help = "Apply all Alembic migrations to the configured database"
+cmd = "alembic upgrade head"
+
+[tool.poe.tasks.seed]
+help = "Load the versioned reference data idempotently"
+cmd = "python -m yakhnama.seed"
+
 [tool.poe.tasks.diff-cover]
 help = "Require >= 90% coverage on lines changed relative to main"
 cmd = "diff-cover coverage.xml --compare-branch=main --fail-under=90"
@@ -262,4 +365,4 @@ cmd = "mkdocs serve"
 
 [tool.poe.tasks.check]
 help = "Everything CI runs, in order. Green here means green in CI."
-sequence = ["lint", "typecheck", "arch", "cov", "test-integration", "diff-cover", "security"]
+sequence = ["lint", "typecheck", "arch", "cov", "cov-layers", "test-integration", "diff-cover", "security"]
