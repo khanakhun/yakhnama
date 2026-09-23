@@ -40,6 +40,14 @@ ENTRY: dict[str, object] = {
 }
 
 
+HEADER: dict[str, object] = {
+    "schema_version": 1,
+    "data_version": "test",
+    "source": "unit test",
+    "licence": "CC0-1.0",
+}
+
+
 def test_dataset_reference_entry_to_details_carries_licence_and_coverage() -> None:
     entry = DatasetReferenceEntry.model_validate(ENTRY)
 
@@ -67,9 +75,7 @@ def test_dataset_reference_entry_unknown_field_is_rejected() -> None:
 
 
 def test_dataset_reference_file_find_returns_entry_or_none() -> None:
-    reference = DatasetReferenceFile.model_validate(
-        {"schema_version": 1, "datasets": [ENTRY]}
-    )
+    reference = DatasetReferenceFile.model_validate({**HEADER, "datasets": [ENTRY]})
 
     found = reference.find("test_temperature_sample")
     missing = reference.find("absent")
@@ -81,9 +87,7 @@ def test_dataset_reference_file_find_returns_entry_or_none() -> None:
 
 def test_dataset_reference_file_duplicate_codes_are_rejected() -> None:
     with pytest.raises(PydanticValidationError, match="duplicate dataset codes"):
-        DatasetReferenceFile.model_validate(
-            {"schema_version": 1, "datasets": [ENTRY, ENTRY]}
-        )
+        DatasetReferenceFile.model_validate({**HEADER, "datasets": [ENTRY, ENTRY]})
 
 
 def test_dataset_reference_file_unknown_schema_version_is_rejected() -> None:
@@ -92,6 +96,6 @@ def test_dataset_reference_file_unknown_schema_version_is_rejected() -> None:
 
 
 def test_dataset_reference_file_empty_is_accepted() -> None:
-    reference = DatasetReferenceFile.model_validate({"schema_version": 1})
+    reference = DatasetReferenceFile.model_validate({**HEADER})
 
     assert reference.datasets == ()

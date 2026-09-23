@@ -1,0 +1,59 @@
+# Dataset catalog reference data.
+# Validated by DatasetReferenceFile
+# (src/yakhnama/modules/ingestion/domain/reference.py) in tests/unit/data/.
+#
+# Rules (see data/reference/README.md and docs/architecture/data-sources.md):
+# - Every entry records its licence ({spdx_id | custom_text, url, attribution});
+#   the ingestion base refuses a dataset without one.
+# - Codes are never removed or reused; a dataset no longer ingested is set to
+#   status: deprecated or retired.
+# - `source` cites the publisher's documentation, or says `proposed` or
+#   `synthetic fixture`.
+# - is_fixture: true marks synthetic test data that must never be published as if
+#   it were real; the loader skips it unless fixtures are requested.
+#
+# Header: DatasetReferenceFile accepts only `schema_version` and `datasets`, so the
+# `data_version`, `source` and `licence` header fields of the other reference files
+# are recorded here as comments until the model gains them (open question):
+#   data_version: "2026-09-23"
+#   source: Synthetic fixture entry only; no real dataset is catalogued yet.
+#   licence: CC-BY-4.0 (proposed, see ADR 0010) for the catalog text itself.
+schema_version: 1
+data_version: "2026-09-23"
+source: "Yakhnama fixtures; every dataset entry cites its own publisher and licence"
+licence: "CC-BY-4.0 (proposed, see ADR 0010)"
+datasets:
+  - code: fixture.temperature_sample
+    title: Synthetic hourly air temperature, three fixture stations
+    publisher: Yakhnama fixtures
+    licence:
+      spdx_id: CC0-1.0
+      attribution: Synthetic fixture, no real observations
+    update_frequency: static
+    status: active
+    description: >-
+      SYNTHETIC test data, not observations. 48 hourly air-temperature values in
+      degrees Celsius for each of three fictitious stations (FIX-HUNZA-01 to
+      FIX-HUNZA-03) placed inside a box around the Hunza valley only so the values
+      look plausible. One value is missing and one is flagged suspect on purpose.
+      File: data/fixtures/ingestion/temperature_sample.csv, read by the
+      local_csv_temperature adapter.
+    spatial_coverage:
+      bbox:
+        min_longitude: 74.0
+        min_latitude: 36.0
+        max_longitude: 75.0
+        max_latitude: 36.5
+    temporal_coverage:
+      start:
+        value: "2026-01-01T00:00:00+05:00"
+        precision: hour
+      end:
+        value: "2026-01-02T23:00:00+05:00"
+        precision: hour
+    is_fixture: true
+    source: synthetic fixture
+    notes: >-
+      Generated for the Phase 4 reference adapter (task T5b). Station codes, names,
+      coordinates, elevations and values are invented; nothing here is a claim
+      about the world.

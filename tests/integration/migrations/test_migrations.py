@@ -56,6 +56,13 @@ APPLICATION_TABLES_AT_HEAD: Final = frozenset(
         "infrastructure_assets",
         "impact_claims",
         "damage_records",
+        "datasets",
+        "dataset_versions",
+        "ingestion_runs",
+        "observations",
+        "raster_assets",
+        "export_jobs",
+        "import_jobs",
     }
 )
 EXTENSIONS: Final = frozenset({"postgis", "pg_trgm", "unaccent"})
@@ -193,6 +200,45 @@ def test_migrations_offline_mode_renders_outbox_sql_without_connecting(
     assert "CREATE EXTENSION IF NOT EXISTS postgis" in rendered
     assert "CREATE TABLE outbox_messages" in rendered
     assert _application_tables(postgis_url) == set()
+
+
+def _read_observations_layout(
+    connection: Connection,
+) -> tuple[list[str], list[object]]:
+    """Return the primary key columns and foreign keys of ``observations``."""
+    inspector = inspect(connection)
+    primary_key = inspector.get_pk_constraint("observations")["constrained_columns"]
+    return list(primary_key), list(inspector.get_foreign_keys("observations"))
+
+
+async def _fetch_observations_layout(
+    database_url: str,
+) -> tuple[list[str], list[object]]:
+    """Connect once and read the ``observations`` key layout."""
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            return await connection.run_sync(_read_observations_layout)
+    finally:
+        await engine.dispose()
+
+
+def test_migrations_observations_key_is_time_first_without_foreign_keys(
+    alembic_config: Config, postgis_url: str
+) -> None:
+    command.upgrade(alembic_config, "head")
+
+    primary_key, foreign_keys = asyncio.run(_fetch_observations_layout(postgis_url))
+
+    # TimescaleDB hypertables need the time column in every unique index and cannot
+    # be blocked by foreign keys; this is what keeps the table hypertable-ready.
+    assert primary_key == [
+        "observed_at",
+        "dataset_version_id",
+        "variable_code",
+        "site_ref",
+    ]
+    assert foreign_keys == []
 
 
 def test_migration_history_is_linear() -> None:

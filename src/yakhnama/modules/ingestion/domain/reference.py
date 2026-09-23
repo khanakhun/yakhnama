@@ -13,7 +13,7 @@ Patterns: Value Object.
 from collections import Counter
 from typing import Annotated, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from yakhnama.modules.ingestion.domain.value_objects import (
     DatasetCode,
@@ -107,12 +107,18 @@ class DatasetReferenceFile(BaseModel):
 
     Attributes:
         schema_version: Layout version of the file; only ``1`` exists.
+        data_version: Release label of the data (an ISO date or an integer as text).
+        source: Where the catalog entries come from, or ``proposed``.
+        licence: Licence of the catalog file itself (the datasets carry their own).
         datasets: The entries, unique by code, at most 1000.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: Literal[1]
+    data_version: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    source: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    licence: Annotated[str, StringConstraints(min_length=1, max_length=200)]
     datasets: tuple[DatasetReferenceEntry, ...] = Field(
         default=(), max_length=MAX_REFERENCE_DATASETS
     )

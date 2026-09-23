@@ -32,6 +32,13 @@ ANONYMOUS_OPERATIONS: Final = frozenset(
         ("get", "/api/v1/media/{asset_id}"),
         ("get", "/api/v1/sources"),
         ("get", "/api/v1/sources/{source_id}"),
+        # Phase 4: the dataset catalog and the ingested open data.
+        ("get", "/api/v1/datasets"),
+        ("get", "/api/v1/datasets/{code}"),
+        ("get", "/api/v1/datasets/{code}/runs"),
+        ("get", "/api/v1/ingestion-runs/{run_id}"),
+        ("get", "/api/v1/observations"),
+        ("get", "/api/v1/raster-assets"),
     }
 )
 

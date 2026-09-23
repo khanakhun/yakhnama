@@ -23,6 +23,7 @@ from yakhnama.modules.events.application.authorisation import (
 from yakhnama.modules.events.application.commands import (
     AddAffectedPlace,
     CreateEventFromReports,
+    CreateHistoricalEvent,
     LinkReportToEvent,
     MergeEvents,
     PublishEvent,
@@ -33,6 +34,7 @@ from yakhnama.modules.events.application.commands import (
     SetEventPeriod,
     UnlinkReportFromEvent,
 )
+from yakhnama.modules.events.application.dto import CreatedEvent
 from yakhnama.modules.events.application.ports import (
     EventsUnitOfWork,
     EventsUnitOfWorkFactory,
@@ -41,15 +43,20 @@ from yakhnama.modules.events.application.ports import (
     SourceReferenceMarker,
     VerificationCaseOpener,
 )
-from yakhnama.modules.events.domain.entities import Event
+from yakhnama.modules.events.domain.entities import Event, require_matching_attributes
 from yakhnama.modules.events.domain.errors import (
     EventImmutableError,
     EventNotFoundError,
     InvalidRelationError,
 )
-from yakhnama.modules.events.domain.events import ReportLinkedToEvent
+from yakhnama.modules.events.domain.events import (
+    AffectedPlaceAdded,
+    EventCreated,
+    ReportLinkedToEvent,
+)
 from yakhnama.modules.events.domain.factories import EventFactory
 from yakhnama.modules.events.domain.value_objects import (
+    AffectedPlace,
     EventRelation,
     ReportForEvent,
 )
@@ -266,6 +273,115 @@ class CreateEventFromReportsHandler:
             await deps.cases.open_for_event(event.id, actor=command.actor)
             await uow.commit()
         return event.id
+
+
+class CreateHistoricalEventHandler:
+    """Create a draft event from a curated historical record, cite its sources.
+
+    The historical backfill's way in: no report is linked, so the period, geometry
+    and places are the record's own and the centroid is the geometry's. The event
+    is created as a draft, like one made from reports, and its verification case is
+    opened, so it reaches the public only once a moderator publishes and verifies it
+    (``AGENTS.md`` §7: only a human moves a case to ``verified``).
+
+    The event is built here with ``Event.model_validate`` because ``EventFactory``
+    only knows how to derive an event from reports; the aggregate's own validators
+    still check every invariant (open question for the domain owner: a
+    ``EventFactory.from_record`` would give this one home in the domain).
+
+    Implements: Command Handler.
+    """
+
+    def __init__(self, dependencies: EventHandlerDependencies) -> None:
+        """Create the handler.
+
+        Args:
+            dependencies: The module's ports.
+        """
+        self._deps = dependencies
+
+    async def __call__(self, command: CreateHistoricalEvent) -> CreatedEvent:
+        """Create the event.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            The new event's id, version and creation time.
+
+        Raises:
+            PermissionDeniedError: If the policy refuses ``command.actor``.
+            ValidationError: If the hazard type is unknown or retired, or a place
+                code does not exist.
+            AttributesMismatchError: If the attributes belong to another hazard
+                type.
+            NotFoundError: If a source does not exist.
+        """
+        deps = self._deps
+        created_by = _authorise(deps, command.actor, "create historical events")
+        await _require_active_hazard_type(deps.hazard_types, command.hazard_type)
+        require_matching_attributes(command.hazard_type, command.attributes)
+        for place_code in command.place_codes:
+            if not await deps.places.exists(place_code):
+                message = "a place code does not exist"
+                raise ValidationError(
+                    message, details={"field": "place_codes", "code": place_code}
+                )
+        now = deps.clock.now()
+        event = Event.model_validate(
+            {
+                "id": deps.ids.new_id(),
+                "hazard_type": command.hazard_type,
+                "title": command.title,
+                "summary": command.summary,
+                "period": command.period,
+                "geometry": command.geometry,
+                "centroid": (
+                    None if command.geometry is None else command.geometry.centroid()
+                ),
+                "affected_places": tuple(
+                    AffectedPlace(place_code=code, kind="impacted")
+                    for code in command.place_codes
+                ),
+                "attributes": command.attributes,
+                "source_ids": command.source_ids,
+                "created_by": created_by,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        async with deps.uow_factory() as uow:
+            uow.record_event(
+                EventCreated(
+                    event_id=deps.ids.new_id(),
+                    occurred_at=now,
+                    aggregate_id=event.id,
+                    actor_id=created_by,
+                    hazard_code=event.hazard_type.code,
+                    report_ids=(),
+                    source_ids=event.source_ids,
+                )
+            )
+            # Subscribers of places (the audit trail, the gazetteer counts) see
+            # places given at creation the same way as places added later.
+            for place in event.affected_places:
+                uow.record_event(
+                    AffectedPlaceAdded(
+                        event_id=deps.ids.new_id(),
+                        occurred_at=now,
+                        aggregate_id=event.id,
+                        actor_id=created_by,
+                        place_code=place.place_code,
+                        kind=place.kind,
+                    )
+                )
+            await uow.events.add(event)
+            await deps.sources.mark_referenced(event.source_ids, actor=command.actor)
+            await deps.cases.open_for_event(event.id, actor=command.actor)
+            await uow.commit()
+        return CreatedEvent(
+            id=event.id, version=event.version, created_at=event.created_at
+        )
 
 
 async def _require_active_hazard_type(

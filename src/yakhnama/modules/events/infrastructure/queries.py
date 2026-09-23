@@ -31,8 +31,8 @@ in-memory ``NOT is_satisfied_by`` does, instead of SQL's unknown dropping it.
 **Citations.** ``is_source_cited_by_public_event`` is one ``EXISTS`` over
 ``events``: ``source_ids @> '["<id>"]'`` (the ids are stored as canonical UUID
 strings by the mapper), ``status = 'published'`` and the same verification-state
-subquery equal to ``verified``. ``source_ids`` has no GIN index yet (migration 0012),
-so the test on it is a filter over the published rows.
+subquery equal to ``verified``. The containment test is served by the GIN index
+``ix_events_source_ids_gin`` (migration 0015).
 
 **Order and paging.** Newest first by ``period_earliest_at`` then id, both
 descending, by keyset; the cursor's ``sort_key`` is the earliest instant in ISO 8601

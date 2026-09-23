@@ -11,11 +11,15 @@ import yaml
 REFERENCE_DIRECTORY = Path(__file__).resolve().parents[3] / "data" / "reference"
 """``data/reference`` at the repository root."""
 
+# Files whose entries live under a key other than ``entries``.
+ENTRIES_KEYS = {"datasets.yaml": "datasets"}
+
 REFERENCE_FILE_NAMES = (
     "hazard_types.yaml",
     "impact_metrics.yaml",
     "languages.yaml",
     "admin_hierarchy_gb.yaml",
+    "datasets.yaml",
 )
 """Every reference file the tests cover."""
 
@@ -52,7 +56,7 @@ def raw_entries(name: str) -> list[dict[str, object]]:
     Raises:
         TypeError: If ``entries`` is not a list of mappings.
     """
-    entries = load_reference(name).get("entries")
+    entries = load_reference(name).get(ENTRIES_KEYS.get(name, "entries"))
     if not isinstance(entries, list):
         message = f"{name}: 'entries' must be a list"
         raise TypeError(message)

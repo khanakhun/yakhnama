@@ -88,6 +88,41 @@
         "title": "AffectedPlace",
         "type": "object"
       },
+      "ArtifactRef": {
+        "additionalProperties": false,
+        "description": "Where a job's file lives in object storage and what it contains.\n\nImplements: Value Object.\n\nAttributes:\n    object_key: Storage key, built by the application from the job id, never\n        from a user-supplied file name.\n    byte_size: Size in bytes, 0 to ``ARTIFACT_MAX_BYTES``.\n    sha256: Digest of the stored bytes.\n    media_type: The file's media type.",
+        "properties": {
+          "byte_size": {
+            "maximum": 10737418240.0,
+            "minimum": 0.0,
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "media_type": {
+            "pattern": "^[a-z]+/[a-z0-9][a-z0-9.+-]{0,99}$",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "object_key": {
+            "pattern": "^[a-z0-9][a-z0-9/_.-]{3,255}$",
+            "title": "Object Key",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_key",
+          "byte_size",
+          "sha256",
+          "media_type"
+        ],
+        "title": "ArtifactRef",
+        "type": "object"
+      },
       "AssetKind": {
         "description": "What an infrastructure asset is (proposed list).\n\nImplements: Value Object.",
         "enum": [
@@ -245,6 +280,85 @@
           "computed_at"
         ],
         "title": "BestFigure",
+        "type": "object"
+      },
+      "BoundingBox": {
+        "additionalProperties": false,
+        "description": "An axis-aligned WGS84 rectangle, edges included.\n\nBoxes crossing the antimeridian (180°) are rejected rather than modelled, because\nno Gilgit-Baltistan use case needs them yet and a half-supported wrap-around would\nsilently return wrong search results; this is an open question for the maintainer.\n\nImplements: Value Object.\n\nAttributes:\n    min_longitude: Western edge.\n    min_latitude: Southern edge.\n    max_longitude: Eastern edge, never west of ``min_longitude``.\n    max_latitude: Northern edge, never south of ``min_latitude``.",
+        "properties": {
+          "max_latitude": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Max Latitude",
+            "type": "number"
+          },
+          "max_longitude": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Max Longitude",
+            "type": "number"
+          },
+          "min_latitude": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Min Latitude",
+            "type": "number"
+          },
+          "min_longitude": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Min Longitude",
+            "type": "number"
+          }
+        },
+        "required": [
+          "min_longitude",
+          "min_latitude",
+          "max_longitude",
+          "max_latitude"
+        ],
+        "title": "BoundingBox",
+        "type": "object"
+      },
+      "CatalogueRasterAssetRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/admin/raster-assets``.\n\nImplements: API Schema.\n\nAttributes:\n    dataset: The dataset's code.\n    version_id: The version the raster belongs to.\n    description: Footprint, acquisition time, platform, bands and assets.",
+        "properties": {
+          "dataset": {
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+            "title": "Dataset",
+            "type": "string"
+          },
+          "description": {
+            "$ref": "#/components/schemas/RasterAssetDescription"
+          },
+          "version_id": {
+            "format": "uuid",
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset",
+          "version_id",
+          "description"
+        ],
+        "title": "CatalogueRasterAssetRequest",
+        "type": "object"
+      },
+      "ChangeDatasetStatusRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/admin/datasets/{code}/status``.\n\nImplements: API Schema.\n\nAttributes:\n    status: ``deprecated`` (no new data, history kept) or ``retired``\n        (final).",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/DatasetStatusChange"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ChangeDatasetStatusRequest",
         "type": "object"
       },
       "ChangeMemberRoleRequest": {
@@ -621,6 +735,486 @@
         ],
         "title": "DamageLevel",
         "type": "string"
+      },
+      "DatasetDetail": {
+        "additionalProperties": false,
+        "description": "One dataset with its descriptive fields and most recent versions.\n\nImplements: DTO.\n\nAttributes:\n    description: Long-form description, if any.\n    homepage_url: The dataset's page, if online.\n    spatial_coverage: The covered area, if known.\n    temporal_coverage: The covered period, if known.\n    recent_versions: Up to ``RECENT_VERSIONS_MAX`` versions, newest first.",
+        "properties": {
+          "code": {
+            "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "homepage_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Homepage Url"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "licence": {
+            "$ref": "#/components/schemas/DatasetLicence"
+          },
+          "publisher": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Publisher",
+            "type": "string"
+          },
+          "recent_versions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DatasetVersionSummary"
+            },
+            "maxItems": 20,
+            "title": "Recent Versions",
+            "type": "array"
+          },
+          "spatial_coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpatialCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/DatasetStatus"
+          },
+          "temporal_coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemporalCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "update_frequency": {
+            "$ref": "#/components/schemas/UpdateFrequency"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "title",
+          "publisher",
+          "licence",
+          "update_frequency",
+          "status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DatasetDetail",
+        "type": "object"
+      },
+      "DatasetDetails": {
+        "additionalProperties": false,
+        "description": "What a curator supplies to register a dataset.\n\n``licence`` is optional here only so that ``DatasetFactory.register`` can refuse\na missing licence with ``LicenceRequiredError`` instead of a generic validation\nerror; a ``Dataset`` itself cannot exist without one.\n\nImplements: Value Object.\n\nAttributes:\n    code: Catalog code.\n    title: Human-readable title.\n    publisher: Who publishes the data.\n    licence: The publisher's terms; required by registration.\n    update_frequency: How often the publisher releases data.\n    description: Long-form description, if any.\n    homepage_url: The dataset's page, if online.\n    spatial_coverage: The covered area, if known.\n    temporal_coverage: The covered period, if known.",
+        "properties": {
+          "code": {
+            "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "homepage_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Homepage Url"
+          },
+          "licence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetLicence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publisher": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Publisher",
+            "type": "string"
+          },
+          "spatial_coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpatialCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "temporal_coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemporalCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "update_frequency": {
+            "$ref": "#/components/schemas/UpdateFrequency"
+          }
+        },
+        "required": [
+          "code",
+          "title",
+          "publisher",
+          "update_frequency"
+        ],
+        "title": "DatasetDetails",
+        "type": "object"
+      },
+      "DatasetLicence": {
+        "additionalProperties": false,
+        "description": "The terms under which an ingested dataset may be stored and republished.\n\nExactly one of ``spdx_id`` and ``custom_text`` is set, as in provenance's\n``Licence``. ``attribution`` is always required: even a public-domain dataset is\ncited in the open dataset's metadata, so the text is recorded at registration\nrather than reconstructed later (**proposed**).\n\nImplements: Value Object.\n\nAttributes:\n    spdx_id: SPDX identifier, or ``None`` for a custom licence.\n    custom_text: The custom terms, or ``None`` for an SPDX licence.\n    url: Where the publisher states the licence, if online.\n    attribution: How the publisher asks to be credited.",
+        "properties": {
+          "attribution": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Attribution",
+            "type": "string"
+          },
+          "custom_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Text"
+          },
+          "spdx_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9.+-]{2,64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spdx Id"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "attribution"
+        ],
+        "title": "DatasetLicence",
+        "type": "object"
+      },
+      "DatasetPage": {
+        "additionalProperties": false,
+        "description": "One page of the dataset catalog, ordered by code.\n\nImplements: API Schema.\n\nAttributes:\n    items: The datasets on this page.\n    next_cursor: Cursor of the next page, or ``None`` on the last page.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetSummary"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "DatasetPage",
+        "type": "object"
+      },
+      "DatasetStatus": {
+        "description": "Lifecycle of a dataset in the catalog; datasets are never deleted.\n\nImplements: State.",
+        "enum": [
+          "active",
+          "deprecated",
+          "retired"
+        ],
+        "title": "DatasetStatus",
+        "type": "string"
+      },
+      "DatasetStatusChange": {
+        "description": "The status an administrator may move a dataset to.\n\n``active`` is not offered: deprecation and retirement are one-way.\n\nImplements: API Schema.",
+        "enum": [
+          "deprecated",
+          "retired"
+        ],
+        "title": "DatasetStatusChange",
+        "type": "string"
+      },
+      "DatasetSummary": {
+        "additionalProperties": false,
+        "description": "One dataset as listed in the catalog.\n\nImplements: DTO.\n\nAttributes:\n    id: The dataset's id.\n    code: Catalog code.\n    title: Human-readable title.\n    publisher: Who publishes the data.\n    licence: The terms and attribution the data is ingested under.\n    update_frequency: How often the publisher releases data.\n    status: ``active``, ``deprecated`` or ``retired``.\n    version: Optimistic-concurrency version, for ``ETag``.\n    created_at: When it was registered, UTC.\n    updated_at: When it last changed, UTC.",
+        "properties": {
+          "code": {
+            "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "licence": {
+            "$ref": "#/components/schemas/DatasetLicence"
+          },
+          "publisher": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Publisher",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DatasetStatus"
+          },
+          "title": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "update_frequency": {
+            "$ref": "#/components/schemas/UpdateFrequency"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "title",
+          "publisher",
+          "licence",
+          "update_frequency",
+          "status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DatasetSummary",
+        "type": "object"
+      },
+      "DatasetVersionDetails": {
+        "additionalProperties": false,
+        "description": "What a curator or pipeline supplies to record a dataset version.\n\nImplements: Value Object.\n\nAttributes:\n    label: The release label.\n    retrieved_at: When the input was retrieved, with precision.\n    input_checksum: SHA-256 of the input bytes.\n    notes: Curator remarks, if any.",
+        "properties": {
+          "input_checksum": {
+            "title": "Input Checksum",
+            "type": "string"
+          },
+          "label": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "title": "Label",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "retrieved_at": {
+            "$ref": "#/components/schemas/DateWithPrecision"
+          }
+        },
+        "required": [
+          "label",
+          "retrieved_at",
+          "input_checksum"
+        ],
+        "title": "DatasetVersionDetails",
+        "type": "object"
+      },
+      "DatasetVersionSummary": {
+        "additionalProperties": false,
+        "description": "One release of a dataset.\n\nImplements: DTO.\n\nAttributes:\n    id: The version's id.\n    dataset_id: The dataset it belongs to.\n    label: The release label.\n    retrieved_at: When the input was retrieved, with precision.\n    input_checksum: SHA-256 of the input bytes.\n    notes: Curator remarks, if any.\n    created_at: When the version was recorded, UTC.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dataset_id": {
+            "format": "uuid",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_checksum": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Input Checksum",
+            "type": "string"
+          },
+          "label": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "title": "Label",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "retrieved_at": {
+            "$ref": "#/components/schemas/DateWithPrecision"
+          }
+        },
+        "required": [
+          "id",
+          "dataset_id",
+          "label",
+          "retrieved_at",
+          "input_checksum",
+          "created_at"
+        ],
+        "title": "DatasetVersionSummary",
+        "type": "object"
       },
       "DatePrecision": {
         "description": "How precisely a moment is known.\n\nImplements: Value Object.",
@@ -1207,6 +1801,320 @@
         "title": "EventTimeline",
         "type": "object"
       },
+      "ExportDataset": {
+        "description": "Which part of the record an export contains.\n\nWho may export which dataset (reports are moderator-only, **proposed**) is an\napplication policy, not a property of the value.\n\nImplements: Value Object.",
+        "enum": [
+          "events",
+          "claims",
+          "reports"
+        ],
+        "title": "ExportDataset",
+        "type": "string"
+      },
+      "ExportFilters": {
+        "additionalProperties": false,
+        "description": "What an export was restricted to; every filter is optional.\n\nAn event matches the time filters if it may have happened within\n``[occurred_from, occurred_to]``, with each bound read at its own precision.\n\nImplements: Value Object.\n\nAttributes:\n    bbox: WGS84 box the record's location must fall in.\n    hazard_type: Hazard type code, for example ``glof``.\n    place_code: Gazetteer place code, for example ``pk.gb.hunza``.\n    occurred_from: Earliest moment of interest, with precision.\n    occurred_to: Latest moment of interest, with precision; never before\n        ``occurred_from`` (the same precision-aware rule as an event period).\n    status: Record status code.",
+        "properties": {
+          "bbox": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoundingBox"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hazard_type": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_]{1,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hazard Type"
+          },
+          "occurred_from": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateWithPrecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateWithPrecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "place_code": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9][a-z0-9_.-]{1,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Code"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z_]{1,31}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "ExportFilters",
+        "type": "object"
+      },
+      "ExportFormat": {
+        "description": "File formats an export can be written in.\n\nImplements: Value Object.",
+        "enum": [
+          "json",
+          "geojson",
+          "csv",
+          "geoparquet"
+        ],
+        "title": "ExportFormat",
+        "type": "string"
+      },
+      "ExportJobPage": {
+        "additionalProperties": false,
+        "description": "One page of export jobs, newest request first.\n\nImplements: API Schema.\n\nAttributes:\n    items: The jobs on this page.\n    next_cursor: Cursor of the next page, or ``None`` on the last page.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExportJobSummary"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ExportJobPage",
+        "type": "object"
+      },
+      "ExportJobResponse": {
+        "additionalProperties": false,
+        "description": "One export job, with a short-lived download link once completed.\n\nThe metadata sidecar (licence, citation, filters, row count, checksum) is\ninline in ``sidecar`` once the job is completed.\n\nImplements: API Schema.\n\nAttributes:\n    download_url: Presigned link to the file, only while ``status`` is\n        ``completed``; ask again for a fresh one when it expires.",
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/ExportDataset"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
+          },
+          "error_summary": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Summary"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/ExportFilters"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "format": {
+            "$ref": "#/components/schemas/ExportFormat"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "format": "uuid",
+            "title": "Requested By",
+            "type": "string"
+          },
+          "sidecar": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetadataSidecar"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "requested_by",
+          "dataset",
+          "format",
+          "filters",
+          "status",
+          "artifact",
+          "sidecar",
+          "error_summary",
+          "requested_at",
+          "started_at",
+          "finished_at",
+          "version"
+        ],
+        "title": "ExportJobResponse",
+        "type": "object"
+      },
+      "ExportJobSummary": {
+        "additionalProperties": false,
+        "description": "One export job in a listing.\n\nImplements: DTO.\n\nAttributes:\n    id: The job.\n    dataset: Which dataset.\n    format: Which format.\n    status: Where the job is in its lifecycle.\n    row_count: Rows written, once completed.\n    requested_at: When it was requested, UTC.\n    finished_at: When it finished, UTC.",
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/ExportDataset"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "format": {
+            "$ref": "#/components/schemas/ExportFormat"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "maximum": 1000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Count"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          }
+        },
+        "required": [
+          "id",
+          "dataset",
+          "format",
+          "status",
+          "row_count",
+          "requested_at",
+          "finished_at"
+        ],
+        "title": "ExportJobSummary",
+        "type": "object"
+      },
       "FlashFloodAttributes": {
         "additionalProperties": false,
         "description": "Attributes of a flash flood (proposed fields).\n\nImplements: Strategy.\n\nAttributes:\n    hazard_type: Always ``\"flash_flood\"``.\n    peak_discharge: Highest flow rate, in cubic metres per second.\n    trigger: What caused the flood.",
@@ -1472,6 +2380,31 @@
           "role"
         ],
         "title": "GrantRoleRequest",
+        "type": "object"
+      },
+      "GridCellRef": {
+        "additionalProperties": false,
+        "description": "The grid cell a gridded value belongs to.\n\nImplements: Value Object.\n\nAttributes:\n    cell_id: The publisher's cell identifier; unique within one dataset version.\n    centroid: Centre of the cell, WGS84.\n    resolution: Edge length of the cell in metre, strictly positive.",
+        "properties": {
+          "cell_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Cell Id",
+            "type": "string"
+          },
+          "centroid": {
+            "$ref": "#/components/schemas/Coordinates"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/Measurement"
+          }
+        },
+        "required": [
+          "cell_id",
+          "centroid",
+          "resolution"
+        ],
+        "title": "GridCellRef",
         "type": "object"
       },
       "HazardGuess": {
@@ -2059,6 +2992,230 @@
         "title": "ImpactMetricSummary",
         "type": "object"
       },
+      "ImportArtifactRequest": {
+        "additionalProperties": false,
+        "description": "The uploaded file an import reads, as its uploader measured it.\n\nThe import checks the stored file against ``byte_size`` and ``sha256`` before\ntrusting it, so a file changed after the request is never imported.\n\nImplements: API Schema.\n\nAttributes:\n    object_key: The key ``POST /moderation/imports/uploads`` granted.\n    byte_size: The file's size in bytes.\n    sha256: SHA-256 of the file, 64 lower-case hex digits.",
+        "properties": {
+          "byte_size": {
+            "maximum": 52428800.0,
+            "minimum": 1.0,
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "object_key": {
+            "maxLength": 256,
+            "pattern": "^imports/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/source(?:\\.csv|\\.geojson)$",
+            "title": "Object Key",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_key",
+          "byte_size",
+          "sha256"
+        ],
+        "title": "ImportArtifactRequest",
+        "type": "object"
+      },
+      "ImportFormat": {
+        "description": "File formats an import can be read from.\n\nImplements: Value Object.",
+        "enum": [
+          "csv",
+          "geojson"
+        ],
+        "title": "ImportFormat",
+        "type": "string"
+      },
+      "ImportJobDetail": {
+        "additionalProperties": false,
+        "description": "One import job with its validation report and what it wrote.\n\nModerators only: the report names rows and columns of a curator's file.\n\nImplements: DTO.\n\nAttributes:\n    id: The job.\n    requested_by: The requesting moderator.\n    format: The file's format.\n    dry_run: Whether the import only validates.\n    source_artifact: The stored file.\n    status: Where the job is in its lifecycle.\n    report: The row-level validation report, once produced.\n    created_ids: The events created, in creation order.\n    lineage_source_id: The ``dataset`` source the created records cite.\n    batches_applied: Batches committed.\n    error_summary: Why it failed, once failed.\n    requested_at: When it was requested, UTC.\n    started_at: When a worker started it, UTC.\n    finished_at: When it finished, UTC.\n    version: Optimistic-concurrency version.",
+        "properties": {
+          "batches_applied": {
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Batches Applied",
+            "type": "integer"
+          },
+          "created_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 10000,
+            "title": "Created Ids",
+            "type": "array"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "error_summary": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Summary"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "format": {
+            "$ref": "#/components/schemas/ImportFormat"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "lineage_source_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage Source Id"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidationReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "format": "uuid",
+            "title": "Requested By",
+            "type": "string"
+          },
+          "source_artifact": {
+            "$ref": "#/components/schemas/ArtifactRef"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "requested_by",
+          "format",
+          "dry_run",
+          "source_artifact",
+          "status",
+          "report",
+          "created_ids",
+          "lineage_source_id",
+          "batches_applied",
+          "error_summary",
+          "requested_at",
+          "started_at",
+          "finished_at",
+          "version"
+        ],
+        "title": "ImportJobDetail",
+        "type": "object"
+      },
+      "ImportUploadGrantResponse": {
+        "additionalProperties": false,
+        "description": "Where and how to upload an import file.\n\nImplements: API Schema.\n\nAttributes:\n    object_key: The key the file is stored under; send it back in\n        ``POST /moderation/imports``.\n    upload_url: The presigned ``PUT`` URL.\n    headers: Headers the upload must carry.\n    media_type: The ``Content-Type`` the upload must declare.\n    max_bytes: Largest accepted file.\n    expires_at: When the URL stops working, UTC.",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "headers": {
+            "items": {
+              "$ref": "#/components/schemas/HttpHeader"
+            },
+            "maxItems": 16,
+            "title": "Headers",
+            "type": "array"
+          },
+          "max_bytes": {
+            "maximum": 52428800.0,
+            "minimum": 1.0,
+            "title": "Max Bytes",
+            "type": "integer"
+          },
+          "media_type": {
+            "pattern": "^[a-z]+/[a-z0-9][a-z0-9.+-]{0,99}$",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "object_key": {
+            "maxLength": 256,
+            "pattern": "^imports/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/source(?:\\.csv|\\.geojson)$",
+            "title": "Object Key",
+            "type": "string"
+          },
+          "upload_url": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Upload Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_key",
+          "upload_url",
+          "headers",
+          "media_type",
+          "max_bytes",
+          "expires_at"
+        ],
+        "title": "ImportUploadGrantResponse",
+        "type": "object"
+      },
       "InfrastructureAssetDetail": {
         "additionalProperties": false,
         "description": "One infrastructure asset.\n\nImplements: DTO.\n\nAttributes:\n    id: The asset.\n    kind: What it is.\n    name: Display name.\n    osm_id: Its OpenStreetMap element, if known.\n    location: A representative WGS84 point, if known.\n    place_code: The place it lies in, if known.\n    source_id: The source describing it.\n    version: Optimistic-concurrency version.\n    created_at: When it was registered, UTC.\n    updated_at: When it last changed, UTC.",
@@ -2147,6 +3304,96 @@
         "title": "InfrastructureAssetDetail",
         "type": "object"
       },
+      "IngestionIssue": {
+        "additionalProperties": false,
+        "description": "One problem or warning found while a run processed its input.\n\nImplements: Value Object.\n\nAttributes:\n    stage: The pipeline hook that found it.\n    reference: Where in the input it is, if it concerns one record.\n    message: What went wrong.\n    severity: ``error`` if a record or the run was affected, else ``warning``.",
+        "properties": {
+          "message": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/IssueSeverity",
+            "default": "error"
+          },
+          "stage": {
+            "enum": [
+              "fetch",
+              "parse",
+              "validate",
+              "normalise",
+              "deduplicate",
+              "persist",
+              "record_lineage"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "message"
+        ],
+        "title": "IngestionIssue",
+        "type": "object"
+      },
+      "IngestionReport": {
+        "additionalProperties": false,
+        "description": "Everything a run found wrong, and the counts it reached.\n\nAt most ``MAX_REPORT_ISSUES`` issues are kept, so one malformed source cannot fill\nthe database; the rest are counted by severity in ``omitted_error_count`` and\n``omitted_warning_count``, so nothing is dropped silently. ``collect`` applies the\ncap.\n\nImplements: Value Object.\n\nAttributes:\n    issues: Kept issues, in the order they were found.\n    counts: Record counts per stage.\n    omitted_error_count: Errors found after the cap was reached.\n    omitted_warning_count: Warnings found after the cap was reached.",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/RunCounts",
+            "default": {
+              "deduplicated": 0,
+              "fetched": 0,
+              "invalid": 0,
+              "parsed": 0,
+              "persisted": 0,
+              "valid": 0
+            }
+          },
+          "issues": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/IngestionIssue"
+            },
+            "maxItems": 10000,
+            "title": "Issues",
+            "type": "array"
+          },
+          "omitted_error_count": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Omitted Error Count",
+            "type": "integer"
+          },
+          "omitted_warning_count": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Omitted Warning Count",
+            "type": "integer"
+          }
+        },
+        "title": "IngestionReport",
+        "type": "object"
+      },
       "IrdrAlignment": {
         "additionalProperties": false,
         "description": "Where a hazard type sits in the IRDR 2014 peril classification.\n\nThe values a hazard type carries are reference data (``data/reference``); until a\nplacement is confirmed against the publication it is marked proposed there.\n\nImplements: Value Object.\n\nAttributes:\n    family: IRDR family.\n    main_event: IRDR main event, for example ``\"Flood\"``.\n    peril: IRDR peril under the main event, or ``None`` when the hazard type maps\n        to the main event as a whole.",
@@ -2189,6 +3436,27 @@
         ],
         "title": "IrdrAlignment",
         "type": "object"
+      },
+      "IssueSeverity": {
+        "description": "How serious an ingestion issue is.\n\nImplements: Value Object.",
+        "enum": [
+          "error",
+          "warning"
+        ],
+        "title": "IssueSeverity",
+        "type": "string"
+      },
+      "JobStatus": {
+        "description": "Lifecycle of an export or import job.\n\n``completed``, ``failed`` and ``cancelled`` are final.\n\nImplements: Value Object.",
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "title": "JobStatus",
+        "type": "string"
       },
       "LandslideAttributes": {
         "additionalProperties": false,
@@ -2292,6 +3560,37 @@
           }
         },
         "title": "Licence",
+        "type": "object"
+      },
+      "LicenceStatement": {
+        "additionalProperties": false,
+        "description": "The licence the exported data is offered under.\n\nImplements: Value Object.\n\nAttributes:\n    spdx_id: SPDX identifier, for example ``CC-BY-4.0``.\n    status: ``proposed`` until ADR 0010 is accepted, then ``accepted``.\n    url: The licence's canonical ``https`` URL.",
+        "properties": {
+          "spdx_id": {
+            "pattern": "^[A-Za-z0-9.+-]{2,64}$",
+            "title": "Spdx Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "proposed",
+              "accepted"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "pattern": "^https://[\\x21-\\x7e]{1,2040}$",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spdx_id",
+          "status",
+          "url"
+        ],
+        "title": "LicenceStatement",
         "type": "object"
       },
       "LinkReportRequest": {
@@ -2691,6 +3990,70 @@
         "title": "MergeEventsRequest",
         "type": "object"
       },
+      "MetadataSidecar": {
+        "additionalProperties": false,
+        "description": "The metadata written next to every export file.\n\n``to_json_dict`` and ``to_json_bytes`` are the boundary: exporters and the API\nuse them and never dump the model themselves, so the sidecar has one JSON\nshape (``model_validate`` of ``to_json_dict()`` returns an equal sidecar).\n\nImplements: Value Object.\n\nAttributes:\n    licence: The data licence and whether it is still proposed.\n    generated_at: When the file was generated, UTC.\n    dataset: Which dataset the file holds.\n    format: The file's format.\n    filters: The filters the rows were selected with.\n    schema_version: Version of the file layout.\n    citation: How to cite the file.\n    row_count: Number of data rows (records) in the file.\n    checksum: SHA-256 of the file's bytes.\n    generator: ``yakhnama/<version>`` of the software that wrote it.",
+        "properties": {
+          "checksum": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Checksum",
+            "type": "string"
+          },
+          "citation": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Citation",
+            "type": "string"
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/ExportDataset"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/ExportFilters",
+            "default": {}
+          },
+          "format": {
+            "$ref": "#/components/schemas/ExportFormat"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "generator": {
+            "pattern": "^yakhnama/[0-9A-Za-z.+-]{1,64}$",
+            "title": "Generator",
+            "type": "string"
+          },
+          "licence": {
+            "$ref": "#/components/schemas/LicenceStatement"
+          },
+          "row_count": {
+            "maximum": 1000000000.0,
+            "minimum": 0.0,
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "schema_version": {
+            "pattern": "^[0-9]{1,4}\\.[0-9]{1,4}$",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "licence",
+          "generated_at",
+          "dataset",
+          "format",
+          "schema_version",
+          "citation",
+          "row_count",
+          "checksum",
+          "generator"
+        ],
+        "title": "MetadataSidecar",
+        "type": "object"
+      },
       "MetricCategory": {
         "description": "The group a metric belongs to (proposed).\n\nProposed alignment, to be checked against the UNDRR indicator list and the\nDesInventar documentation: ``human`` to Sendai targets A and B, ``economic`` to\ntarget C, ``infrastructure`` and ``services`` to target D, ``housing`` and\n``agriculture`` to the housing and agricultural indicators and DesInventar\neffects, ``environment`` to effects no Sendai indicator covers.\n\nImplements: Value Object.",
         "enum": [
@@ -2941,6 +4304,111 @@
           "coordinates"
         ],
         "title": "MultiPolygon",
+        "type": "object"
+      },
+      "ObservationPage": {
+        "additionalProperties": false,
+        "description": "One page of a variable's time series.\n\nImplements: API Schema.\n\nAttributes:\n    items: The observations, ordered by ``(observed_at, site_ref,\n        dataset_version_id)``.\n    next_cursor: Cursor of the next page, or ``None`` on the last page.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ObservationRecord"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ObservationPage",
+        "type": "object"
+      },
+      "ObservationRecord": {
+        "additionalProperties": false,
+        "description": "One stored observation, as the time-series query returns it.\n\nImplements: DTO.\n\nAttributes:\n    dataset_version_id: The dataset version it came from.\n    site_ref: ``station:<code>`` or ``grid_cell:<id>``.\n    station: The station, for station data.\n    grid_cell: The grid cell, for gridded data.\n    variable: The variable code.\n    value: The value in the registry unit, or ``None`` when missing.\n    observed_at: When it was observed, with precision.\n    quality: How far the value can be trusted.\n    ingested_run_id: The run that ingested it (lineage).",
+        "properties": {
+          "dataset_version_id": {
+            "format": "uuid",
+            "title": "Dataset Version Id",
+            "type": "string"
+          },
+          "grid_cell": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GridCellRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ingested_run_id": {
+            "format": "uuid",
+            "title": "Ingested Run Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "$ref": "#/components/schemas/DateWithPrecision"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/QualityFlag"
+          },
+          "site_ref": {
+            "minLength": 1,
+            "title": "Site Ref",
+            "type": "string"
+          },
+          "station": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StationRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Measurement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "variable": {
+            "pattern": "^[a-z][a-z0-9_]{1,63}$",
+            "title": "Variable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_version_id",
+          "site_ref",
+          "variable",
+          "value",
+          "observed_at",
+          "quality",
+          "ingested_run_id"
+        ],
+        "title": "ObservationRecord",
         "type": "object"
       },
       "OrganizationDetail": {
@@ -3542,6 +5010,244 @@
         "title": "PresignedDownload",
         "type": "object"
       },
+      "QualityFlag": {
+        "description": "How far an observed value can be trusted (**proposed** flag set).\n\nPublishers use their own flag vocabularies; the pipeline maps them to these four\nin ``normalise`` and documents the mapping per source.\n\nImplements: Value Object.",
+        "enum": [
+          "good",
+          "suspect",
+          "missing",
+          "estimated"
+        ],
+        "title": "QualityFlag",
+        "type": "string"
+      },
+      "RasterAssetDescription": {
+        "additionalProperties": false,
+        "description": "The STAC-aligned description of one raster, catalogued together.\n\nImplements: Value Object.\n\nAttributes:\n    stac_id: The STAC item id.\n    footprint: The area the raster covers.\n    acquired_at: When the scene was acquired, with precision (STAC\n        ``datetime``).\n    platform: The satellite or instrument platform.\n    cloud_cover: Percentage of cloud, if known.\n    bands: The bands, unique by name, at most 256.\n    assets: The files, unique by key, 1 to 32; bytes live in object storage.",
+        "properties": {
+          "acquired_at": {
+            "$ref": "#/components/schemas/DateWithPrecision"
+          },
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/StacAsset"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Assets",
+            "type": "array"
+          },
+          "bands": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StacBand"
+            },
+            "maxItems": 256,
+            "title": "Bands",
+            "type": "array"
+          },
+          "cloud_cover": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloud Cover"
+          },
+          "footprint": {
+            "$ref": "#/components/schemas/RasterFootprint"
+          },
+          "platform": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Platform",
+            "type": "string"
+          },
+          "stac_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "title": "Stac Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stac_id",
+          "footprint",
+          "acquired_at",
+          "platform",
+          "assets"
+        ],
+        "title": "RasterAssetDescription",
+        "type": "object"
+      },
+      "RasterAssetPage": {
+        "additionalProperties": false,
+        "description": "One page of catalogued rasters, newest acquisition first.\n\nImplements: API Schema.\n\nAttributes:\n    items: The rasters on this page.\n    next_cursor: Cursor of the next page, or ``None`` on the last page.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RasterAssetSummary"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "RasterAssetPage",
+        "type": "object"
+      },
+      "RasterAssetSummary": {
+        "additionalProperties": false,
+        "description": "One catalogued raster, with everything needed to render its STAC item.\n\nImplements: DTO.\n\nAttributes:\n    id: The asset's id.\n    dataset_version_id: The dataset version it belongs to.\n    stac_id: The STAC item id.\n    footprint: The area covered.\n    acquired_at: When the scene was acquired, with precision.\n    platform: The satellite or instrument platform.\n    cloud_cover: Percentage of cloud, if known.\n    bands: The bands.\n    assets: The files; bytes live in object storage.\n    version: Optimistic-concurrency version.\n    created_at: When it was catalogued, UTC.\n    updated_at: When it last changed, UTC.",
+        "properties": {
+          "acquired_at": {
+            "$ref": "#/components/schemas/DateWithPrecision"
+          },
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/StacAsset"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Assets",
+            "type": "array"
+          },
+          "bands": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StacBand"
+            },
+            "maxItems": 256,
+            "title": "Bands",
+            "type": "array"
+          },
+          "cloud_cover": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloud Cover"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dataset_version_id": {
+            "format": "uuid",
+            "title": "Dataset Version Id",
+            "type": "string"
+          },
+          "footprint": {
+            "$ref": "#/components/schemas/RasterFootprint"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "platform": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Platform",
+            "type": "string"
+          },
+          "stac_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "title": "Stac Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "dataset_version_id",
+          "stac_id",
+          "footprint",
+          "acquired_at",
+          "platform",
+          "assets",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RasterAssetSummary",
+        "type": "object"
+      },
+      "RasterFootprint": {
+        "additionalProperties": false,
+        "description": "The area a raster covers: a WGS84 polygon or multipolygon, longitude first.\n\n``geojson-pydantic`` checks the GeoJSON structure (closed rings of at least four\npositions); this wrapper adds finite, two-dimensional, in-bounds positions and a\nsize bound, as the events and geography geometries do. The wrapped geometry is\ncopied on the way in, because ``geojson-pydantic`` models are mutable.\n\nImplements: Value Object.\n\nAttributes:\n    geojson: The footprint.",
+        "properties": {
+          "geojson": {
+            "discriminator": {
+              "mapping": {
+                "MultiPolygon": "#/components/schemas/MultiPolygon",
+                "Polygon": "#/components/schemas/Polygon"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Polygon"
+              },
+              {
+                "$ref": "#/components/schemas/MultiPolygon"
+              }
+            ],
+            "title": "Geojson"
+          }
+        },
+        "required": [
+          "geojson"
+        ],
+        "title": "RasterFootprint",
+        "type": "object"
+      },
+      "RasterFormat": {
+        "description": "Representations of the raster listing.\n\nImplements: API Schema.",
+        "enum": [
+          "json",
+          "geojson"
+        ],
+        "title": "RasterFormat",
+        "type": "string"
+      },
       "ReadinessChecks": {
         "additionalProperties": false,
         "description": "Outcome of each dependency check.\n\nImplements: API Schema (proposed in ADR 0011).\n\nAttributes:\n    database: ``\"ok\"`` if ``SELECT 1`` succeeded within the timeout.",
@@ -3648,6 +5354,20 @@
         "title": "RecordDamageRequest",
         "type": "object"
       },
+      "RecordDatasetVersionRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/admin/datasets/{code}/versions``.\n\nImplements: API Schema.\n\nAttributes:\n    details: Label, retrieval time, input checksum and notes.",
+        "properties": {
+          "details": {
+            "$ref": "#/components/schemas/DatasetVersionDetails"
+          }
+        },
+        "required": [
+          "details"
+        ],
+        "title": "RecordDatasetVersionRequest",
+        "type": "object"
+      },
       "RecordImpactClaimRequest": {
         "additionalProperties": false,
         "description": "Body of ``POST /api/v1/moderation/events/{event_id}/impact-claims``.\n\nImplements: API Schema.\n\nAttributes:\n    metric_code: An active metric of the registry.\n    value: The claimed value, of the metric's kind and unit or currency.\n    confidence: How far the source's figure can be trusted.\n    source_id: The provenance source; it becomes referenced.\n    claimed_at: When the source made the claim, with its precision.\n    scope: The part of the event covered; the whole event if omitted.\n    note: A moderator's note, never published.",
@@ -3723,6 +5443,20 @@
           "claimed_at"
         ],
         "title": "RecordImpactClaimRequest",
+        "type": "object"
+      },
+      "RegisterDatasetRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/admin/datasets``.\n\nImplements: API Schema.\n\nAttributes:\n    details: Code, title, publisher, licence (required) and the optional\n        descriptions.",
+        "properties": {
+          "details": {
+            "$ref": "#/components/schemas/DatasetDetails"
+          }
+        },
+        "required": [
+          "details"
+        ],
+        "title": "RegisterDatasetRequest",
         "type": "object"
       },
       "RegisterInfrastructureAssetRequest": {
@@ -4237,6 +5971,65 @@
         "title": "ReportSummary",
         "type": "object"
       },
+      "RequestExportRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/exports``.\n\nImplements: API Schema.\n\nAttributes:\n    dataset: ``events``, ``claims`` or ``reports`` (moderators only).\n    format: ``json``, ``geojson``, ``csv`` or ``geoparquet``.\n    filters: Which rows to select; every filter is optional.",
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/ExportDataset"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/ExportFilters",
+            "default": {}
+          },
+          "format": {
+            "$ref": "#/components/schemas/ExportFormat"
+          }
+        },
+        "required": [
+          "dataset",
+          "format"
+        ],
+        "title": "RequestExportRequest",
+        "type": "object"
+      },
+      "RequestImportRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/moderation/imports``.\n\nImplements: API Schema.\n\nAttributes:\n    format: The file's format; it must match the uploaded key's extension.\n    artifact: The uploaded file.\n    dry_run: ``True`` to validate only; required, so a client always says.",
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ImportArtifactRequest"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "format": {
+            "$ref": "#/components/schemas/ImportFormat"
+          }
+        },
+        "required": [
+          "format",
+          "artifact",
+          "dry_run"
+        ],
+        "title": "RequestImportRequest",
+        "type": "object"
+      },
+      "RequestImportUploadRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/moderation/imports/uploads``.\n\nImplements: API Schema.\n\nAttributes:\n    format: The format of the file about to be uploaded.",
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/ImportFormat"
+          }
+        },
+        "required": [
+          "format"
+        ],
+        "title": "RequestImportUploadRequest",
+        "type": "object"
+      },
       "RequestUploadRequest": {
         "additionalProperties": false,
         "description": "Body of ``POST /api/v1/media`` and ``POST /api/v1/reports/{id}/media``.\n\nImplements: API Schema.\n\nAttributes:\n    mime_type: The declared media type, from the allow-list; the file's\n        content is checked against it again when the upload completes.",
@@ -4358,6 +6151,346 @@
         ],
         "title": "Role",
         "type": "string"
+      },
+      "RowIssue": {
+        "additionalProperties": false,
+        "description": "One problem found in one row of an import file.\n\nImplements: Value Object.\n\nAttributes:\n    row_number: 1-based number of the data row (the header is not counted).\n    field: The column at fault, or ``None`` for a problem of the whole row.\n    message: What is wrong, without quoting the value.\n    severity: ``error`` rejects the row; ``warning`` does not.",
+        "properties": {
+          "field": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_.]{0,99}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "message": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "row_number": {
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Row Number",
+            "type": "integer"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/ValidationSeverity",
+            "default": "error"
+          }
+        },
+        "required": [
+          "row_number",
+          "message"
+        ],
+        "title": "RowIssue",
+        "type": "object"
+      },
+      "RunCounts": {
+        "additionalProperties": false,
+        "description": "How many records a run saw at each stage of the pipeline.\n\nInvariants: ``persisted ≤ valid ≤ parsed ≤ fetched``, and additionally\n(**proposed**, they follow from what each stage does)\n``valid + invalid ≤ parsed``, because a parsed record is judged at most once, and\n``deduplicated + persisted ≤ valid``, because a record dropped as a duplicate is\nnot persisted. The sums are ``≤`` rather than ``=`` because a failed run may stop\npart-way through a stage.\n\nImplements: Value Object.\n\nAttributes:\n    fetched: Raw records received from the source.\n    parsed: Records the parser turned into source-shaped rows.\n    valid: Rows that passed validation.\n    invalid: Rows that failed validation.\n    deduplicated: Valid records dropped as duplicates.\n    persisted: Records written to storage.",
+        "properties": {
+          "deduplicated": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Deduplicated",
+            "type": "integer"
+          },
+          "fetched": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Fetched",
+            "type": "integer"
+          },
+          "invalid": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Invalid",
+            "type": "integer"
+          },
+          "parsed": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Parsed",
+            "type": "integer"
+          },
+          "persisted": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Persisted",
+            "type": "integer"
+          },
+          "valid": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Valid",
+            "type": "integer"
+          }
+        },
+        "title": "RunCounts",
+        "type": "object"
+      },
+      "RunDetail": {
+        "additionalProperties": false,
+        "description": "One ingestion run with its full report inline.\n\nImplements: DTO.\n\nAttributes:\n    report: Every kept issue, the omitted counts and the counts.",
+        "properties": {
+          "adapter_name": {
+            "pattern": "^[a-z][a-z0-9_.]{1,63}$",
+            "title": "Adapter Name",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/RunCounts"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dataset_version_id": {
+            "format": "uuid",
+            "title": "Dataset Version Id",
+            "type": "string"
+          },
+          "error_count": {
+            "minimum": 0.0,
+            "title": "Error Count",
+            "type": "integer"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_checksum": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Checksum"
+          },
+          "report": {
+            "$ref": "#/components/schemas/IngestionReport"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "warning_count": {
+            "minimum": 0.0,
+            "title": "Warning Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "dataset_version_id",
+          "adapter_name",
+          "status",
+          "created_at",
+          "counts",
+          "error_count",
+          "warning_count",
+          "report"
+        ],
+        "title": "RunDetail",
+        "type": "object"
+      },
+      "RunIngestionRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/admin/datasets/{code}/runs``.\n\nImplements: API Schema.\n\nAttributes:\n    version_id: The dataset version to ingest; it belongs to the dataset.\n    adapter_name: The registered source adapter to read through.",
+        "properties": {
+          "adapter_name": {
+            "pattern": "^[a-z][a-z0-9_.]{1,63}$",
+            "title": "Adapter Name",
+            "type": "string"
+          },
+          "version_id": {
+            "format": "uuid",
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version_id",
+          "adapter_name"
+        ],
+        "title": "RunIngestionRequest",
+        "type": "object"
+      },
+      "RunPage": {
+        "additionalProperties": false,
+        "description": "One page of a dataset's ingestion runs, newest first.\n\nImplements: API Schema.\n\nAttributes:\n    items: The runs on this page.\n    next_cursor: Cursor of the next page, or ``None`` on the last page.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "RunPage",
+        "type": "object"
+      },
+      "RunStatus": {
+        "description": "Where an ingestion run is in its lifecycle.\n\nImplements: State.",
+        "enum": [
+          "pending",
+          "running",
+          "succeeded",
+          "partially_succeeded",
+          "failed"
+        ],
+        "title": "RunStatus",
+        "type": "string"
+      },
+      "RunSummary": {
+        "additionalProperties": false,
+        "description": "One ingestion run as listed for a dataset.\n\nWho requested the run is not part of the view (**proposed**): the listing is\nread by anyone, and an account id is not needed to judge the data.\n\nImplements: DTO.\n\nAttributes:\n    id: The run's id.\n    dataset_version_id: The version ingested.\n    adapter_name: The source adapter used.\n    status: Where the run is in its lifecycle.\n    created_at: When the run was requested, UTC.\n    started_at: When a worker started it, if it did.\n    finished_at: When it finished, if it did.\n    counts: Record counts per pipeline stage.\n    error_count: Errors found, kept and omitted.\n    warning_count: Warnings found, kept and omitted.\n    input_checksum: SHA-256 of the bytes read, once known.",
+        "properties": {
+          "adapter_name": {
+            "pattern": "^[a-z][a-z0-9_.]{1,63}$",
+            "title": "Adapter Name",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/RunCounts"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dataset_version_id": {
+            "format": "uuid",
+            "title": "Dataset Version Id",
+            "type": "string"
+          },
+          "error_count": {
+            "minimum": 0.0,
+            "title": "Error Count",
+            "type": "integer"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_checksum": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Checksum"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "warning_count": {
+            "minimum": 0.0,
+            "title": "Warning Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "dataset_version_id",
+          "adapter_name",
+          "status",
+          "created_at",
+          "counts",
+          "error_count",
+          "warning_count"
+        ],
+        "title": "RunSummary",
+        "type": "object"
       },
       "ScanStatus": {
         "description": "The malware scanner's verdict on the original file.\n\n``unavailable`` means the scanner could not run (for example the development\n``NoOpScanner`` or an outage); it is not ``clean``, so it never allows\npublication.\n\nImplements: Value Object.",
@@ -4722,6 +6855,152 @@
         "title": "SourceType",
         "type": "string"
       },
+      "SpatialCoverage": {
+        "additionalProperties": false,
+        "description": "The area a dataset covers, as a WGS84 bounding box.\n\nImplements: Value Object.\n\nAttributes:\n    bbox: The covered rectangle; antimeridian-crossing boxes are refused by the\n        kernel's ``BoundingBox``.",
+        "properties": {
+          "bbox": {
+            "$ref": "#/components/schemas/BoundingBox"
+          }
+        },
+        "required": [
+          "bbox"
+        ],
+        "title": "SpatialCoverage",
+        "type": "object"
+      },
+      "StacAsset": {
+        "additionalProperties": false,
+        "description": "One file of a raster item, as STAC describes it.\n\nImplements: Value Object.\n\nAttributes:\n    key: The asset's key in the item's ``assets`` object.\n    href: Object key or URL of the bytes.\n    media_type: The file's media type, for example ``COG_MEDIA_TYPE``.\n    roles: STAC roles, unique, at most 16.",
+        "properties": {
+          "href": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "key": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "title": "Key",
+            "type": "string"
+          },
+          "media_type": {
+            "maxLength": 255,
+            "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(; ?[a-z0-9_.-]+=[A-Za-z0-9_.+-]+)*$",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "roles": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Roles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "href",
+          "media_type"
+        ],
+        "title": "StacAsset",
+        "type": "object"
+      },
+      "StacBand": {
+        "additionalProperties": false,
+        "description": "One band of a raster, as STAC 1.1 ``bands`` describes it.\n\nImplements: Value Object.\n\nAttributes:\n    name: The band's name in the asset, for example ``B04``.\n    common_name: The ``eo:common_name``, if the band has one.\n    description: What the band holds, if described.",
+        "properties": {
+          "common_name": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9]{0,31}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "StacBand",
+        "type": "object"
+      },
+      "StationRef": {
+        "additionalProperties": false,
+        "description": "The station an observation was made at, as the publisher identifies it.\n\nImplements: Value Object.\n\nAttributes:\n    code: The publisher's station code; unique within one dataset version.\n    name: The publisher's station name, if given.\n    location: Where the station is, if published.\n    elevation: Height above sea level in metre, if published. The vertical\n        datum is the publisher's and is recorded per dataset (open question).",
+        "properties": {
+          "code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "elevation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Measurement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coordinates"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "StationRef",
+        "type": "object"
+      },
       "SubmitReportRequest": {
         "additionalProperties": false,
         "description": "Body of ``POST /api/v1/reports``.\n\nImplements: API Schema.\n\nAttributes:\n    client_report_id: The UUIDv7 the client generated; it becomes the report id\n        and makes a retried submission return the same report.\n    organization_id: The organisation reported for, if any; the reporter must\n        be a member.",
@@ -4844,6 +7123,30 @@
         ],
         "title": "TargetKind",
         "type": "string"
+      },
+      "TemporalCoverage": {
+        "additionalProperties": false,
+        "description": "The period a dataset covers: a start and an optional end, each with precision.\n\n``end`` is ``None`` for a dataset that is still being extended. The order check is\nprecision-aware (**proposed**, as for event periods): the end's period must not\nfinish before the start's period begins, so ``2024-07-15`` (day) to ``2024-07``\n(month) is accepted and ``2024-07-15`` to ``2024-06`` is refused.\n\nImplements: Value Object.\n\nAttributes:\n    start: First moment covered.\n    end: Last moment covered, or ``None`` if open-ended.",
+        "properties": {
+          "end": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateWithPrecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "start": {
+            "$ref": "#/components/schemas/DateWithPrecision"
+          }
+        },
+        "required": [
+          "start"
+        ],
+        "title": "TemporalCoverage",
+        "type": "object"
       },
       "TimelineEntry": {
         "additionalProperties": false,
@@ -5130,6 +7433,20 @@
         "title": "UpdateEventRequest",
         "type": "object"
       },
+      "UpdateFrequency": {
+        "description": "How often the publisher releases new data for a dataset.\n\nImplements: Value Object.",
+        "enum": [
+          "static",
+          "hourly",
+          "daily",
+          "weekly",
+          "monthly",
+          "yearly",
+          "irregular"
+        ],
+        "title": "UpdateFrequency",
+        "type": "string"
+      },
       "UpdateMeRequest": {
         "additionalProperties": false,
         "description": "Body of ``PATCH /api/v1/me``.\n\nImplements: API Schema.\n\nAttributes:\n    display_name: The new display name, 1 to 120 characters after NFC and\n        stripping, or ``null`` to clear it. Required, so clearing is explicit.",
@@ -5267,6 +7584,60 @@
           "suspended"
         ],
         "title": "UserStatus",
+        "type": "string"
+      },
+      "ValidationReport": {
+        "additionalProperties": false,
+        "description": "Everything an import found, row by row, whether or not it was a dry run.\n\nA row is rejected if it has at least one ``error``. At most\n``REPORT_MAX_ISSUES`` issues are kept, in row order; ``is_truncated`` says\nwhether more were found. The row counts always cover every row.\n\nImplements: Value Object.\n\nAttributes:\n    issues: The kept issues, ordered by row number.\n    rows_seen: Data rows read.\n    rows_valid: Rows without errors.\n    rows_rejected: Rows with at least one error.\n    is_truncated: Whether issues beyond the cap were dropped.",
+        "properties": {
+          "is_truncated": {
+            "default": false,
+            "title": "Is Truncated",
+            "type": "boolean"
+          },
+          "issues": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RowIssue"
+            },
+            "maxItems": 10000,
+            "title": "Issues",
+            "type": "array"
+          },
+          "rows_rejected": {
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Rows Rejected",
+            "type": "integer"
+          },
+          "rows_seen": {
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Rows Seen",
+            "type": "integer"
+          },
+          "rows_valid": {
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Rows Valid",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows_seen",
+          "rows_valid",
+          "rows_rejected"
+        ],
+        "title": "ValidationReport",
+        "type": "object"
+      },
+      "ValidationSeverity": {
+        "description": "Whether a problem rejects its row.\n\nImplements: Value Object.",
+        "enum": [
+          "error",
+          "warning"
+        ],
+        "title": "ValidationSeverity",
         "type": "string"
       },
       "ValueKind": {
@@ -5573,6 +7944,833 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/admin/datasets": {
+      "post": {
+        "description": "Register a dataset in the catalog; a licence is required.\n\nArgs:\n    body: Code, title, publisher, licence and descriptions.\n    actor: The administrator.\n    response: Used to set ``Location`` and ``ETag``.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The registered dataset.",
+        "operationId": "register_dataset_api_v1_admin_datasets_post",
+        "parameters": [
+          {
+            "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Register Dataset",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/datasets/{code}/runs": {
+      "post": {
+        "description": "Request an ingestion run of one version through one source adapter.\n\nArgs:\n    code: The dataset's catalog code.\n    body: The version and the adapter.\n    actor: The administrator.\n    response: Used to set ``Location``.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The pending run; a worker executes it.",
+        "operationId": "request_run_api_v1_admin_datasets__code__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunIngestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Request Run",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/datasets/{code}/status": {
+      "post": {
+        "description": "Deprecate or retire a dataset; its history stays.\n\nArgs:\n    code: The dataset's catalog code.\n    body: The target status.\n    actor: The administrator.\n    response: Used to set the new ``ETag``.\n    services: Use cases bound by the composition root.\n    if_match: The dataset's ``ETag``; checked when sent.\n\nReturns:\n    The dataset after the change.",
+        "operationId": "change_dataset_status_api_v1_admin_datasets__code__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional; the dataset's ETag, checked when sent.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional; the dataset's ETag, checked when sent.",
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeDatasetStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Change Dataset Status",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/datasets/{code}/versions": {
+      "post": {
+        "description": "Record one release of an active dataset, pinned by its input checksum.\n\nArgs:\n    code: The dataset's catalog code.\n    body: Label, retrieval time, checksum and notes.\n    actor: The administrator.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The recorded version; it also appears in the dataset's\n    ``recent_versions``.",
+        "operationId": "record_dataset_version_api_v1_admin_datasets__code__versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordDatasetVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetVersionSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Record Dataset Version",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/raster-assets": {
+      "post": {
+        "description": "Add one STAC-aligned raster of a dataset version to the catalog.\n\nArgs:\n    body: Dataset code, version and the raster's description.\n    actor: The administrator.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The catalogued raster.",
+        "operationId": "catalogue_raster_asset_api_v1_admin_raster_assets_post",
+        "parameters": [
+          {
+            "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogueRasterAssetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RasterAssetSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Catalogue Raster Asset",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/datasets": {
+      "get": {
+        "description": "List the dataset catalog, ordered by code.\n\nArgs:\n    parameters: Validated status filter, cursor and limit.\n    response: Used to set the ``Link`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    One page of datasets.",
+        "operationId": "list_datasets_api_v1_datasets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DatasetStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "summary": "List Datasets",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/datasets/{code}": {
+      "get": {
+        "description": "Return one dataset with its most recent versions and its ``ETag``.\n\nArgs:\n    code: The dataset's catalog code.\n    response: Used to set the ``ETag`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The dataset, licence and coverage included.",
+        "operationId": "get_dataset_api_v1_datasets__code__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "summary": "Get Dataset",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/api/v1/datasets/{code}/runs": {
+      "get": {
+        "description": "List a dataset's ingestion runs, newest first.\n\nArgs:\n    code: The dataset's catalog code.\n    parameters: Validated cursor and limit.\n    response: Used to set the ``Link`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    One page of run summaries; who requested a run is never shown.",
+        "operationId": "list_dataset_runs_api_v1_datasets__code__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "summary": "List Dataset Runs",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
     "/api/v1/events": {
       "get": {
         "description": "List the events the caller may see, as JSON or GeoJSON.\n\nArgs:\n    parameters: Validated filters, format, cursor and limit.\n    actor: The caller, anonymous or authenticated.\n    response: Used to set ``Link`` and ``Vary`` on the JSON response.\n    services: Use cases bound by the composition root.\n    accept: ``application/geo+json`` selects a GeoJSON ``FeatureCollection``.\n\nReturns:\n    One page of events. The GeoJSON form places each event at its centroid\n    (``null`` when unknown) and carries the next page only in ``Link``.",
@@ -6054,6 +9252,339 @@
         ]
       }
     },
+    "/api/v1/exports": {
+      "get": {
+        "description": "List export jobs, newest first: every job for a moderator, else one's own.\n\nArgs:\n    parameters: Validated cursor and limit.\n    actor: The caller.\n    response: Used to set the ``Link`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    One page of job summaries.",
+        "operationId": "list_exports_api_v1_exports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportJobPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List Exports",
+        "tags": [
+          "exchange"
+        ]
+      },
+      "post": {
+        "description": "Queue an export of one dataset in one format.\n\nArgs:\n    body: Dataset, format and filters.\n    actor: The requesting user; they own the job.\n    response: Used to set ``Location`` and ``ETag``.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The queued job.",
+        "operationId": "request_export_api_v1_exports_post",
+        "parameters": [
+          {
+            "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Request Export",
+        "tags": [
+          "exchange"
+        ]
+      }
+    },
+    "/api/v1/exports/{job_id}": {
+      "delete": {
+        "description": "Cancel an export no worker has started.\n\nArgs:\n    job_id: The job.\n    actor: The caller; the owner or a moderator.\n    services: Use cases bound by the composition root.",
+        "operationId": "cancel_export_api_v1_exports__job_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Cancel Export",
+        "tags": [
+          "exchange"
+        ]
+      },
+      "get": {
+        "description": "Return one export job with its ``ETag``.\n\nArgs:\n    job_id: The job.\n    actor: The caller; the owner or a moderator.\n    response: Used to set the ``ETag`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The job; once completed, with its sidecar and a download link.",
+        "operationId": "get_export_api_v1_exports__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Export",
+        "tags": [
+          "exchange"
+        ]
+      }
+    },
     "/api/v1/hazard-types": {
       "get": {
         "description": "List hazard types, ordered by code, active ones only unless asked.\n\nArgs:\n    parameters: Validated filters, cursor and limit.\n    response: Used to set the ``Link`` header of the next page.\n    services: Query services bound by the composition root.\n\nReturns:\n    One page of hazard types.",
@@ -6417,6 +9948,70 @@
         "summary": "Get Infrastructure Asset",
         "tags": [
           "impacts"
+        ]
+      }
+    },
+    "/api/v1/ingestion-runs/{run_id}": {
+      "get": {
+        "description": "Return one ingestion run with its full report.\n\nArgs:\n    run_id: The run.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The run, counts, checksum and report; who requested it is never shown.",
+        "operationId": "get_run_api_v1_ingestion_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "summary": "Get Run",
+        "tags": [
+          "ingestion"
         ]
       }
     },
@@ -8316,6 +11911,260 @@
         ]
       }
     },
+    "/api/v1/moderation/imports": {
+      "post": {
+        "description": "Queue an import of an uploaded file of historical events and claims.\n\nArgs:\n    body: Format, the uploaded file and ``dry_run``.\n    actor: The moderator; they own the job.\n    response: Used to set ``Location`` and ``ETag``.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The queued job.",
+        "operationId": "request_import_api_v1_moderation_imports_post",
+        "parameters": [
+          {
+            "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A UUID chosen by the client; replaying it with the same request returns the stored response.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportJobDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Request Import",
+        "tags": [
+          "moderation"
+        ]
+      }
+    },
+    "/api/v1/moderation/imports/uploads": {
+      "post": {
+        "description": "Grant a presigned upload of one import file.\n\nThe key is chosen here, ``imports/<upload_id>/source<extension>``; nothing\nis stored until the client uploads.\n\nArgs:\n    body: The file's format.\n    actor: The moderator.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The key, URL, headers, size cap and expiry of the upload.",
+        "operationId": "request_import_upload_api_v1_moderation_imports_uploads_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestImportUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportUploadGrantResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Request Import Upload",
+        "tags": [
+          "moderation"
+        ]
+      }
+    },
+    "/api/v1/moderation/imports/{job_id}": {
+      "get": {
+        "description": "Return one import job with its validation report and ``ETag``.\n\nArgs:\n    job_id: The job.\n    actor: The moderator.\n    response: Used to set the ``ETag`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The job, its row-level report once produced, and what it wrote.",
+        "operationId": "get_import_api_v1_moderation_imports__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportJobDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Import",
+        "tags": [
+          "moderation"
+        ]
+      }
+    },
     "/api/v1/moderation/infrastructure-assets": {
       "post": {
         "description": "Register a bridge, road segment or other asset hazards can damage.\n\nArgs:\n    body: Kind, name, source and the optional OSM id, point and place.\n    actor: The moderator.\n    response: Used to set ``Location`` and ``ETag``.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The registered asset.",
@@ -9111,6 +12960,166 @@
         "summary": "Transition Verification",
         "tags": [
           "moderation"
+        ]
+      }
+    },
+    "/api/v1/observations": {
+      "get": {
+        "description": "Return one page of one variable's time series from one dataset.\n\nArgs:\n    parameters: Dataset code, variable, half-open window, optional site and\n        version, cursor and limit.\n    response: Used to set the ``Link`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    Observations ordered by ``(observed_at, site_ref, dataset_version_id)``.",
+        "operationId": "query_observations_api_v1_observations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "dataset",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+              "title": "Dataset",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "variable",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_]{1,63}$",
+              "title": "Variable",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "site_ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 74,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Site Ref"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "summary": "Query Observations",
+        "tags": [
+          "ingestion"
         ]
       }
     },
@@ -10104,6 +14113,193 @@
         "summary": "Get Place",
         "tags": [
           "geography"
+        ]
+      }
+    },
+    "/api/v1/raster-assets": {
+      "get": {
+        "description": "List catalogued rasters, as JSON or as a STAC ``FeatureCollection``.\n\nArgs:\n    parameters: Validated box, window, dataset code, format, cursor and\n        limit.\n    response: Used to set ``Link`` and ``Vary`` on the JSON response.\n    services: Use cases bound by the composition root.\n    accept: ``application/geo+json`` selects GeoJSON.\n\nReturns:\n    One page of rasters, newest acquisition first, in the negotiated\n    representation.",
+        "operationId": "list_raster_assets_api_v1_raster_assets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "bbox",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "pattern": "^-?\\d{1,3}(\\.\\d{1,12})?(,-?\\d{1,3}(\\.\\d{1,12})?){3}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Bbox"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dataset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RasterFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Format"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "accept",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/geo+json": {},
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RasterAssetPage"
+                }
+              }
+            },
+            "description": "JSON, or a GeoJSON FeatureCollection of STAC Items when negotiated"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "summary": "List Raster Assets",
+        "tags": [
+          "ingestion"
         ]
       }
     },
