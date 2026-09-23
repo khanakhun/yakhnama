@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.tif binary
+*.tiff binary
+*.parquet binary
+poetry.lock linguist-generated=true
+tests/contract/openapi.json linguist-generated=true

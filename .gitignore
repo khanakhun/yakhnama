@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+diff-cover.html
+.import_linter_cache/
+site/
+
+# Environment and secrets: never committed
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Claude Code local overrides
+.claude/settings.local.json
+
+# Docker volumes bound into the tree
+.docker-data/
