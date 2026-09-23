@@ -13,10 +13,14 @@ Personal data never leaves in a span (``AGENTS.md`` §5, spec §10):
 ``PersonalDataSpanProcessor`` runs on every span as it starts, and a server request hook
 runs again on the HTTP server span; both remove query strings from URL attributes
 (search terms and filters can identify a reporter) and replace client address, port and
-user agent with ``"[REDACTED]"``. Request and response bodies and headers are never
-captured (no ``http_capture_headers_*`` option is set), health probes are excluded, and
-SQL spans carry the statement with placeholders only (no bound values) and no SQL
-commenter.
+user agent with ``"[REDACTED]"``. Exception text is removed at export time by
+``PersonalDataSpanExporter``, which wraps every exporter: the span status keeps its code
+but loses its description (the SQLAlchemy instrumentation copies the driver message
+there, and asyncpg's ``DETAIL`` line quotes column values), and exception events keep
+``exception.type`` but lose ``exception.message`` and ``exception.stacktrace``. Request
+and response bodies and headers are never captured (no ``http_capture_headers_*``
+option is set), health probes are excluded, and SQL spans carry the statement with
+placeholders only (no bound values) and no SQL commenter.
 
 The OTLP exporter is not installed (``opentelemetry-exporter-otlp`` is not a
 dependency yet), so ``otel_exporter="otlp"`` fails fast with instructions instead of
@@ -25,6 +29,7 @@ silently dropping spans.
 Patterns: Adapter.
 """
 
+from collections.abc import Sequence
 from typing import Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -34,12 +39,21 @@ from opentelemetry.context import Context
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-from opentelemetry.sdk.trace import Span, SpanProcessor, TracerProvider
+from opentelemetry.sdk.trace import (
+    Event,
+    ReadableSpan,
+    Span,
+    SpanProcessor,
+    TracerProvider,
+)
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     ConsoleSpanExporter,
+    SimpleSpanProcessor,
     SpanExporter,
+    SpanExportResult,
 )
+from opentelemetry.trace import Status
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from yakhnama.platform.settings import Settings
@@ -67,6 +81,14 @@ PERSONAL_ATTRIBUTES: Final = frozenset(
         "http.user_agent",
         "user_agent.original",
     }
+)
+
+
+# Exception event attributes that carry free text (driver messages quoting column
+# values, pydantic input fragments, stack frames with local context). The exception
+# type stays: it is what an operator needs and it cannot hold personal data.
+EXCEPTION_TEXT_ATTRIBUTES: Final = frozenset(
+    {"exception.message", "exception.stacktrace"}
 )
 
 
@@ -134,6 +156,90 @@ class PersonalDataSpanProcessor(SpanProcessor):
         scrub_personal_data(span)
 
 
+def scrub_exported_span(span: ReadableSpan) -> ReadableSpan:
+    """Return a copy of ``span`` without exception text.
+
+    Args:
+        span: A finished span on its way to an exporter.
+
+    Returns:
+        The same span with the status description dropped (the status code is kept)
+        and ``exception.message`` and ``exception.stacktrace`` removed from every
+        event.
+    """
+    events = tuple(
+        Event(
+            event.name,
+            attributes={
+                key: value
+                for key, value in (event.attributes or {}).items()
+                if key not in EXCEPTION_TEXT_ATTRIBUTES
+            },
+            timestamp=event.timestamp,
+        )
+        for event in span.events
+    )
+    return ReadableSpan(
+        name=span.name,
+        context=span.context,
+        parent=span.parent,
+        resource=span.resource,
+        attributes=span.attributes,
+        events=events,
+        links=span.links,
+        kind=span.kind,
+        status=Status(span.status.status_code),
+        start_time=span.start_time,
+        end_time=span.end_time,
+        instrumentation_scope=span.instrumentation_scope,
+    )
+
+
+class PersonalDataSpanExporter(SpanExporter):
+    """Wraps an exporter so that no exception text leaves the process.
+
+    ``PersonalDataSpanProcessor`` cannot do this: the status description and exception
+    events are written after the span started, and a finished span is read-only, so
+    the copy is made here, just before delegating.
+
+    Implements: Adapter.
+    """
+
+    def __init__(self, exporter: SpanExporter) -> None:
+        """Wrap ``exporter``.
+
+        Args:
+            exporter: The exporter that receives the scrubbed spans.
+        """
+        self._exporter = exporter
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        """Scrub ``spans`` and hand them to the wrapped exporter.
+
+        Args:
+            spans: Finished spans.
+
+        Returns:
+            The wrapped exporter's result.
+        """
+        return self._exporter.export([scrub_exported_span(span) for span in spans])
+
+    def shutdown(self) -> None:
+        """Shut the wrapped exporter down."""
+        self._exporter.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """Flush the wrapped exporter.
+
+        Args:
+            timeout_millis: Upper bound for the flush.
+
+        Returns:
+            Whether the wrapped exporter flushed in time.
+        """
+        return self._exporter.force_flush(timeout_millis)
+
+
 class OpenTelemetryAdapter:
     """Holds the tracing set-up of one application and tears it down.
 
@@ -152,6 +258,25 @@ class OpenTelemetryAdapter:
         """
         self.tracer_provider = tracer_provider
         self._app = app
+
+    def add_exporter(self, exporter: SpanExporter, *, is_batched: bool = True) -> None:
+        """Send this app's spans to ``exporter`` as well, always scrubbed.
+
+        Every exporter goes through ``PersonalDataSpanExporter``; this is the only way
+        exporters are attached, so none can bypass it.
+
+        Args:
+            exporter: The exporter to add.
+            is_batched: Export in a background batch (production) or synchronously
+                when each span ends (tests).
+        """
+        scrubbed = PersonalDataSpanExporter(exporter)
+        processor: SpanProcessor = (
+            BatchSpanProcessor(scrubbed)
+            if is_batched
+            else SimpleSpanProcessor(scrubbed)
+        )
+        self.tracer_provider.add_span_processor(processor)
 
     def shutdown(self) -> None:
         """Remove the instrumentation and flush and stop span export."""
@@ -201,11 +326,11 @@ def configure_telemetry(
     tracer_provider = TracerProvider(
         resource=Resource.create({SERVICE_NAME: settings.otel_service_name})
     )
-    # Scrubbing happens in on_start and exporters act in on_end, so no exporter can
-    # ever see an unscrubbed span.
+    # Attribute scrubbing happens in on_start, before any exporter acts in on_end.
     tracer_provider.add_span_processor(PersonalDataSpanProcessor())
+    adapter = OpenTelemetryAdapter(tracer_provider, app)
     if exporter is not None:
-        tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+        adapter.add_exporter(exporter)
     FastAPIInstrumentor.instrument_app(
         app,
         server_request_hook=_scrub_server_span,
@@ -217,4 +342,4 @@ def configure_telemetry(
         tracer_provider=tracer_provider,
         enable_commenter=False,
     )
-    return OpenTelemetryAdapter(tracer_provider, app)
+    return adapter

@@ -30,8 +30,8 @@ def postgis_url() -> Iterator[str]:
         dbname="yakhnama",
         driver="asyncpg",
     )
-    container.start()
     try:
+        container.start()
         yield container.get_connection_url()
     finally:
         container.stop()

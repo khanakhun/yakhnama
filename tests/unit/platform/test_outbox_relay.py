@@ -149,9 +149,7 @@ async def test_outbox_relay_deliver_subscriber_failure_records_attempt_and_error
     assert outcome == RelayOutcome(claimed=1, published=0, failed=1)
     assert message.published_at is None
     assert message.attempts == 1
-    assert message.last_error == (
-        "RecordingSubscriber: RuntimeError: storage unavailable"
-    )
+    assert message.last_error == "RecordingSubscriber: RuntimeError"
 
 
 async def test_outbox_relay_deliver_one_failing_subscriber_still_calls_the_others() -> (
@@ -186,11 +184,26 @@ async def test_outbox_relay_deliver_function_subscriber_is_named_in_last_error()
     assert "audit_subscriber: LookupError" in message.last_error
 
 
-async def test_outbox_relay_deliver_long_error_is_truncated() -> None:
+async def test_outbox_relay_deliver_error_text_and_nul_never_reach_last_error() -> None:
+    marker = "phone=0300-1234567"
     registry = SubscriberRegistry()
     registry.subscribe(
-        SampleRecorded.event_type, RecordingSubscriber(RuntimeError("x" * 5000))
+        SampleRecorded.event_type,
+        RecordingSubscriber(RuntimeError(f"DETAIL: Key ({marker}) exists\x00tail")),
     )
+    message = _message()
+
+    await _relay(registry).deliver([message])
+
+    assert message.last_error == "RecordingSubscriber: RuntimeError"
+    assert marker not in message.last_error
+    assert "\x00" not in message.last_error
+
+
+async def test_outbox_relay_deliver_many_failing_subscribers_is_truncated() -> None:
+    registry = SubscriberRegistry()
+    for _ in range(200):
+        registry.subscribe(SampleRecorded.event_type, RecordingSubscriber(KeyError()))
     message = _message()
 
     await _relay(registry).deliver([message])
@@ -220,7 +233,7 @@ async def test_outbox_relay_deliver_corrupt_payload_records_envelope_failure() -
     assert outcome.failed == 1
     assert message.attempts == 1
     assert message.last_error is not None
-    assert message.last_error.startswith("envelope: ValidationError")
+    assert message.last_error == "envelope: ValidationError"
     assert subscriber.received == []
 
 

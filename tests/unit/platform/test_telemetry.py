@@ -8,18 +8,22 @@ from fastapi import FastAPI
 from opentelemetry import trace
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from opentelemetry.trace import Status, StatusCode
 
 from yakhnama.main import create_app
 from yakhnama.platform.settings import Settings, TelemetryExporter
 from yakhnama.platform.telemetry import (
+    EXCEPTION_TEXT_ATTRIBUTES,
     REDACTED,
     OpenTelemetryAdapter,
+    PersonalDataSpanExporter,
     PersonalDataSpanProcessor,
     configure_telemetry,
+    scrub_exported_span,
     scrub_personal_data,
     strip_query,
 )
@@ -51,11 +55,16 @@ def traced_app() -> Iterator[tuple[FastAPI, InMemorySpanExporter]]:
     async def search(q: str) -> dict[str, str]:
         return {"echo": q}
 
+    async def fail(q: str) -> None:
+        message = f"DETAIL: Key (phone)=({q}) already exists."
+        raise RuntimeError(message)
+
     app.add_api_route("/search", search)
+    app.add_api_route("/fail", fail)
     adapter = app.state.telemetry
     assert isinstance(adapter, OpenTelemetryAdapter)
     exporter = InMemorySpanExporter()
-    adapter.tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    adapter.add_exporter(exporter, is_batched=False)
 
     yield app, exporter
 
@@ -215,3 +224,68 @@ def test_configure_telemetry_disabled_directly_returns_none(app: FastAPI) -> Non
     telemetry = configure_telemetry(_settings(), app, container.engine)
 
     assert telemetry is None
+
+
+async def test_traced_failing_route_exports_exception_type_but_no_exception_text(
+    traced_app: tuple[FastAPI, InMemorySpanExporter],
+) -> None:
+    app, exporter = traced_app
+
+    with pytest.raises(RuntimeError, match="already exists"):
+        await _get(app, "/fail?q=0300-7654321")
+
+    spans = exporter.get_finished_spans()
+    events = [event for span in spans for event in span.events]
+    exception_events = [event for event in events if event.name == "exception"]
+    assert exception_events
+    assert all(
+        set(event.attributes or {}).isdisjoint(EXCEPTION_TEXT_ATTRIBUTES)
+        for event in exception_events
+    )
+    assert {
+        (event.attributes or {}).get("exception.type") for event in exception_events
+    } == {"RuntimeError"}
+    assert all(span.status.description is None for span in spans)
+    assert "0300-7654321" not in str(
+        [(span.attributes, span.events, span.status.description) for span in spans]
+    )
+    assert any(span.status.status_code is StatusCode.ERROR for span in spans)
+
+
+def test_scrub_exported_span_keeps_identity_timing_and_other_attributes() -> None:
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    with provider.get_tracer(__name__).start_as_current_span(
+        "work", attributes={"db.system": "postgresql"}
+    ) as span:
+        span.add_event("checkpoint", {"step": 2, "exception.message": "secret"})
+        span.set_status(Status(StatusCode.ERROR, "Key (phone)=(0300) exists"))
+    (original,) = exporter.get_finished_spans()
+    provider.shutdown()
+
+    scrubbed = scrub_exported_span(original)
+
+    assert scrubbed.context == original.context
+    assert (scrubbed.start_time, scrubbed.end_time) == (
+        original.start_time,
+        original.end_time,
+    )
+    assert scrubbed.attributes == original.attributes
+    assert scrubbed.status.status_code is StatusCode.ERROR
+    assert scrubbed.status.description is None
+    assert [
+        (event.name, dict(event.attributes or {})) for event in scrubbed.events
+    ] == [("checkpoint", {"step": 2})]
+
+
+def test_personal_data_span_exporter_delegates_flush_and_shutdown() -> None:
+    inner = InMemorySpanExporter()
+    exporter = PersonalDataSpanExporter(inner)
+
+    is_flushed = exporter.force_flush(1000)
+    exporter.shutdown()
+    result = exporter.export([])
+
+    assert is_flushed is True
+    assert result is SpanExportResult.FAILURE

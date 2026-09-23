@@ -47,7 +47,7 @@ type SessionFactory = Callable[[], AsyncSession]
 # Phase 1 report until the maintainer confirms them.
 DEFAULT_MAX_ATTEMPTS: Final = 5
 MAX_BATCH_SIZE: Final = 1000
-# Bounded so a subscriber raising with a huge message cannot bloat the table.
+# Bounded because a batch with many subscribers could otherwise build a long line.
 LAST_ERROR_MAX_LENGTH: Final = 2000
 
 
@@ -210,7 +210,7 @@ class OutboxRelay:
         # on so that one bad row cannot stall the batch.
         except ValueError as error:
             self._log_failure(message, "envelope", error)
-            return [f"envelope: {type(error).__name__}: {error}"]
+            return [f"envelope: {type(error).__name__}"]
         errors: list[str] = []
         for subscriber in self._registry.subscribers_for(message.event_type):
             name = getattr(subscriber, "__qualname__", type(subscriber).__qualname__)
@@ -220,9 +220,13 @@ class OutboxRelay:
             # the row and retried, never allowed to abort the other messages.
             except Exception as error:  # noqa: BLE001  # reason: failure is recorded in last_error and logged, not swallowed
                 self._log_failure(message, name, error)
-                errors.append(f"{name}: {type(error).__name__}: {error}")
+                errors.append(f"{name}: {type(error).__name__}")
         return errors
 
+    # ``last_error`` records only who failed and the error type, never ``str(error)``:
+    # driver messages quote column values (asyncpg's DETAIL line), pydantic messages
+    # carry input fragments, and a NUL character in free text would make the UPDATE
+    # fail, roll back the batch and leave ``attempts`` unchanged forever.
     @staticmethod
     def _log_failure(message: OutboxMessage, subscriber: str, error: Exception) -> None:
         # Only identifiers and the error type are logged: the error message and the

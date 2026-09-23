@@ -43,7 +43,8 @@ class OutboxMessage(Base):
         published_at: When every subscriber accepted the event; ``NULL`` while
             pending.
         attempts: Failed delivery attempts so far.
-        last_error: Error type and message of the most recent failed attempt.
+        last_error: ``<subscriber>: <ErrorType>`` for each subscriber that failed in
+            the most recent attempt; never the error message, which may quote data.
     """
 
     __tablename__ = OUTBOX_TABLE_NAME

@@ -64,8 +64,12 @@ NAMING_CONVENTION: Final = MappingProxyType(
 UtcDateTime: Final = TIMESTAMP(timezone=True)
 
 # Every session starts in UTC so that server-side functions such as ``now()`` and any
-# text rendering of timestamps agree with the application (AGENTS.md §4).
-_SERVER_SETTINGS: Final = MappingProxyType({"timezone": "UTC"})
+# text rendering of timestamps agree with the application (AGENTS.md §4). The search
+# path is pinned to ``public`` because the official PostGIS image adds its ``tiger``
+# and ``topology`` schemas to the database's default search path; an unqualified
+# table name in an application query could otherwise resolve to one of their tables
+# (for example ``tiger.place``) instead of failing loudly.
+_SERVER_SETTINGS: Final = MappingProxyType({"timezone": "UTC", "search_path": "public"})
 
 
 class Base(DeclarativeBase):
@@ -104,7 +108,8 @@ def create_engine(settings: Settings) -> AsyncEngine:
             ``database_echo``.
 
     Returns:
-        An ``AsyncEngine`` using the asyncpg driver with every session in UTC.
+        An ``AsyncEngine`` using the asyncpg driver with every session in UTC and
+        its search path set to ``public`` only.
     """
     return create_async_engine(
         settings.database_url.unicode_string(),

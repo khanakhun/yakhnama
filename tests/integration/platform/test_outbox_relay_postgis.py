@@ -124,9 +124,7 @@ async def test_relay_once_failure_persists_attempts_and_last_error(
     assert (outcome.published, outcome.failed) == (1, 1)
     assert rows[ids[0]].published_at is None
     assert rows[ids[0]].attempts == 1
-    assert rows[ids[0]].last_error == (
-        "CollectingSubscriber: RuntimeError: subscriber rejected the event"
-    )
+    assert rows[ids[0]].last_error == "CollectingSubscriber: RuntimeError"
     assert rows[ids[1]].published_at is not None
 
 
