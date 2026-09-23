@@ -55,6 +55,11 @@ class ReferenceFileReader(Protocol):
 
         Returns:
             The validated file.
+
+        Raises:
+            ValidationError: If the file cannot be read or does not match its
+                model; the kernel error, so callers never see parser or
+                Pydantic exceptions.
         """
         ...
 
@@ -63,6 +68,11 @@ class ReferenceFileReader(Protocol):
 
         Returns:
             The validated file.
+
+        Raises:
+            ValidationError: If the file cannot be read or does not match its
+                model; the kernel error, so callers never see parser or
+                Pydantic exceptions.
         """
         ...
 
@@ -71,6 +81,11 @@ class ReferenceFileReader(Protocol):
 
         Returns:
             The validated file.
+
+        Raises:
+            ValidationError: If the file cannot be read or does not match its
+                model; the kernel error, so callers never see parser or
+                Pydantic exceptions.
         """
         ...
 
@@ -220,7 +235,7 @@ class SeedReferenceDataHandler:
 
         Raises:
             PermissionDeniedError: If the policy refuses ``command.actor_id``.
-            pydantic.ValidationError: If a reference file is invalid.
+            ValidationError: If the reader rejects a reference file.
         """
         if not self._policy.is_allowed(command.actor_id):
             message = "the actor may not seed reference data"

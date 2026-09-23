@@ -298,3 +298,10 @@ async def test_fake_query_service_get_returns_detail_or_none() -> None:
     assert root is not None
     assert root.parent_code is None
     assert missing is None
+
+
+def test_search_places_text_of_combining_marks_only_raises_validation_error() -> None:
+    marks_only = "\u0301\u0308"
+
+    with pytest.raises(pydantic.ValidationError):
+        SearchPlaces(text=marks_only)

@@ -7,22 +7,9 @@ this boundary instead of travelling on as a ``dict``.
 Patterns: Anti-Corruption Layer (mapper).
 """
 
-from pydantic import BaseModel
-
 from yakhnama.modules.impacts.domain.entities import ImpactMetric
 from yakhnama.modules.impacts.infrastructure.orm import ImpactMetricRow
-
-
-def to_json(value: BaseModel | None) -> dict[str, object] | None:
-    """Return the JSONB form of an optional value object.
-
-    Args:
-        value: A Pydantic value object, or ``None``.
-
-    Returns:
-        Its JSON-mode dump, or ``None``.
-    """
-    return None if value is None else value.model_dump(mode="json")
+from yakhnama.platform.db import dump_json_column
 
 
 def metric_to_row(metric: ImpactMetric) -> ImpactMetricRow:
@@ -38,16 +25,16 @@ def metric_to_row(metric: ImpactMetric) -> ImpactMetricRow:
         id=metric.id,
         code=metric.code,
         labels=metric.labels.model_dump(mode="json"),
-        description=to_json(metric.description),
+        description=dump_json_column(metric.description),
         category=metric.category.value,
         value_kind=metric.value_kind.value,
         unit=metric.unit,
         currency=metric.currency,
-        sendai=to_json(metric.sendai),
-        desinventar=to_json(metric.desinventar),
+        sendai=dump_json_column(metric.sendai),
+        desinventar=dump_json_column(metric.desinventar),
         aggregation=metric.aggregation,
         status=metric.status.value,
-        retirement=to_json(metric.retirement),
+        retirement=dump_json_column(metric.retirement),
         version=metric.version,
         created_at=metric.created_at,
         updated_at=metric.updated_at,

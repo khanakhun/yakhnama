@@ -36,6 +36,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Final
 from uuid import UUID
 
+from pydantic import BaseModel
 from sqlalchemy import MetaData, Uuid
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.exc import IntegrityError
@@ -156,3 +157,19 @@ def is_unique_violation(error: IntegrityError) -> bool:
         driver error without a SQLSTATE.
     """
     return getattr(error.orig, "sqlstate", None) == UNIQUE_VIOLATION
+
+
+def dump_json_column(value: BaseModel | None) -> dict[str, object] | None:
+    """Return the JSONB column value of an optional Pydantic value object.
+
+    Every JSONB column holds exactly ``model_dump(mode="json")`` of a domain value
+    object, and the module mappers validate it back on read, so a ``dict`` built here
+    never leaves the infrastructure layer.
+
+    Args:
+        value: The value object, or ``None`` for a ``NULL`` column.
+
+    Returns:
+        Its JSON-mode dump, or ``None``.
+    """
+    return None if value is None else value.model_dump(mode="json")

@@ -212,3 +212,24 @@ def test_impact_metric_specification_compiler_with_unknown_leaf_raises_type_erro
 
     with pytest.raises(TypeError, match="_UnknownSpecification"):
         _UnknownSpecification().accept(compiler)
+
+
+async def test_list_impact_metrics_orders_codes_by_code_point_like_sorted(
+    service: SqlAlchemyImpactMetricQueryService, impacts_uow_factory: ImpactsFactory
+) -> None:
+    # A linguistic collation ignores "_" at the first level and would put
+    # "flood_x" after "floodplain"; code-point order puts it first, like sorted().
+    codes = ["floodplain", "flood_x", "flood", "flood_a", "floods"]
+    async with impacts_uow_factory() as uow:
+        for code in codes:
+            await uow.impact_metrics.add(ImpactMetricTestFactory.build(code=code))
+        await uow.commit()
+
+    paged = await _all_pages(
+        service, ListImpactMetrics(include_retired=True, page=PageRequest(limit=2))
+    )
+    async with impacts_uow_factory() as uow:
+        registry = await uow.impact_metrics.list_all()
+
+    assert [item.code for item in paged] == sorted(codes)
+    assert list(registry.codes()) == sorted(codes)

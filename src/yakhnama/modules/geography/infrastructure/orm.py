@@ -28,7 +28,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    text,
+)
+from sqlalchemy import (
+    text as sql_text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -138,7 +140,8 @@ class PlaceNameRow(Base):
             "place_id",
             "language",
             unique=True,
-            postgresql_where=text("is_preferred"),
+            # sql_text, because the class attribute ``text`` below shadows the name.
+            postgresql_where=sql_text("is_preferred"),
         ),
     )
 

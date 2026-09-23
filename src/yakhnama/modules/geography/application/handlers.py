@@ -152,11 +152,12 @@ class LoadReferencePlacesHandler:
 
     New codes are created, parents first. Existing active places get only additive
     changes: missing names are added, a name the file marks preferred becomes
-    preferred, and a centroid the file sets is applied. Names and centroids the
-    file lacks are kept, because other sources may have added them. A different
-    level or parent, a different name kind, or any change to a merged or retired
-    place is reported in ``skipped_with_reason`` and left for a moderator. Nothing
-    is deleted. Loading the same file twice changes nothing the second time.
+    preferred, and the file's centroid is set where none is stored. Names and
+    centroids the file lacks are kept, because other sources may have added them.
+    A different level, parent, name kind or stored centroid, and any change to a
+    merged or retired place, is reported in ``skipped_with_reason`` and left for a
+    moderator. Nothing is deleted. Loading the same file twice changes nothing the
+    second time.
 
     Implements: Command Handler.
     """
@@ -255,12 +256,23 @@ class LoadReferencePlacesHandler:
         if current.parent_id != (None if parent is None else parent.id):
             reasons.append("parent differs; moving a place is left to a moderator")
         for name in draft.names:
-            stored = next((n for n in current.names if n.key == name.key), None)
+            stored = next(
+                (existing for existing in current.names if existing.key == name.key),
+                None,
+            )
             if stored is not None and stored.kind != name.kind:
                 reasons.append(
                     f"name {name.text!r} ({name.language}) has kind {stored.kind!r}, "
                     f"file says {name.kind!r}; kinds are not changed in place"
                 )
+        # A stored centroid may come from a better source than the reference file,
+        # so the file only fills a missing one.
+        if (
+            draft.centroid is not None
+            and current.centroid is not None
+            and draft.centroid != current.centroid
+        ):
+            reasons.append("centroid differs; it is not changed in place")
         if not current.is_active:
             if _has_additions(current, draft):
                 reasons.append(
@@ -274,7 +286,10 @@ class LoadReferencePlacesHandler:
     ) -> Place:
         state = current
         for name in draft.names:
-            stored = next((n for n in state.names if n.key == name.key), None)
+            stored = next(
+                (existing for existing in state.names if existing.key == name.key),
+                None,
+            )
             if stored is None:
                 state = state.add_name(
                     name, clock=self._clock, ids=self._ids
@@ -287,7 +302,7 @@ class LoadReferencePlacesHandler:
                     clock=self._clock,
                     ids=self._ids,
                 ).record_into(uow)
-        if draft.centroid is not None:
+        if draft.centroid is not None and state.centroid is None:
             state = state.set_centroid(
                 draft.centroid, clock=self._clock, ids=self._ids
             ).record_into(uow)
@@ -300,4 +315,4 @@ def _has_additions(place: Place, draft: PlaceDraft) -> bool:
         match = stored.get(name.key)
         if match is None or (name.is_preferred and not match.is_preferred):
             return True
-    return draft.centroid is not None and draft.centroid != place.centroid
+    return draft.centroid is not None and place.centroid is None

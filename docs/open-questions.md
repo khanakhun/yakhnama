@@ -471,6 +471,7 @@ or the module's `application/` code.
 - **Proposed default:** Keep the current scope (labels, retirement, names, centroids applied in place; everything else skipped and reported) until Phase 3 needs a wider in-place update.
 - **Blocking:** no
 - **Status:** open (raised from the T9 report)
+- **Update (2026-09-23, standards review):** a stored centroid that differs from the file's is no longer overwritten; it is reported as skipped (`centroid differs; it is not changed in place`). Only a missing centroid is filled in.
 
 ## Q44 — Seed is not atomic across modules
 

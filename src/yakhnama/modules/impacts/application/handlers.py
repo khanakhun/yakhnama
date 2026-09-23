@@ -20,7 +20,10 @@ from yakhnama.modules.impacts.application.ports import (
     ImpactsUnitOfWorkFactory,
 )
 from yakhnama.modules.impacts.domain.entities import ImpactMetric
-from yakhnama.modules.impacts.domain.errors import ImpactMetricNotFoundError
+from yakhnama.modules.impacts.domain.errors import (
+    ImpactMetricNotFoundError,
+    InconsistentMetricDefinitionError,
+)
 from yakhnama.modules.impacts.domain.factories import ImpactMetricFactory
 from yakhnama.modules.impacts.domain.reference import ImpactMetricReferenceEntry
 from yakhnama.modules.impacts.domain.value_objects import MetricStatus
@@ -93,15 +96,23 @@ class RetireImpactMetricHandler:
             PermissionDeniedError: If the policy refuses ``command.actor_id``.
             ImpactMetricNotFoundError: If the metric, or the replacement named in
                 ``reason.replaced_by``, does not exist.
+            InconsistentMetricDefinitionError: If ``reason.replaced_by`` is the
+                metric's own code.
             ImpactMetricRetiredError: If the metric is already retired.
-            pydantic.ValidationError: If the metric would replace itself.
         """
         _require_allowed(self._policy, command.actor_id, "retire impact metrics")
+        replaced_by = command.reason.replaced_by
+        # Checked here so the caller gets a domain error, not the Pydantic error the
+        # aggregate's invariant would raise when the retired state is built.
+        if replaced_by == command.ref.code:
+            message = f"impact metric {replaced_by!r} cannot be replaced by itself"
+            raise InconsistentMetricDefinitionError(
+                message, details={"code": replaced_by}
+            )
         async with self._uow_factory() as uow:
             current = await uow.impact_metrics.get_by_code(command.ref.code)
             if current is None:
                 raise _not_found(command.ref.code)
-            replaced_by = command.reason.replaced_by
             if (
                 replaced_by is not None
                 and await uow.impact_metrics.get_by_code(replaced_by) is None

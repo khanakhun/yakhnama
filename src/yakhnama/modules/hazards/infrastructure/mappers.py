@@ -7,22 +7,9 @@ this boundary instead of travelling on as a ``dict``.
 Patterns: Anti-Corruption Layer (mapper).
 """
 
-from pydantic import BaseModel
-
 from yakhnama.modules.hazards.domain.entities import HazardType
 from yakhnama.modules.hazards.infrastructure.orm import HazardTypeRow
-
-
-def to_json(value: BaseModel | None) -> dict[str, object] | None:
-    """Return the JSONB form of an optional value object.
-
-    Args:
-        value: A Pydantic value object, or ``None``.
-
-    Returns:
-        Its JSON-mode dump, or ``None``.
-    """
-    return None if value is None else value.model_dump(mode="json")
+from yakhnama.platform.db import dump_json_column
 
 
 def hazard_type_to_row(hazard_type: HazardType) -> HazardTypeRow:
@@ -39,11 +26,11 @@ def hazard_type_to_row(hazard_type: HazardType) -> HazardTypeRow:
         code=hazard_type.code,
         parent_code=hazard_type.parent_code,
         labels=hazard_type.labels.model_dump(mode="json"),
-        description=to_json(hazard_type.description),
+        description=dump_json_column(hazard_type.description),
         alignment=hazard_type.alignment.model_dump(mode="json"),
         attributes_schema=hazard_type.attributes_schema,
         status=hazard_type.status.value,
-        retirement=to_json(hazard_type.retirement),
+        retirement=dump_json_column(hazard_type.retirement),
         version=hazard_type.version,
         created_at=hazard_type.created_at,
         updated_at=hazard_type.updated_at,

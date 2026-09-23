@@ -442,3 +442,89 @@ def test_search_text_collector_finds_text_leaves_under_every_combinator() -> Non
     leaves = tree.accept(SearchTextCollector())
 
     assert leaves == (first, second)
+
+
+# (text, language, script) of one name per place: diacritics, letters NFKD leaves
+# alone, Arabic script with harakat, a ligature NFKD expands, and digits only.
+SUPERSET_NAMES: tuple[tuple[str, str, ScriptCode | None], ...] = (
+    ("Hunzā", "en", None),
+    ("Test Łódź", "en", ScriptCode.LATN),
+    ("Test Ørsta", "en", None),
+    ("هُنزَہ", "ur", ScriptCode.ARAB),
+    ("ﬁeld Test", "en", None),
+    ("1234", "en", None),
+)
+SUPERSET_QUERIES = (
+    "hunza",
+    "HUNZĀ",
+    "łódź",
+    "lodz",
+    "ørsta",
+    "orsta",
+    "هنزہ",
+    "هُنزَہ",
+    "ﬁ",
+    "field",
+    "23",
+    "test",
+    "zz",
+)
+
+
+async def test_search_places_returns_every_place_the_in_memory_rule_matches(
+    service: SqlAlchemyPlaceQueryService, geography_uow_factory: GeographyFactory
+) -> None:
+    country = PlaceTestFactory.build(
+        level=AdminLevel.COUNTRY,
+        names=_names_of(PlaceName(text="Country", language="en")),
+    )
+    places = [
+        PlaceTestFactory.build(
+            level=AdminLevel.DISTRICT,
+            parent_id=country.id,
+            names=_names_of(
+                PlaceName(
+                    text=text,
+                    language=language,
+                    script=script,
+                    source_id=None if language == "en" else URDU_SOURCE_ID,
+                )
+            ),
+        )
+        for text, language, script in SUPERSET_NAMES
+    ]
+    stored = (country, *places)
+    async with geography_uow_factory() as uow:
+        for place in stored:
+            await uow.places.add(place)
+        await uow.commit()
+
+    missing: dict[str, set[UUID]] = {}
+    expected_counts: dict[str, int] = {}
+    found_by_query: dict[str, set[UUID]] = {}
+    for text in SUPERSET_QUERIES:
+        expected = {
+            place.id
+            for place in stored
+            if PlaceTextSpecification(text).is_satisfied_by(place)
+        }
+        page = await service.search(
+            SearchPlaces(text=text, include_inactive=True, page=PageRequest(limit=200))
+        )
+        found = {item.id for item in page.items}
+        expected_counts[text] = len(expected)
+        found_by_query[text] = found
+        if not expected <= found:
+            missing[text] = expected - found
+
+    assert missing == {}
+    # Guard against a vacuous pass: the in-memory rule matches every query except
+    # the control and the two without the special letter, which only the SQL side
+    # folds (unaccent). SQL finds those places anyway, as it may match more.
+    unmatched_in_memory = [
+        text for text, count in expected_counts.items() if count == 0
+    ]
+    assert unmatched_in_memory == ["lodz", "orsta", "zz"]
+    assert found_by_query["lodz"] == {places[1].id}
+    assert found_by_query["orsta"] == {places[2].id}
+    assert found_by_query["zz"] == set()

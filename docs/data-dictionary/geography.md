@@ -108,11 +108,13 @@ an entry in the same file (**proposed**).
 ## Storage-only columns (`place_names` table)
 
 Most columns of the `places` and `place_names` tables hold the fields above one to one
-(`src/yakhnama/modules/geography/infrastructure/orm.py`). These two columns exist only in
+(`src/yakhnama/modules/geography/infrastructure/orm.py`). The columns below exist only in
 storage and are never part of the domain model or the public dataset.
 
 | field | type | unit | meaning | provenance | since |
 |-------|------|------|---------|------------|-------|
+| `place_names.id` | `uuid` | — | Primary key of a name row. Deterministic UUIDv5 (fixed namespace `PLACE_NAME_ID_NAMESPACE`) over the place id, `text`, `language` and `script`, computed by `mappers.place_name_row_id`; it is **not** a UUIDv7 and carries no time. The same name of the same place keeps the same id across saves, because name rows are deleted and re-inserted on every save. Not an identity of the domain, where a name is a value object. | Computed by the repository mapper on every save. | Phase 1 |
+| `place_names.place_id` | `uuid` | — | The place the name belongs to. Foreign key to `places.id` with `ON DELETE CASCADE`: names are part of the place aggregate (places themselves are never deleted, only retired or merged). | Set by the repository mapper from `Place.id`. | Phase 1 |
 | `place_names.position` | `smallint`, from 0 | — | Zero-based position of the name in `Place.names`, so names read back in the order they were recorded. It is unique per place (`uq_place_names_place_id_position`). It is rewritten whenever the place is saved, so it is not a stable identifier. | Computed by the repository mapper on every save. | Phase 1 |
 | `place_names.text_folded` | `text` | — | The search form of `text`: Unicode NFKD with combining marks removed, case-folded and trimmed (`fold_search_text`). For a Latin-script name it also goes through PostgreSQL `unaccent`, so letters such as `ł` or `ø` fold as well. It is unbounded, because folding can make a name longer. A GIN trigram index serves similarity and substring search. It is never displayed. | Derived from `text` by the repository mapper and the database on every save. | Phase 1 |
 

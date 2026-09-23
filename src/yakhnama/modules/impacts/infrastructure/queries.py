@@ -47,6 +47,13 @@ _SUMMARY_COLUMNS: Final = (
 )
 
 
+# Binary ("C") collation: the database default (en_US.utf8 in the PostGIS image)
+# ignores "_" at the first comparison level, so "flood_x" would sort after
+# "floodplain". Code-point order matches Python's sorted(), which the fakes use, and
+# the keyset comparison must use the same collation as the ORDER BY.
+_CODE_ORDER: Final = ImpactMetricRow.code.collate("C")
+
+
 class ImpactMetricSpecificationCompiler:
     """Compiles an impact metric specification tree to a boolean SQL expression.
 
@@ -149,14 +156,14 @@ class SqlAlchemyImpactMetricQueryService:
             ValidationError: If the cursor is invalid.
         """
         cursor = query.page.decode_cursor()
-        statement = select(*_SUMMARY_COLUMNS).order_by(ImpactMetricRow.code)
+        statement = select(*_SUMMARY_COLUMNS).order_by(_CODE_ORDER)
         specification = query.to_specification()
         if specification is not None:
             statement = statement.where(
                 specification.accept(ImpactMetricSpecificationCompiler())
             )
         if cursor is not None:
-            statement = statement.where(ImpactMetricRow.code > cursor.sort_key)
+            statement = statement.where(cursor.sort_key < _CODE_ORDER)
         # One extra row tells whether a next page exists without COUNT(*).
         statement = statement.limit(query.page.limit + 1)
         async with self._session_factory() as session:

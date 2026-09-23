@@ -181,3 +181,22 @@ def test_hazard_type_specification_compiler_with_unknown_leaf_raises_type_error(
 
     with pytest.raises(TypeError, match="_UnknownSpecification"):
         _UnknownSpecification().accept(compiler)
+
+
+async def test_list_hazard_types_orders_codes_by_code_point_like_sorted(
+    service: SqlAlchemyHazardTypeQueryService, hazards_uow_factory: HazardsFactory
+) -> None:
+    # A linguistic collation ignores "_" at the first level and would put
+    # "flood_x" after "floodplain"; code-point order puts it first, like sorted().
+    codes = ["floodplain", "flood_x", "flood", "flood_a", "floods"]
+    async with hazards_uow_factory() as uow:
+        for code in codes:
+            await uow.hazard_types.add(HazardTypeTestFactory.build(code=code))
+        await uow.commit()
+
+    paged = await _all_pages(service, include_retired=True, limit=2)
+    async with hazards_uow_factory() as uow:
+        taxonomy = await uow.hazard_types.list_all()
+
+    assert [item.code for item in paged] == sorted(codes)
+    assert [item.code for item in taxonomy.hazard_types] == sorted(codes)

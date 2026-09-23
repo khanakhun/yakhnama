@@ -17,6 +17,7 @@ from tests.fakes.seed import (
     AllowAllPolicy,
     DenyAllPolicy,
     FakeReferenceFileReader,
+    parse_reference_file,
 )
 from tests.fakes.uow import InMemoryUnitOfWorkFactory
 from yakhnama.modules.geography.application.handlers import (
@@ -25,6 +26,7 @@ from yakhnama.modules.geography.application.handlers import (
 from yakhnama.modules.hazards.application.handlers import (
     LoadReferenceHazardTypesHandler,
 )
+from yakhnama.modules.hazards.public import HazardTypeReferenceFile
 from yakhnama.modules.impacts.application.handlers import (
     LoadReferenceImpactMetricsHandler,
 )
@@ -34,7 +36,7 @@ from yakhnama.seed.application import (
     SeedReferenceData,
     SeedReferenceDataHandler,
 )
-from yakhnama.shared_kernel.errors import PermissionDeniedError
+from yakhnama.shared_kernel.errors import PermissionDeniedError, ValidationError
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
 ACTOR_ID = SequentialIdGenerator(seed=99).new_id()
@@ -188,3 +190,10 @@ def test_actor_allow_list_policy_denies_unknown_and_unlisted_actors() -> None:
     assert policy.is_allowed(other) is False
     assert policy.is_allowed(None) is False
     assert ActorAllowListPolicy([]).is_allowed(ACTOR_ID) is False
+
+
+def test_parse_reference_file_with_wrong_model_raises_kernel_validation_error() -> None:
+    with pytest.raises(ValidationError) as raised:
+        parse_reference_file(HazardTypeReferenceFile, PLACES_FILE)
+
+    assert raised.value.details["file"] == PLACES_FILE

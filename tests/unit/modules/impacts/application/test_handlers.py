@@ -1,6 +1,5 @@
 """Unit tests for the impacts command handlers, with in-memory fakes only."""
 
-import pydantic
 import pytest
 
 from tests.fakes.clock import FrozenClock
@@ -26,6 +25,7 @@ from yakhnama.modules.impacts.application.ports import ImpactsUnitOfWorkFactory
 from yakhnama.modules.impacts.domain.errors import (
     ImpactMetricNotFoundError,
     ImpactMetricRetiredError,
+    InconsistentMetricDefinitionError,
 )
 from yakhnama.modules.impacts.domain.events import (
     ImpactMetricCreated,
@@ -303,10 +303,13 @@ async def test_retire_impact_metric_when_retired_raises_invalid_transition() -> 
     assert uow.committed_events == ()
 
 
-async def test_retire_impact_metric_replacing_itself_raises_validation_error() -> None:
+async def test_retire_self_replacing_raises_inconsistent_metric_definition_error() -> (
+    None
+):
     uow, factory = unit_of_work((stored_metric("example_a"),))
 
-    with pytest.raises(pydantic.ValidationError):
+    with pytest.raises(InconsistentMetricDefinitionError):
         await retire_handler(factory)(retire_command(replaced_by="example_a"))
 
-    assert uow.committed is False
+    assert factory.calls == 0
+    assert uow.impact_metrics.committed["example_a"].is_active is True

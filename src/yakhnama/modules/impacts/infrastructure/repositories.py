@@ -25,10 +25,9 @@ from yakhnama.modules.impacts.domain.registry import ImpactMetricRegistry
 from yakhnama.modules.impacts.infrastructure.mappers import (
     metric_to_row,
     row_to_metric,
-    to_json,
 )
 from yakhnama.modules.impacts.infrastructure.orm import ImpactMetricRow
-from yakhnama.platform.db import is_unique_violation
+from yakhnama.platform.db import dump_json_column, is_unique_violation
 from yakhnama.shared_kernel.errors import ConflictError
 
 if TYPE_CHECKING:
@@ -78,7 +77,10 @@ class SqlAlchemyImpactMetricRepository:
         """
         rows = (
             await self._session.execute(
-                select(ImpactMetricRow).order_by(ImpactMetricRow.code)
+                select(ImpactMetricRow).order_by(
+                    # Code-point order, as the fakes' sorted(); see queries.py.
+                    ImpactMetricRow.code.collate("C")
+                )
             )
         ).scalars()
         return ImpactMetricRegistry.from_metrics([self._track(row) for row in rows])
@@ -127,16 +129,16 @@ class SqlAlchemyImpactMetricRepository:
             )
             .values(
                 labels=metric.labels.model_dump(mode="json"),
-                description=to_json(metric.description),
+                description=dump_json_column(metric.description),
                 category=metric.category.value,
                 value_kind=metric.value_kind.value,
                 unit=metric.unit,
                 currency=metric.currency,
-                sendai=to_json(metric.sendai),
-                desinventar=to_json(metric.desinventar),
+                sendai=dump_json_column(metric.sendai),
+                desinventar=dump_json_column(metric.desinventar),
                 aggregation=metric.aggregation,
                 status=metric.status.value,
-                retirement=to_json(metric.retirement),
+                retirement=dump_json_column(metric.retirement),
                 version=metric.version,
                 updated_at=metric.updated_at,
             )

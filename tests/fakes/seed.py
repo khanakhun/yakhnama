@@ -12,10 +12,13 @@ Patterns: Fake.
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from yakhnama.modules.geography.public import PlaceReferenceFile
 from yakhnama.modules.hazards.public import HazardTypeReferenceFile
 from yakhnama.modules.impacts.public import ImpactMetricReferenceFile
+from yakhnama.shared_kernel.errors import ValidationError
 from yakhnama.shared_kernel.ids import EntityId
 
 REFERENCE_DIRECTORY = Path(__file__).resolve().parents[2] / "data" / "reference"
@@ -36,6 +39,27 @@ def read_reference_yaml(name: str) -> object:
         The parsed, still unvalidated document.
     """
     return yaml.safe_load((REFERENCE_DIRECTORY / name).read_text(encoding="utf-8"))
+
+
+def parse_reference_file[ModelT: BaseModel](model: type[ModelT], name: str) -> ModelT:
+    """Parse and validate one reference file, as the real adapter must.
+
+    Args:
+        model: The reference file model.
+        name: File name inside ``data/reference``.
+
+    Returns:
+        The validated model.
+
+    Raises:
+        ValidationError: The kernel error, if the document does not match
+            ``model``; the ``ReferenceFileReader`` port promises no other error.
+    """
+    try:
+        return model.model_validate(read_reference_yaml(name))
+    except PydanticValidationError as error:
+        message = f"reference file {name!r} is invalid"
+        raise ValidationError(message, details={"file": name}) from error
 
 
 class FakeReferenceFileReader:
@@ -75,9 +99,7 @@ class FakeReferenceFileReader:
         self.reads.append(HAZARD_TYPES_FILE)
         if self._hazard_types is not None:
             return self._hazard_types
-        return HazardTypeReferenceFile.model_validate(
-            read_reference_yaml(HAZARD_TYPES_FILE)
-        )
+        return parse_reference_file(HazardTypeReferenceFile, HAZARD_TYPES_FILE)
 
     def read_impact_metrics(self) -> ImpactMetricReferenceFile:
         """Return the impact metric reference file.
@@ -88,9 +110,7 @@ class FakeReferenceFileReader:
         self.reads.append(IMPACT_METRICS_FILE)
         if self._impact_metrics is not None:
             return self._impact_metrics
-        return ImpactMetricReferenceFile.model_validate(
-            read_reference_yaml(IMPACT_METRICS_FILE)
-        )
+        return parse_reference_file(ImpactMetricReferenceFile, IMPACT_METRICS_FILE)
 
     def read_places(self) -> PlaceReferenceFile:
         """Return the place hierarchy reference file.
@@ -101,7 +121,7 @@ class FakeReferenceFileReader:
         self.reads.append(PLACES_FILE)
         if self._places is not None:
             return self._places
-        return PlaceReferenceFile.model_validate(read_reference_yaml(PLACES_FILE))
+        return parse_reference_file(PlaceReferenceFile, PLACES_FILE)
 
 
 class AllowAllPolicy:

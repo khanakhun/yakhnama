@@ -24,10 +24,9 @@ from yakhnama.modules.hazards.domain.errors import HazardTypeNotFoundError
 from yakhnama.modules.hazards.infrastructure.mappers import (
     hazard_type_to_row,
     row_to_hazard_type,
-    to_json,
 )
 from yakhnama.modules.hazards.infrastructure.orm import HazardTypeRow
-from yakhnama.platform.db import is_unique_violation
+from yakhnama.platform.db import dump_json_column, is_unique_violation
 from yakhnama.shared_kernel.errors import ConflictError
 
 if TYPE_CHECKING:
@@ -80,7 +79,10 @@ class SqlAlchemyHazardTypeRepository:
         """
         rows = (
             await self._session.execute(
-                select(HazardTypeRow).order_by(HazardTypeRow.code)
+                select(HazardTypeRow).order_by(
+                    # Code-point order, as the fakes' sorted(); see queries.py.
+                    HazardTypeRow.code.collate("C")
+                )
             )
         ).scalars()
         return HazardTaxonomy.of([self._track(row) for row in rows])
@@ -132,11 +134,11 @@ class SqlAlchemyHazardTypeRepository:
             .values(
                 parent_code=hazard_type.parent_code,
                 labels=hazard_type.labels.model_dump(mode="json"),
-                description=to_json(hazard_type.description),
+                description=dump_json_column(hazard_type.description),
                 alignment=hazard_type.alignment.model_dump(mode="json"),
                 attributes_schema=hazard_type.attributes_schema,
                 status=hazard_type.status.value,
-                retirement=to_json(hazard_type.retirement),
+                retirement=dump_json_column(hazard_type.retirement),
                 version=hazard_type.version,
                 updated_at=hazard_type.updated_at,
             )

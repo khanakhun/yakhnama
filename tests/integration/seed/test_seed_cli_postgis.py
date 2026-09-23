@@ -98,9 +98,12 @@ async def test_seed_module_dry_run_subprocess_exits_zero_and_writes_nothing(
     session_factory: async_sessionmaker[AsyncSession],
     tmp_path: Path,
 ) -> None:
+    # Drop every YAKHNAMA_* variable from the developer or runner shell so nothing
+    # (an OTLP endpoint, a fixed actor id, echo) can change what the seed does.
     environment = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if not k.startswith("YAKHNAMA_")},
         "YAKHNAMA_DATABASE_URL": postgis_url,
+        "YAKHNAMA_OTEL_ENABLED": "false",
         "YAKHNAMA_LOG_FORMAT": "json",
         "YAKHNAMA_REFERENCE_DATA_DIR": str(REFERENCE_DIRECTORY),
     }

@@ -5,12 +5,13 @@ Patterns: Query, Specification.
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 
 from yakhnama.modules.geography.application.specifications import (
     ActivePlaceSpecification,
     PlaceLevelSpecification,
     PlaceTextSpecification,
+    fold_search_text,
 )
 from yakhnama.modules.geography.domain.entities import Place
 from yakhnama.modules.geography.domain.value_objects import AdminLevel
@@ -21,13 +22,27 @@ from yakhnama.shared_kernel.value_objects import LanguageCode
 
 SEARCH_TEXT_MAX_LENGTH = 100
 
+
+def _require_text_after_folding(value: str) -> str:
+    """Reject input that folds to nothing, which would otherwise match every name.
+
+    Combining marks alone (for example ``"\u0301"``) pass the length check but
+    fold to an empty string, and an empty pattern is a full-table wildcard.
+    """
+    if fold_search_text(value) == "":
+        message = "search text is empty after folding"
+        raise ValueError(message)
+    return value
+
+
 SearchText = Annotated[
     str,
     StringConstraints(
         strip_whitespace=True, min_length=1, max_length=SEARCH_TEXT_MAX_LENGTH
     ),
+    AfterValidator(_require_text_after_folding),
 ]
-"""Place search input: 1 to 100 characters after stripping."""
+"""Place search input: 1 to 100 characters after stripping, non-empty once folded."""
 
 
 class SearchPlaces(BaseModel):

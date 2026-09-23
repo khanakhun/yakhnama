@@ -195,6 +195,28 @@ async def test_load_reference_places_with_new_centroid_sets_it() -> None:
     ]
 
 
+async def test_load_reference_places_with_other_stored_centroid_keeps_it() -> None:
+    stored_centroid = Coordinates(longitude=74.5, latitude=36.0)
+    file_centroid = Coordinates(longitude=75.0, latitude=35.5)
+    uow, factory = unit_of_work(
+        stored_places(
+            reference_file(
+                entry("xx", "country", centroid=stored_centroid.model_dump())
+            )
+        )
+    )
+    file = reference_file(entry("xx", "country", centroid=file_centroid.model_dump()))
+
+    report = await load_handler(factory)(load(file))
+
+    assert report.unchanged == ("xx",)
+    assert [skip.reason for skip in report.skipped_with_reason] == [
+        "centroid differs; it is not changed in place"
+    ]
+    assert uow.places.committed_by_code()["xx"].centroid == stored_centroid
+    assert uow.committed_events == ()
+
+
 async def test_load_reference_places_with_other_level_and_parent_skips_both() -> None:
     stored = reference_file(
         entry("xx", "country"),

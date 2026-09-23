@@ -24,6 +24,9 @@ from yakhnama.seed.infrastructure import (
 )
 from yakhnama.shared_kernel.errors import ValidationError
 
+# Reads and writes real files under tmp_path, so it lives in the integration tier.
+pytestmark = pytest.mark.integration
+
 # A marker that must never appear in an error: it stands for file content.
 CONTENT_MARKER: Final = "marker-from-file-content-4f1c"
 
