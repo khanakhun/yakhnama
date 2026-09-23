@@ -1,0 +1,67 @@
+# Pre-commit hooks, in the order of the kickoff specification §13.5.
+# Local hooks call the project's own Poetry environment so versions match
+# pyproject.toml and poetry.lock exactly; remote repos are pinned to a commit SHA.
+# Install with: poetry run pre-commit install
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: poetry run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-check
+        name: ruff check
+        entry: poetry run ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # mypy runs over the configured `files` set (src, tests, .claude/hooks) so
+      # cross-module type errors surface even when only one file is staged.
+      - id: mypy
+        name: mypy --strict
+        entry: poetry run mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+
+      - id: lint-imports
+        name: import-linter contracts
+        entry: poetry run lint-imports
+        language: system
+        types_or: [python, toml]
+        pass_filenames: false
+
+      - id: gitleaks
+        name: gitleaks (staged changes)
+        entry: gitleaks git --pre-commit --staged --redact --no-banner
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: poetry-check-lock
+        name: poetry check --lock
+        entry: poetry check --lock
+        language: system
+        files: ^(pyproject\.toml|poetry\.lock)$
+        pass_filenames: false
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: 3f5ccc87b27966d9ed21cf5ea8ec2fba38ca65ce # frozen: v4.19.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]

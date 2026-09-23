@@ -1,0 +1,297 @@
+# Continuous integration: the same Poe tasks developers run locally (AGENTS.md §4.1).
+#
+# Every third-party action is pinned to a full commit SHA; the comment names the tag.
+# The setup steps are YAML anchors (&name) defined in the `lint` job and reused (*name)
+# by the other jobs, so every job installs Python and Poetry the same way.
+#
+# Jobs that cannot run yet (integration tests, migrations, contract snapshot) are
+# declared now and gated by the `detect` job, which checks whether their files exist.
+# `hashFiles()` is not available in a job-level `if:`, hence the separate job.
+name: CI
+
+on:
+  push:
+    branches: [main, "phase/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  POETRY_NO_INTERACTION: "1"
+  POETRY_VIRTUALENVS_IN_PROJECT: "true"
+  PYTHONDONTWRITEBYTECODE: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  detect:
+    name: Detect optional suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      integration: ${{ steps.files.outputs.integration }}
+      migrations: ${{ steps.files.outputs.migrations }}
+      contract: ${{ steps.files.outputs.contract }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: files
+        name: Check which suites exist
+        run: |
+          echo "integration=${{ hashFiles('tests/integration/**/*.py') != '' }}" >> "$GITHUB_OUTPUT"
+          echo "migrations=${{ hashFiles('migrations/env.py') != '' }}" >> "$GITHUB_OUTPUT"
+          echo "contract=${{ hashFiles('tests/contract/openapi.json') != '' }}" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint, types, architecture (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - &checkout
+        name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - &setup-python
+        name: Set up Python ${{ matrix.python }}
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - &install-poetry
+        name: Install Poetry and the export plugin (pinned)
+        run: |
+          pipx install "poetry==2.5.1"
+          poetry self add "poetry-plugin-export==1.10.1"
+          poetry env use "${{ steps.python.outputs.python-path }}"
+      - &cache-venv
+        name: Cache the Poetry virtualenv
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('poetry.lock') }}
+      - &install-dependencies
+        name: Install dependencies
+        run: poetry sync
+      - name: Lint
+        run: poetry run poe lint
+      - name: Type check
+        run: poetry run poe typecheck
+      - name: Architecture contracts
+        run: poetry run poe arch
+
+  test-unit:
+    name: Unit tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - *checkout
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: Unit tests with coverage
+        run: poetry run poe test-unit
+      - name: Upload coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-py${{ matrix.python }}
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  test-api:
+    name: API and architecture tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - *checkout
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: API and architecture tests
+        run: poetry run poe test-api
+
+  # The coverage gate and the input to diff-cover: unit, API and architecture tests
+  # together, exactly like the local `poe cov`, so diff-cover sees the same lines covered
+  # in CI as on a developer machine.
+  cov:
+    name: Coverage gate (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - *checkout
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: All non-integration tests with the coverage gate
+        run: poetry run poe cov
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-combined-py${{ matrix.python }}
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  test-integration:
+    name: Integration tests (py${{ matrix.python }})
+    needs: detect
+    if: ${{ needs.detect.outputs.integration == 'true' }}
+    # testcontainers needs a Docker daemon; GitHub-hosted ubuntu-latest runners have one.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    services:
+      postgis: &postgis
+        # Pinned by digest (same as docker-compose.yml); the tag is kept for readability.
+        image: postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
+        env:
+          POSTGRES_USER: yakhnama
+          POSTGRES_PASSWORD: yakhnama-ci-only
+          POSTGRES_DB: yakhnama
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yakhnama -d yakhnama"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env: &database-env
+      # Proposed settings name; confirm once platform/settings.py defines the field.
+      YAKHNAMA_DATABASE_URL: postgresql+asyncpg://yakhnama:yakhnama-ci-only@localhost:5432/yakhnama
+    steps:
+      - *checkout
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: Integration tests
+        run: poetry run poe test-integration
+
+  migrations:
+    name: Migrations round trip (py${{ matrix.python }})
+    needs: detect
+    if: ${{ needs.detect.outputs.migrations == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    services:
+      postgis: *postgis
+    env: *database-env
+    steps:
+      - *checkout
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: Upgrade, downgrade, check
+        run: |
+          poetry run alembic upgrade head
+          poetry run alembic downgrade base
+          poetry run alembic upgrade head
+          poetry run alembic check
+
+  contract:
+    name: OpenAPI contract
+    needs: detect
+    if: ${{ needs.detect.outputs.contract == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python: ["3.13"]
+    steps:
+      - *checkout
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: Contract tests
+        run: poetry run pytest tests/contract
+
+  diff-cover:
+    name: Coverage on changed lines
+    needs: cov
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python: ["3.13"]
+    steps:
+      - *checkout
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: Download coverage report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-combined-py${{ matrix.python }}
+      - name: diff-cover against origin/main
+        run: poetry run diff-cover coverage.xml --compare-branch=origin/main --fail-under=90
+
+  security:
+    name: Secrets and dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # gitleaks-action lists the commits of a pull request through the API.
+      pull-requests: read
+    strategy:
+      matrix:
+        python: ["3.13"]
+    steps:
+      - *checkout
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required only when the repository belongs to an organisation.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          # Commenting would need pull-requests: write; findings fail the job instead.
+          GITLEAKS_ENABLE_COMMENTS: "false"
+      - *setup-python
+      - *install-poetry
+      - *cache-venv
+      - *install-dependencies
+      - name: pip-audit
+        # `shell: bash` runs with `-eo pipefail`, so a failing `poetry export` fails the
+        # step instead of feeding pip-audit an empty list that audits clean. The export
+        # pins every package, so pip-audit needs neither pip nor dependency resolution.
+        shell: bash
+        run: >-
+          poetry export --without-hashes --all-groups -f requirements.txt
+          | poetry run pip-audit --strict --progress-spinner off --no-deps --disable-pip
+          -r /dev/stdin
