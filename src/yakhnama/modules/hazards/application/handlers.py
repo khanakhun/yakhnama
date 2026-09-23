@@ -1,17 +1,20 @@
 """Write-side use cases of the hazards module.
 
-Every handler asks its ``AdminOnlyPolicy`` first and raises ``PermissionDeniedError``
-before opening a unit of work, so nothing is read or staged for a refused actor. Each
-change goes through ``HazardTaxonomy.with_hazard_type`` before it is staged, because
-rules spanning several types (existing parents and replacements, no cycles, unique
-codes) live in the taxonomy, not in the single aggregate.
+Every handler asks its ``AuthorisationPolicy`` first and raises
+``PermissionDeniedError`` before opening a unit of work, so nothing is read or staged
+for a refused actor. Each change goes through ``HazardTaxonomy.with_hazard_type`` before
+it is staged, because rules spanning several types (existing parents and replacements,
+no cycles, unique codes) live in the taxonomy, not in the single aggregate.
 
 Patterns: Command Handler, Unit of Work, Policy, Domain Events.
 """
 
 from collections.abc import Iterable
 
-from yakhnama.modules.hazards.application.authorisation import AdminOnlyPolicy
+from yakhnama.modules.hazards.application.authorisation import (
+    AuthorisationPolicy,
+    require_allowed,
+)
 from yakhnama.modules.hazards.application.commands import (
     LoadReferenceHazardTypes,
     ReactivateHazardType,
@@ -31,19 +34,8 @@ from yakhnama.modules.hazards.domain.factories import HazardTypeFactory
 from yakhnama.modules.hazards.domain.reference import HazardTypeReferenceEntry
 from yakhnama.modules.hazards.domain.value_objects import HazardTypeStatus
 from yakhnama.shared_kernel.clock import Clock
-from yakhnama.shared_kernel.errors import PermissionDeniedError
 from yakhnama.shared_kernel.events import AggregateChange
-from yakhnama.shared_kernel.ids import EntityId, IdGenerator
-
-
-def _require_allowed(
-    policy: AdminOnlyPolicy, actor_id: EntityId | None, action: str
-) -> None:
-    # The actor id is deliberately left out of the message and details: the error
-    # may be logged or returned, and who was refused is the audit log's business.
-    if not policy.is_allowed(actor_id):
-        message = f"the actor may not {action}"
-        raise PermissionDeniedError(message, details={"action": action})
+from yakhnama.shared_kernel.ids import IdGenerator
 
 
 class RetireHazardTypeHandler:
@@ -55,7 +47,7 @@ class RetireHazardTypeHandler:
     def __init__(
         self,
         uow_factory: HazardsUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
     ) -> None:
@@ -79,13 +71,13 @@ class RetireHazardTypeHandler:
             command: The validated command.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             HazardTypeNotFoundError: If the code does not exist.
             HazardTypeRetiredError: If the type is already retired.
             InvalidTaxonomyError: If ``reason.replaced_by`` is the type itself or
                 does not exist.
         """
-        _require_allowed(self._policy, command.actor_id, "retire hazard types")
+        require_allowed(self._policy, command.actor, action="retire hazard types")
         async with self._uow_factory() as uow:
             taxonomy = await uow.hazard_types.list_all()
             current = taxonomy.resolve(command.ref)
@@ -104,7 +96,7 @@ class ReactivateHazardTypeHandler:
     def __init__(
         self,
         uow_factory: HazardsUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
     ) -> None:
@@ -128,11 +120,11 @@ class ReactivateHazardTypeHandler:
             command: The validated command.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             HazardTypeNotFoundError: If the code does not exist.
             HazardTypeNotRetiredError: If the type is active.
         """
-        _require_allowed(self._policy, command.actor_id, "reactivate hazard types")
+        require_allowed(self._policy, command.actor, action="reactivate hazard types")
         async with self._uow_factory() as uow:
             taxonomy = await uow.hazard_types.list_all()
             current = taxonomy.resolve(command.ref)
@@ -191,7 +183,7 @@ class LoadReferenceHazardTypesHandler:
     def __init__(
         self,
         uow_factory: HazardsUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
         registry: HazardAttributeRegistry = DEFAULT_REGISTRY,
@@ -221,13 +213,13 @@ class LoadReferenceHazardTypesHandler:
             What was created, updated, unchanged or skipped.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             HazardTypeRetiredError: If a new entry sits under a stored retired type.
             InvalidTaxonomyError: If the file and the stored taxonomy together would
                 not form a consistent tree.
         """
-        _require_allowed(
-            self._policy, command.actor_id, "load hazard type reference data"
+        require_allowed(
+            self._policy, command.actor, action="load hazard type reference data"
         )
         entries = _parents_first(command.file.entries)
         async with self._uow_factory() as uow:

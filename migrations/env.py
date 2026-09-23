@@ -34,9 +34,11 @@ from yakhnama.platform.settings import Settings
 # ``yakhnama.modules.<m>.infrastructure.orm`` here as it is written.
 MODEL_MODULES: Final = (
     "yakhnama.platform.outbox.models",
+    "yakhnama.platform.idempotency.models",
     "yakhnama.modules.geography.infrastructure.orm",
     "yakhnama.modules.hazards.infrastructure.orm",
     "yakhnama.modules.impacts.infrastructure.orm",
+    "yakhnama.modules.identity.infrastructure.orm",
 )
 
 # Tables that PostGIS itself creates in the public schema. They are not ours, so

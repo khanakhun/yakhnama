@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI, Request
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
+from tests.fakes.identity import actor_with
 from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.main import create_app
 from yakhnama.modules.geography.infrastructure.queries import (
@@ -20,6 +21,7 @@ from yakhnama.modules.hazards.infrastructure.queries import (
     SqlAlchemyHazardTypeQueryService,
 )
 from yakhnama.modules.hazards.infrastructure.uow import SqlAlchemyHazardsUnitOfWork
+from yakhnama.modules.identity.public import Role
 from yakhnama.modules.impacts.infrastructure.queries import (
     SqlAlchemyImpactMetricQueryService,
 )
@@ -128,15 +130,14 @@ def test_build_container_binds_sqlalchemy_query_services(
     assert isinstance(services[2], SqlAlchemyImpactMetricQueryService)
 
 
-async def test_build_seed_handler_refuses_every_actor_but_the_given_one(
+async def test_build_seed_handler_denies_a_non_admin_actor(
     container: Container,
 ) -> None:
-    ids = SequentialIdGenerator(seed=3)
-    seed_actor, other_actor = ids.new_id(), ids.new_id()
-    handler = build_seed_handler(container, seed_actor)
+    handler = build_seed_handler(container)
+    citizen = actor_with(user_id=SequentialIdGenerator(seed=3).new_id())
 
     with pytest.raises(PermissionDeniedError):
-        await handler(SeedReferenceData(actor_id=other_actor))
+        await handler(SeedReferenceData(actor=citizen))
 
     assert isinstance(handler, SeedReferenceDataHandler)
 
@@ -149,11 +150,12 @@ async def test_build_seed_handler_reads_the_settings_reference_directory(
     container = build_container(
         settings.model_copy(update={"reference_data_dir": tmp_path})
     )
-    seed_actor = SequentialIdGenerator(seed=4).new_id()
-    handler = build_seed_handler(container, seed_actor)
+    # Any admin actor is allowed, whatever its id.
+    admin = actor_with({Role.ADMIN}, user_id=SequentialIdGenerator(seed=4).new_id())
+    handler = build_seed_handler(container)
 
     with pytest.raises(ValidationError) as caught:
-        await handler(SeedReferenceData(actor_id=seed_actor))
+        await handler(SeedReferenceData(actor=admin))
     await container.engine.dispose()
 
     assert caught.value.details == {"file": "hazard_types.yaml", "reason": "not_found"}

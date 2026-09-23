@@ -16,6 +16,7 @@ from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.modules.geography.public import LoadReport as PlaceLoadReport
 from yakhnama.modules.hazards.public import LoadReport as HazardTypeLoadReport
 from yakhnama.modules.hazards.public import SkippedChange
+from yakhnama.modules.identity.public import CanManageReferenceData, Role
 from yakhnama.modules.impacts.public import LoadReport as ImpactMetricLoadReport
 from yakhnama.platform.container import Container, build_container
 from yakhnama.platform.settings import Settings, get_settings
@@ -26,6 +27,7 @@ from yakhnama.seed.cli import (
     SeedArguments,
     apply_arguments,
     build_parser,
+    build_system_actor,
     log_report,
     main,
     parse_arguments,
@@ -34,9 +36,10 @@ from yakhnama.seed.cli import (
     seed,
 )
 from yakhnama.shared_kernel.errors import PermissionDeniedError, YakhnamaError
-from yakhnama.shared_kernel.ids import EntityId, is_uuid7
+from yakhnama.shared_kernel.ids import is_uuid7
 
 CONFIGURED_ACTOR: Final = SequentialIdGenerator(seed=7).new_id()
+SYSTEM_ACTOR: Final = build_system_actor(CONFIGURED_ACTOR)
 DATA_VERSION: Final = "2026-09-23"
 
 
@@ -106,19 +109,16 @@ class FakeHandlerBuilder:
     Attributes:
         handler: The handler handed out.
         containers: The containers received.
-        actor_ids: The actor ids received.
         pools: The engine pool of each container when the handler was built.
     """
 
     handler: FakeSeedHandler = field(default_factory=FakeSeedHandler)
     containers: list[Container] = field(default_factory=list)
-    actor_ids: list[EntityId] = field(default_factory=list)
     pools: list[object] = field(default_factory=list)
 
-    def __call__(self, container: Container, actor_id: EntityId) -> FakeSeedHandler:
-        """Record the arguments and the engine's pool, and return ``handler``."""
+    def __call__(self, container: Container) -> FakeSeedHandler:
+        """Record the container and the engine's pool, and return ``handler``."""
         self.containers.append(container)
-        self.actor_ids.append(actor_id)
         self.pools.append(container.engine.sync_engine.pool)
         return self.handler
 
@@ -176,7 +176,7 @@ def test_apply_arguments_with_directory_overrides_reference_data_dir(
 
 async def test_run_seed_success_returns_zero_and_logs_counts() -> None:
     handler = FakeSeedHandler()
-    command = SeedReferenceData(actor_id=CONFIGURED_ACTOR, dry_run=True)
+    command = SeedReferenceData(actor=SYSTEM_ACTOR, dry_run=True)
 
     with capture_logs() as logs:
         exit_code = await run_seed(handler, command)
@@ -203,9 +203,7 @@ async def test_run_seed_yakhnama_error_returns_one_and_logs_one_line() -> None:
     handler = FakeSeedHandler(error=error)
 
     with capture_logs() as logs:
-        exit_code = await run_seed(
-            handler, SeedReferenceData(actor_id=CONFIGURED_ACTOR)
-        )
+        exit_code = await run_seed(handler, SeedReferenceData(actor=SYSTEM_ACTOR))
 
     assert exit_code == EXIT_FAILURE
     assert logs == [
@@ -227,7 +225,7 @@ async def test_run_seed_other_exception_propagates() -> None:
         raise ConnectionRefusedError(message)
 
     with pytest.raises(ConnectionRefusedError):
-        await run_seed(broken_handler, SeedReferenceData(actor_id=CONFIGURED_ACTOR))
+        await run_seed(broken_handler, SeedReferenceData(actor=SYSTEM_ACTOR))
 
 
 def test_log_report_skipped_changes_logged_as_warnings() -> None:
@@ -285,9 +283,8 @@ async def test_seed_passes_actor_to_builder_and_command_and_disposes_engine(
         exit_code = await seed(configured, is_dry_run=True, build_handler=builder)
 
     assert exit_code == EXIT_SUCCESS
-    assert builder.actor_ids == [CONFIGURED_ACTOR]
     assert builder.handler.commands == [
-        SeedReferenceData(actor_id=CONFIGURED_ACTOR, dry_run=True)
+        SeedReferenceData(actor=SYSTEM_ACTOR, dry_run=True)
     ]
     (container,) = builder.containers
     assert container.settings is configured
@@ -301,8 +298,7 @@ async def test_seed_builder_failure_still_disposes_engine(
     pools: list[object] = []
     containers: list[Container] = []
 
-    def failing_builder(container: Container, actor_id: EntityId) -> FakeSeedHandler:
-        del actor_id
+    def failing_builder(container: Container) -> FakeSeedHandler:
         containers.append(container)
         pools.append(container.engine.sync_engine.pool)
         message = "wiring bug"
@@ -354,5 +350,14 @@ def test_main_without_settings_loads_them_from_environment(
     exit_code = main([], build_handler=builder)
 
     assert exit_code == EXIT_SUCCESS
-    assert builder.actor_ids == [CONFIGURED_ACTOR]
+    assert builder.handler.commands[0].actor.user_id == CONFIGURED_ACTOR
     assert builder.containers[0].settings is get_settings()
+
+
+def test_build_system_actor_is_admin_citizen_without_memberships() -> None:
+    actor = build_system_actor(CONFIGURED_ACTOR)
+
+    assert actor.user_id == CONFIGURED_ACTOR
+    assert actor.roles == frozenset({Role.CITIZEN, Role.ADMIN})
+    assert actor.memberships == frozenset()
+    assert CanManageReferenceData().is_allowed(actor) is True

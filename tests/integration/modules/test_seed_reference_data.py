@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.fakes.clock import SteppingClock
+from tests.fakes.identity import actor_with
 from tests.fakes.ids import SequentialIdGenerator
 from tests.fakes.seed import AllowAllPolicy, FakeReferenceFileReader
 from yakhnama.modules.geography.application.handlers import (
@@ -27,6 +28,7 @@ from yakhnama.modules.hazards.application.handlers import (
 )
 from yakhnama.modules.hazards.infrastructure.orm import HazardTypeRow
 from yakhnama.modules.hazards.infrastructure.uow import SqlAlchemyHazardsUnitOfWork
+from yakhnama.modules.identity.public import Role
 from yakhnama.modules.impacts.application.handlers import (
     LoadReferenceImpactMetricsHandler,
 )
@@ -39,6 +41,9 @@ from yakhnama.seed.application import (
     SeedReferenceDataHandler,
     SeedReport,
 )
+
+# An admin actor: the fakes allow everyone, but the command needs an actor.
+SEED_ACTOR: Final = actor_with({Role.ADMIN})
 
 pytestmark = pytest.mark.integration
 
@@ -99,7 +104,7 @@ async def test_seed_reference_data_twice_creates_once_and_keeps_counts(
     seed: SeedReferenceDataHandler,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    command = SeedReferenceData(actor_id=None)
+    command = SeedReferenceData(actor=SEED_ACTOR)
 
     first = await seed(command)
     counts_after_first = await _row_counts(session_factory)
@@ -120,7 +125,7 @@ async def test_seed_reference_data_dry_run_writes_nothing(
     seed: SeedReferenceDataHandler,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    report = await seed(SeedReferenceData(actor_id=None, dry_run=True))
+    report = await seed(SeedReferenceData(actor=SEED_ACTOR, dry_run=True))
     counts = await _row_counts(session_factory)
 
     assert all(created > 0 for created in _created(report))

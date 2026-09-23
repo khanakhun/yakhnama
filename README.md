@@ -158,6 +158,25 @@ poetry run uvicorn yakhnama.main:create_app --factory --reload
 
 Stop the local services with `poetry run poe down`.
 
+### Authentication (development)
+
+`poe up` also starts a local Keycloak with the `yakhnama` realm pre-imported from
+`docker/keycloak/yakhnama-realm.json` (roles, two demo users, dev-only passwords). Get a
+bearer token for the demo citizen account:
+
+```bash
+curl -s -X POST "http://127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}/realms/yakhnama/protocol/openid-connect/token" \
+  -d client_id=yakhnama-dev-cli \
+  -d grant_type=password \
+  -d username=demo-citizen \
+  -d password=demo-citizen-dev-only
+```
+
+Use the response's `access_token` as `Authorization: Bearer <access_token>` against the
+API. This resource-owner password flow exists only in this development realm — see
+`docs/architecture/auth.md` for the full token flow, the realm contents and the
+production-provider caveat.
+
 ## Development workflow
 
 All commands run through Poetry and Poe so they behave the same locally and in CI. Every

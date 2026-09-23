@@ -142,3 +142,36 @@ class PreconditionFailedError(YakhnamaError):
     """
 
     code: ClassVar[str] = "precondition_failed"
+
+
+class PreconditionRequiredError(YakhnamaError):
+    """A mutating request that must be conditional arrived without ``If-Match``.
+
+    Without the header a client could overwrite a change it never saw (the lost
+    update problem), so the API refuses the request instead of guessing (RFC 6585
+    §3, HTTP 428).
+
+    Implements: Domain Error (proposed in ADR 0012).
+
+    Attributes:
+        code: ``"precondition_required"``.
+    """
+
+    code: ClassVar[str] = "precondition_required"
+
+
+class AuthenticationError(YakhnamaError):
+    """The request carries no valid bearer token where one is required.
+
+    Raised for a missing, malformed, expired or otherwise rejected token. The message
+    is deliberately generic and never contains the token or the reason it failed, so
+    a client (or an attacker) learns nothing about the validation (ADR 0015). The API
+    maps it to HTTP 401 with ``WWW-Authenticate: Bearer``.
+
+    Implements: Domain Error (proposed in ADR 0012).
+
+    Attributes:
+        code: ``"authentication_failed"``.
+    """
+
+    code: ClassVar[str] = "authentication_failed"

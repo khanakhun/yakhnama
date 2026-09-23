@@ -7,10 +7,10 @@ loads in its own unit of work, so the seed is not one atomic transaction; every 
 is idempotent, so re-running after a partial failure completes the work without
 duplicating anything. It depends only on the modules' public facades.
 
-Patterns: Command, Command Handler, Adapter (port side), Policy, DTO.
+Patterns: Command, Command Handler, Adapter (port side), DTO.
 """
 
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -22,13 +22,16 @@ from yakhnama.modules.hazards.public import (
     LoadReferenceHazardTypes,
 )
 from yakhnama.modules.hazards.public import LoadReport as HazardTypeLoadReport
+from yakhnama.modules.identity.public import (
+    Actor,
+    AuthorisationPolicy,
+    require_allowed,
+)
 from yakhnama.modules.impacts.public import (
     ImpactMetricReferenceFile,
     LoadReferenceImpactMetrics,
 )
 from yakhnama.modules.impacts.public import LoadReport as ImpactMetricLoadReport
-from yakhnama.shared_kernel.errors import PermissionDeniedError
-from yakhnama.shared_kernel.ids import EntityId
 
 type LoadHazardTypes = Callable[
     [LoadReferenceHazardTypes], Awaitable[HazardTypeLoadReport]
@@ -90,71 +93,20 @@ class ReferenceFileReader(Protocol):
         ...
 
 
-class SeedPolicy(Protocol):
-    """Decides whether an actor may seed reference data.
-
-    Placeholder until the identity policies of Phase 2 replace it; the same object
-    satisfies every module's ``AdminOnlyPolicy``.
-
-    Implements: Policy.
-    """
-
-    def is_allowed(self, actor_id: EntityId | None) -> bool:
-        """Tell whether ``actor_id`` may seed reference data.
-
-        Args:
-            actor_id: The acting user or system, or ``None`` if unknown.
-
-        Returns:
-            ``True`` only if the actor is explicitly allowed.
-        """
-        ...
-
-
-class ActorAllowListPolicy:
-    """Phase 1 placeholder policy: allows exactly the listed actor ids.
-
-    Deny by default: an unknown actor (``None``) and every id not listed are
-    refused. The composition root lists the system actor that runs the seed. It
-    satisfies ``SeedPolicy`` and each module's ``AdminOnlyPolicy`` and is replaced by
-    the identity policies in Phase 2.
-
-    Implements: Policy.
-    """
-
-    def __init__(self, allowed_actor_ids: Iterable[EntityId]) -> None:
-        """Create the policy.
-
-        Args:
-            allowed_actor_ids: The only actors allowed; may be empty.
-        """
-        self._allowed = frozenset(allowed_actor_ids)
-
-    def is_allowed(self, actor_id: EntityId | None) -> bool:
-        """Tell whether ``actor_id`` is on the list.
-
-        Args:
-            actor_id: The acting user or system, or ``None`` if unknown.
-
-        Returns:
-            ``True`` if the id is listed.
-        """
-        return actor_id is not None and actor_id in self._allowed
-
-
 class SeedReferenceData(BaseModel):
     """Load every reference file into its module.
 
     Implements: Command.
 
     Attributes:
-        actor_id: Who asks, or ``None`` if unknown (then denied by default).
+        actor: Who asks; the seed normally runs as a system actor holding
+            ``admin``, which ``CanManageReferenceData`` allows.
         dry_run: Compute every report but roll every load back.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    actor_id: EntityId | None
+    actor: Actor
     dry_run: bool = False
 
 
@@ -203,7 +155,7 @@ class SeedReferenceDataHandler:
         self,
         *,
         reader: ReferenceFileReader,
-        policy: SeedPolicy,
+        policy: AuthorisationPolicy,
         load_hazard_types: LoadHazardTypes,
         load_impact_metrics: LoadImpactMetrics,
         load_places: LoadPlaces,
@@ -234,30 +186,28 @@ class SeedReferenceDataHandler:
             One report per file.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             ValidationError: If the reader rejects a reference file.
         """
-        if not self._policy.is_allowed(command.actor_id):
-            message = "the actor may not seed reference data"
-            raise PermissionDeniedError(message, details={"action": "seed"})
+        require_allowed(self._policy, command.actor, action="seed reference data")
         hazard_types = await self._load_hazard_types(
             LoadReferenceHazardTypes(
                 file=self._reader.read_hazard_types(),
-                actor_id=command.actor_id,
+                actor=command.actor,
                 dry_run=command.dry_run,
             )
         )
         impact_metrics = await self._load_impact_metrics(
             LoadReferenceImpactMetrics(
                 file=self._reader.read_impact_metrics(),
-                actor_id=command.actor_id,
+                actor=command.actor,
                 dry_run=command.dry_run,
             )
         )
         places = await self._load_places(
             LoadReferencePlaces(
                 file=self._reader.read_places(),
-                actor_id=command.actor_id,
+                actor=command.actor,
                 dry_run=command.dry_run,
             )
         )

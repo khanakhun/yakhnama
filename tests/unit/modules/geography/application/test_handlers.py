@@ -3,8 +3,9 @@
 import pytest
 
 from tests.fakes.clock import FrozenClock
+from tests.fakes.identity import DenyAllPolicy, actor_with
 from tests.fakes.ids import SequentialIdGenerator
-from tests.fakes.seed import AllowAllPolicy, DenyAllPolicy, FakeReferenceFileReader
+from tests.fakes.seed import FakeReferenceFileReader
 from tests.unit.modules.geography.application.support import (
     NOW,
     country_and_region,
@@ -15,7 +16,10 @@ from tests.unit.modules.geography.application.support import (
     stored_places,
     unit_of_work,
 )
-from yakhnama.modules.geography.application.authorisation import AdminOnlyPolicy
+from yakhnama.modules.geography.application.authorisation import (
+    AuthorisationPolicy,
+    reference_data_policy,
+)
 from yakhnama.modules.geography.application.commands import (
     LoadReferencePlaces,
     MergePlace,
@@ -40,25 +44,31 @@ from yakhnama.modules.geography.domain.events import (
     PlaceRetired,
 )
 from yakhnama.modules.geography.domain.reference import PlaceReferenceFile
+from yakhnama.modules.identity.public import Role
 from yakhnama.shared_kernel.errors import InvariantViolationError, PermissionDeniedError
 from yakhnama.shared_kernel.value_objects import Coordinates
 
 ACTOR_ID = SequentialIdGenerator(seed=99).new_id()
+ADMIN = actor_with({Role.ADMIN}, user_id=ACTOR_ID)
+CITIZEN = actor_with(user_id=ACTOR_ID)
 REAL_PLACE_CODES = 15
 
 
 def load_handler(
-    factory: GeographyUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: GeographyUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> LoadReferencePlacesHandler:
     """Build the load handler with deterministic time and ids."""
     return LoadReferencePlacesHandler(
-        factory, policy or AllowAllPolicy(), FrozenClock(NOW), SequentialIdGenerator()
+        factory,
+        policy or reference_data_policy(),
+        FrozenClock(NOW),
+        SequentialIdGenerator(),
     )
 
 
 def load(file: PlaceReferenceFile, *, dry_run: bool = False) -> LoadReferencePlaces:
     """Return a load command for ``file``."""
-    return LoadReferencePlaces(file=file, actor_id=ACTOR_ID, dry_run=dry_run)
+    return LoadReferencePlaces(file=file, actor=ADMIN, dry_run=dry_run)
 
 
 # --------------------------------------------------------------------------- #
@@ -116,7 +126,7 @@ async def test_load_reference_places_when_denied_raises_permission_denied() -> N
     with pytest.raises(PermissionDeniedError):
         await load_handler(factory, policy)(load(country_and_region()))
 
-    assert policy.checked == [ACTOR_ID]
+    assert policy.checked == [ADMIN]
     assert factory.calls == 0
     assert uow.places.committed == {}
 
@@ -321,11 +331,14 @@ async def test_load_reference_places_under_stored_retired_parent_raises() -> Non
 
 
 def retire_handler(
-    factory: GeographyUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: GeographyUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> RetirePlaceHandler:
     """Build the retire handler with deterministic time and ids."""
     return RetirePlaceHandler(
-        factory, policy or AllowAllPolicy(), FrozenClock(NOW), SequentialIdGenerator()
+        factory,
+        policy or reference_data_policy(),
+        FrozenClock(NOW),
+        SequentialIdGenerator(),
     )
 
 
@@ -334,7 +347,7 @@ async def test_retire_place_when_active_commits_retired_place_and_event() -> Non
     uow, factory = unit_of_work(stored_places(country_and_region()))
 
     await retire_handler(factory)(
-        RetirePlace(place_id=region.id, reason="abolished", actor_id=ACTOR_ID)
+        RetirePlace(place_id=region.id, reason="abolished", actor=ADMIN)
     )
 
     stored = uow.places.committed[region.id]
@@ -352,7 +365,7 @@ async def test_retire_place_when_denied_raises_before_reading() -> None:
 
     with pytest.raises(PermissionDeniedError):
         await retire_handler(factory, DenyAllPolicy())(
-            RetirePlace(place_id=places[1].id, reason="abolished", actor_id=ACTOR_ID)
+            RetirePlace(place_id=places[1].id, reason="abolished", actor=ADMIN)
         )
 
     assert factory.calls == 0
@@ -364,7 +377,7 @@ async def test_retire_place_when_missing_raises_not_found() -> None:
 
     with pytest.raises(PlaceNotFoundError):
         await retire_handler(factory)(
-            RetirePlace(place_id=ACTOR_ID, reason="abolished", actor_id=ACTOR_ID)
+            RetirePlace(place_id=ACTOR_ID, reason="abolished", actor=ADMIN)
         )
 
     assert uow.committed is False
@@ -376,7 +389,7 @@ async def test_retire_place_when_already_retired_raises_invalid_transition() -> 
 
     with pytest.raises(PlaceRetiredError):
         await retire_handler(factory)(
-            RetirePlace(place_id=country.id, reason="again", actor_id=ACTOR_ID)
+            RetirePlace(place_id=country.id, reason="again", actor=ADMIN)
         )
 
     assert uow.committed is False
@@ -389,11 +402,14 @@ async def test_retire_place_when_already_retired_raises_invalid_transition() -> 
 
 
 def merge_handler(
-    factory: GeographyUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: GeographyUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> MergePlaceHandler:
     """Build the merge handler with deterministic time and ids."""
     return MergePlaceHandler(
-        factory, policy or AllowAllPolicy(), FrozenClock(NOW), SequentialIdGenerator()
+        factory,
+        policy or reference_data_policy(),
+        FrozenClock(NOW),
+        SequentialIdGenerator(),
     )
 
 
@@ -412,7 +428,7 @@ async def test_merge_place_into_active_target_commits_merged_place() -> None:
 
     await merge_handler(factory)(
         MergePlace(
-            place_id=source.id, target_id=target.id, reason="merged", actor_id=ACTOR_ID
+            place_id=source.id, target_id=target.id, reason="merged", actor=ADMIN
         )
     )
 
@@ -434,7 +450,7 @@ async def test_merge_place_when_denied_raises_permission_denied() -> None:
                 place_id=source.id,
                 target_id=target.id,
                 reason="merged",
-                actor_id=ACTOR_ID,
+                actor=ADMIN,
             )
         )
 
@@ -452,7 +468,7 @@ async def test_merge_place_with_missing_target_raises_not_found() -> None:
                 place_id=source.id,
                 target_id=ACTOR_ID,
                 reason="merged",
-                actor_id=ACTOR_ID,
+                actor=ADMIN,
             )
         )
 
@@ -469,7 +485,7 @@ async def test_merge_place_into_retired_target_raises_invalid_transition() -> No
                 place_id=source.id,
                 target_id=target.id,
                 reason="merged",
-                actor_id=ACTOR_ID,
+                actor=ADMIN,
             )
         )
 
@@ -487,8 +503,52 @@ async def test_merge_place_into_itself_raises_invariant_violation() -> None:
                 place_id=source.id,
                 target_id=source.id,
                 reason="merged",
-                actor_id=ACTOR_ID,
+                actor=ADMIN,
             )
         )
 
     assert uow.committed is False
+
+
+# --------------------------------------------------------------------------- #
+# Reference-data policy                                                       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_load_reference_places_citizen_actor_is_denied_by_policy() -> None:
+    uow, factory = unit_of_work()
+    command = load(country_and_region()).model_copy(update={"actor": CITIZEN})
+
+    with pytest.raises(PermissionDeniedError) as raised:
+        await load_handler(factory)(command)
+
+    assert raised.value.details["policy"] == "CanManageReferenceData"
+    assert factory.calls == 0
+    assert uow.places.committed == {}
+
+
+async def test_retire_place_citizen_actor_is_denied_by_policy() -> None:
+    places = stored_places(country_and_region())
+    uow, factory = unit_of_work(places)
+
+    with pytest.raises(PermissionDeniedError):
+        await retire_handler(factory)(
+            RetirePlace(place_id=places[1].id, reason="abolished", actor=CITIZEN)
+        )
+
+    assert factory.calls == 0
+    assert uow.places.committed[places[1].id].is_active is True
+
+
+async def test_merge_place_citizen_actor_is_denied_by_policy() -> None:
+    _, source, target = stored_places(two_regions())
+    uow, factory = unit_of_work(stored_places(two_regions()))
+    command = MergePlace(
+        place_id=source.id, target_id=target.id, reason="merged", actor=CITIZEN
+    )
+
+    with pytest.raises(PermissionDeniedError):
+        await merge_handler(factory)(command)
+
+    assert factory.calls == 0
+    assert uow.places.committed[source.id].is_active is True

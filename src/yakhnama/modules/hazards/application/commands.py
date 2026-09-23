@@ -1,7 +1,7 @@
 """Write requests accepted by the hazards command handlers.
 
-Every command carries ``actor_id`` for the placeholder ``AdminOnlyPolicy``; Phase 2
-passes an authenticated actor instead.
+Every command carries the ``actor`` it runs as; the handler asks its
+``AuthorisationPolicy`` about that actor before doing anything.
 
 Patterns: Command.
 """
@@ -14,7 +14,7 @@ from yakhnama.modules.hazards.domain.value_objects import (
     RetirementReason,
     RetirementText,
 )
-from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.modules.identity.public import Actor
 
 
 class LoadReferenceHazardTypes(BaseModel):
@@ -24,14 +24,14 @@ class LoadReferenceHazardTypes(BaseModel):
 
     Attributes:
         file: The validated reference file.
-        actor_id: Who asks, or ``None`` if unknown (then denied by default).
+        actor: Who asks; refused unless the policy explicitly allows them.
         dry_run: Compute the report but roll back instead of committing.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     file: HazardTypeReferenceFile
-    actor_id: EntityId | None
+    actor: Actor
     dry_run: bool = False
 
 
@@ -43,14 +43,14 @@ class RetireHazardType(BaseModel):
     Attributes:
         ref: The hazard type to retire.
         reason: Why, and which code replaces it, if any.
-        actor_id: Who asks, or ``None`` if unknown (then denied by default).
+        actor: Who asks; refused unless the policy explicitly allows them.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     ref: HazardTypeRef
     reason: RetirementReason
-    actor_id: EntityId | None
+    actor: Actor
 
 
 class ReactivateHazardType(BaseModel):
@@ -61,11 +61,11 @@ class ReactivateHazardType(BaseModel):
     Attributes:
         ref: The hazard type to reactivate.
         reason: Why, kept for the audit trail; 1 to 500 characters.
-        actor_id: Who asks, or ``None`` if unknown (then denied by default).
+        actor: Who asks; refused unless the policy explicitly allows them.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     ref: HazardTypeRef
     reason: RetirementText
-    actor_id: EntityId | None
+    actor: Actor

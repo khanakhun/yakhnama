@@ -142,6 +142,9 @@ name = "platform never imports the application entry point"
 type = "forbidden"
 source_modules = ["yakhnama.platform"]
 forbidden_modules = ["yakhnama.main"]
+# The OpenAPI snapshot writer is a command-line entry point like main itself: it
+# must build the real app to render its document, and nothing imports it.
+ignore_imports = ["yakhnama.platform.openapi_snapshot -> yakhnama.main"]
 
 [[tool.importlinter.contracts]]
 name = "modules are independent except through each other's public facade"

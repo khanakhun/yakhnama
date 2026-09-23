@@ -13,6 +13,8 @@ dictionary ... covers every new field, unit and meaning").
   (`src/yakhnama/modules/hazards/domain/`).
 - [`impacts.md`](impacts.md) — the `ImpactMetric` registry
   (`src/yakhnama/modules/impacts/domain/`).
+- [`identity.md`](identity.md) — users mirrored from OIDC, organisations,
+  memberships, roles and policies (`src/yakhnama/modules/identity/domain/`).
 
 ## Layout
 

@@ -1,13 +1,17 @@
 """Write-side use cases of the geography module.
 
-Every handler asks its ``AdminOnlyPolicy`` first and raises ``PermissionDeniedError``
-before opening a unit of work, so nothing is read or staged for a refused actor.
-Places are never deleted: retirement and merging are status changes with a reason.
+Every handler asks its ``AuthorisationPolicy`` first and raises
+``PermissionDeniedError`` before opening a unit of work, so nothing is read or staged
+for a refused actor. Places are never deleted: retirement and merging are status changes
+with a reason.
 
 Patterns: Command Handler, Unit of Work, Policy, Domain Events.
 """
 
-from yakhnama.modules.geography.application.authorisation import AdminOnlyPolicy
+from yakhnama.modules.geography.application.authorisation import (
+    AuthorisationPolicy,
+    require_allowed,
+)
 from yakhnama.modules.geography.application.commands import (
     LoadReferencePlaces,
     MergePlace,
@@ -25,18 +29,7 @@ from yakhnama.modules.geography.domain.errors import (
 )
 from yakhnama.modules.geography.domain.factories import PlaceDraft, PlaceFactory
 from yakhnama.shared_kernel.clock import Clock
-from yakhnama.shared_kernel.errors import PermissionDeniedError
 from yakhnama.shared_kernel.ids import EntityId, IdGenerator
-
-
-def _require_allowed(
-    policy: AdminOnlyPolicy, actor_id: EntityId | None, action: str
-) -> None:
-    # The actor id is deliberately left out of the message and details: the error
-    # may be logged or returned, and who was refused is the audit log's business.
-    if not policy.is_allowed(actor_id):
-        message = f"the actor may not {action}"
-        raise PermissionDeniedError(message, details={"action": action})
 
 
 async def _load(uow: GeographyUnitOfWork, place_id: EntityId) -> Place:
@@ -55,7 +48,7 @@ class RetirePlaceHandler:
     def __init__(
         self,
         uow_factory: GeographyUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
     ) -> None:
@@ -79,11 +72,11 @@ class RetirePlaceHandler:
             command: The validated command.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             PlaceNotFoundError: If the place does not exist.
             PlaceRetiredError: If the place is already merged or retired.
         """
-        _require_allowed(self._policy, command.actor_id, "retire places")
+        require_allowed(self._policy, command.actor, action="retire places")
         async with self._uow_factory() as uow:
             place = await _load(uow, command.place_id)
             change = place.retire(command.reason, clock=self._clock, ids=self._ids)
@@ -100,7 +93,7 @@ class MergePlaceHandler:
     def __init__(
         self,
         uow_factory: GeographyUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
     ) -> None:
@@ -124,12 +117,12 @@ class MergePlaceHandler:
             command: The validated command.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             PlaceNotFoundError: If the place or the target does not exist.
             PlaceRetiredError: If the place or the target is merged or retired.
             InvariantViolationError: If the place would be merged into itself.
         """
-        _require_allowed(self._policy, command.actor_id, "merge places")
+        require_allowed(self._policy, command.actor, action="merge places")
         async with self._uow_factory() as uow:
             place = await _load(uow, command.place_id)
             target = await _load(uow, command.target_id)
@@ -165,7 +158,7 @@ class LoadReferencePlacesHandler:
     def __init__(
         self,
         uow_factory: GeographyUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
     ) -> None:
@@ -193,12 +186,12 @@ class LoadReferencePlacesHandler:
             What was created, updated, unchanged or skipped.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             InvalidPlaceHierarchyError: If a new place does not fit under its
                 stored parent.
             PlaceRetiredError: If a new place's stored parent is merged or retired.
         """
-        _require_allowed(self._policy, command.actor_id, "load place reference data")
+        require_allowed(self._policy, command.actor, action="load place reference data")
         created: list[str] = []
         updated: list[str] = []
         unchanged: list[str] = []

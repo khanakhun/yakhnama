@@ -1,35 +1,28 @@
-"""Placeholder authorisation port for the geography write side.
+"""Authorisation of the geography write side, through the identity facade.
 
-The identity module arrives in Phase 2 with composable policies over an authenticated
-``Actor``. Until then every geography command handler receives an ``AdminOnlyPolicy``
-and asks it about the command's ``actor_id`` before reading or staging anything. The
-composition root chooses the implementation; the handlers deny by default, so an
-unknown or absent actor is refused unless the policy explicitly allows it. Phase 2
-replaces this protocol with the identity policies.
+Every geography command handler receives an ``AuthorisationPolicy`` from the
+composition root and asks it about the command's ``actor`` before reading or
+staging anything, through ``require_allowed``. The policy that guards changes to
+the place hierarchy is ``CanManageReferenceData`` (platform administrators only);
+``reference_data_policy`` returns it so the composition root does not repeat the
+choice. Handlers deny by default: only what the policy explicitly allows passes.
 
 Patterns: Policy.
 """
 
-from typing import Protocol
+from yakhnama.modules.identity.public import (
+    AuthorisationPolicy,
+    CanManageReferenceData,
+    require_allowed,
+)
 
-from yakhnama.shared_kernel.ids import EntityId
+__all__ = ["AuthorisationPolicy", "reference_data_policy", "require_allowed"]
 
 
-class AdminOnlyPolicy(Protocol):
-    """Decides whether an actor may change the place hierarchy.
+def reference_data_policy() -> AuthorisationPolicy:
+    """Return the policy guarding every change to the places.
 
-    Placeholder until the identity policies of Phase 2 replace it.
-
-    Implements: Policy.
+    Returns:
+        ``CanManageReferenceData()``.
     """
-
-    def is_allowed(self, actor_id: EntityId | None) -> bool:
-        """Tell whether ``actor_id`` may run an administrative command.
-
-        Args:
-            actor_id: The acting user or system, or ``None`` if unknown.
-
-        Returns:
-            ``True`` only if the actor is explicitly allowed.
-        """
-        ...
+    return CanManageReferenceData()

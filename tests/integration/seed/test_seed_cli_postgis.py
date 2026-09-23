@@ -17,8 +17,10 @@ from pydantic import PostgresDsn
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tests.fakes.identity import actor_with
 from yakhnama.modules.geography.infrastructure.orm import PlaceNameRow, PlaceRow
 from yakhnama.modules.hazards.infrastructure.orm import HazardTypeRow
+from yakhnama.modules.identity.public import Role
 from yakhnama.modules.impacts.infrastructure.orm import ImpactMetricRow
 from yakhnama.platform.container import build_container, build_seed_handler
 from yakhnama.platform.outbox.models import OutboxMessage
@@ -71,9 +73,9 @@ async def test_build_seed_handler_twice_keeps_counts_and_adds_no_outbox_rows(
             reference_data_dir=REFERENCE_DIRECTORY,
         )
     )
-    actor_id = container.id_generator.new_id()
-    handler = build_seed_handler(container, actor_id)
-    command = SeedReferenceData(actor_id=actor_id)
+    admin = actor_with({Role.ADMIN}, user_id=container.id_generator.new_id())
+    handler = build_seed_handler(container)
+    command = SeedReferenceData(actor=admin)
 
     try:
         first = await handler(command)

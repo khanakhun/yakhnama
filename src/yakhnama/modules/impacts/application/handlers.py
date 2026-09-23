@@ -1,15 +1,18 @@
 """Write-side use cases of the impacts module.
 
-Every handler asks its ``AdminOnlyPolicy`` first and raises ``PermissionDeniedError``
-before opening a unit of work, so nothing is read or staged for a refused actor. A
-metric's definition (category, value kind, unit, currency, mappings, aggregation)
-never changes in place, because stored claims would silently change meaning; only
-labels and retirement do.
+Every handler asks its ``AuthorisationPolicy`` first and raises
+``PermissionDeniedError`` before opening a unit of work, so nothing is read or staged
+for a refused actor. A metric's definition (category, value kind, unit, currency,
+mappings, aggregation) never changes in place, because stored claims would silently
+change meaning; only labels and retirement do.
 
 Patterns: Command Handler, Unit of Work, Policy, Domain Events.
 """
 
-from yakhnama.modules.impacts.application.authorisation import AdminOnlyPolicy
+from yakhnama.modules.impacts.application.authorisation import (
+    AuthorisationPolicy,
+    require_allowed,
+)
 from yakhnama.modules.impacts.application.commands import (
     LoadReferenceImpactMetrics,
     RetireImpactMetric,
@@ -28,8 +31,7 @@ from yakhnama.modules.impacts.domain.factories import ImpactMetricFactory
 from yakhnama.modules.impacts.domain.reference import ImpactMetricReferenceEntry
 from yakhnama.modules.impacts.domain.value_objects import MetricStatus
 from yakhnama.shared_kernel.clock import Clock
-from yakhnama.shared_kernel.errors import PermissionDeniedError
-from yakhnama.shared_kernel.ids import EntityId, IdGenerator
+from yakhnama.shared_kernel.ids import IdGenerator
 
 # Fields that define what a claim's value means; compared, never changed in place.
 _DEFINITION_FIELDS = (
@@ -42,16 +44,6 @@ _DEFINITION_FIELDS = (
     "desinventar",
     "aggregation",
 )
-
-
-def _require_allowed(
-    policy: AdminOnlyPolicy, actor_id: EntityId | None, action: str
-) -> None:
-    # The actor id is deliberately left out of the message and details: the error
-    # may be logged or returned, and who was refused is the audit log's business.
-    if not policy.is_allowed(actor_id):
-        message = f"the actor may not {action}"
-        raise PermissionDeniedError(message, details={"action": action})
 
 
 def _not_found(code: str) -> ImpactMetricNotFoundError:
@@ -69,7 +61,7 @@ class RetireImpactMetricHandler:
     def __init__(
         self,
         uow_factory: ImpactsUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
     ) -> None:
@@ -93,14 +85,14 @@ class RetireImpactMetricHandler:
             command: The validated command.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
             ImpactMetricNotFoundError: If the metric, or the replacement named in
                 ``reason.replaced_by``, does not exist.
             InconsistentMetricDefinitionError: If ``reason.replaced_by`` is the
                 metric's own code.
             ImpactMetricRetiredError: If the metric is already retired.
         """
-        _require_allowed(self._policy, command.actor_id, "retire impact metrics")
+        require_allowed(self._policy, command.actor, action="retire impact metrics")
         replaced_by = command.reason.replaced_by
         # Checked here so the caller gets a domain error, not the Pydantic error the
         # aggregate's invariant would raise when the retired state is built.
@@ -140,7 +132,7 @@ class LoadReferenceImpactMetricsHandler:
     def __init__(
         self,
         uow_factory: ImpactsUnitOfWorkFactory,
-        policy: AdminOnlyPolicy,
+        policy: AuthorisationPolicy,
         clock: Clock,
         ids: IdGenerator,
     ) -> None:
@@ -168,10 +160,10 @@ class LoadReferenceImpactMetricsHandler:
             What was created, updated, unchanged or skipped.
 
         Raises:
-            PermissionDeniedError: If the policy refuses ``command.actor_id``.
+            PermissionDeniedError: If the policy refuses ``command.actor``.
         """
-        _require_allowed(
-            self._policy, command.actor_id, "load impact metric reference data"
+        require_allowed(
+            self._policy, command.actor, action="load impact metric reference data"
         )
         created: list[str] = []
         updated: list[str] = []

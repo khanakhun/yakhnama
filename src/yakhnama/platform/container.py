@@ -18,8 +18,11 @@ Patterns: Composition Root, Dependency Injection.
 """
 
 import dataclasses
+from datetime import timedelta
 
+import httpx
 from fastapi import Request
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from yakhnama.modules.geography.application.handlers import (
@@ -46,6 +49,15 @@ from yakhnama.modules.hazards.infrastructure.queries import (
     SqlAlchemyHazardTypeQueryService,
 )
 from yakhnama.modules.hazards.infrastructure.uow import SqlAlchemyHazardsUnitOfWork
+from yakhnama.modules.identity.application.ports import (
+    IdentityQueryService,
+    IdentityUnitOfWorkFactory,
+)
+from yakhnama.modules.identity.infrastructure.queries import (
+    SqlAlchemyIdentityQueryService,
+)
+from yakhnama.modules.identity.infrastructure.uow import SqlAlchemyIdentityUnitOfWork
+from yakhnama.modules.identity.public import CanManageReferenceData
 from yakhnama.modules.impacts.application.handlers import (
     LoadReferenceImpactMetricsHandler,
 )
@@ -57,15 +69,21 @@ from yakhnama.modules.impacts.infrastructure.queries import (
     SqlAlchemyImpactMetricQueryService,
 )
 from yakhnama.modules.impacts.infrastructure.uow import SqlAlchemyImpactsUnitOfWork
+from yakhnama.platform.auth.jwks import HttpJwksClient
+from yakhnama.platform.auth.tokens import TokenValidator
 from yakhnama.platform.db import create_engine, create_session_factory
+from yakhnama.platform.idempotency.sqlalchemy_store import SqlAlchemyIdempotencyStore
+from yakhnama.platform.idempotency.store import IdempotencyStore
 from yakhnama.platform.outbox.relay import OutboxRelay, SubscriberRegistry
 from yakhnama.platform.outbox.writer import OutboxWriter
+from yakhnama.platform.ratelimit.limiter import InMemoryRateLimiter, RateLimiter
+from yakhnama.platform.ratelimit.redis_limiter import RedisRateLimiter
 from yakhnama.platform.settings import Settings
 from yakhnama.platform.uow import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
-from yakhnama.seed.application import ActorAllowListPolicy, SeedReferenceDataHandler
+from yakhnama.seed.application import SeedReferenceDataHandler
 from yakhnama.seed.infrastructure import YamlReferenceFileReader
 from yakhnama.shared_kernel.clock import Clock, SystemClock
-from yakhnama.shared_kernel.ids import EntityId, IdGenerator, Uuid7Generator
+from yakhnama.shared_kernel.ids import IdGenerator, Uuid7Generator
 
 
 # A frozen dataclass rather than a Pydantic model: the container holds live resources
@@ -94,6 +112,16 @@ class Container:
         place_query_service: The geography ``PlaceQueryService`` port.
         hazard_type_query_service: The hazards ``HazardTypeQueryService`` port.
         impact_metric_query_service: The impacts ``ImpactMetricQueryService`` port.
+        identity_uow_factory: The identity ``UnitOfWorkFactory`` port.
+        identity_query_service: The identity ``IdentityQueryService`` port.
+        token_validator: Checks bearer tokens; ``None`` when ``oidc_issuer`` is not
+            set, in which case every protected route answers 401.
+        rate_limiter: The ``RateLimiter`` port (in memory or Redis).
+        idempotency_store: The ``IdempotencyStore`` port (PostgreSQL).
+        http_client: The HTTP client of the JWKS client, closed on shutdown;
+            ``None`` without OIDC.
+        redis: The Redis client of the rate limiter, closed on shutdown; ``None``
+            with the in-memory backend.
     """
 
     settings: Settings
@@ -111,6 +139,80 @@ class Container:
     place_query_service: PlaceQueryService
     hazard_type_query_service: HazardTypeQueryService
     impact_metric_query_service: ImpactMetricQueryService
+    identity_uow_factory: IdentityUnitOfWorkFactory
+    identity_query_service: IdentityQueryService
+    token_validator: TokenValidator | None
+    rate_limiter: RateLimiter
+    idempotency_store: IdempotencyStore
+    http_client: httpx.AsyncClient | None = None
+    redis: Redis | None = None
+
+    async def aclose(self) -> None:
+        """Release every resource the container opened: clients and the engine."""
+        if self.http_client is not None:
+            await self.http_client.aclose()
+        if self.redis is not None:
+            await self.redis.aclose()
+        await self.engine.dispose()
+
+
+def build_token_validator(
+    settings: Settings, clock: Clock
+) -> tuple[TokenValidator | None, httpx.AsyncClient | None]:
+    """Bind the bearer-token validator to the configured identity provider.
+
+    No request is made here; the JWKS is fetched on the first token.
+
+    Args:
+        settings: Supplies the ``oidc_*`` and ``jwks_cache_ttl_seconds`` settings.
+        clock: The JWKS cache clock.
+
+    Returns:
+        The validator and the HTTP client it owns, or ``(None, None)`` when
+        ``oidc_issuer`` is not set.
+    """
+    if settings.oidc_issuer is None:
+        return None, None
+    # No redirects: a JWKS or discovery URL that redirects elsewhere is a
+    # misconfiguration or an attack, never something to follow silently.
+    http_client = httpx.AsyncClient(
+        timeout=settings.oidc_http_timeout_seconds, follow_redirects=False
+    )
+    jwks_client = HttpJwksClient(
+        http_client=http_client,
+        clock=clock,
+        issuer=settings.oidc_issuer,
+        jwks_url=settings.oidc_jwks_url,
+        cache_ttl=timedelta(seconds=settings.jwks_cache_ttl_seconds),
+    )
+    validator = TokenValidator(
+        jwks_client=jwks_client,
+        issuer=settings.oidc_issuer,
+        audience=settings.oidc_audience,
+        algorithms=settings.oidc_allowed_algorithms,
+        leeway_seconds=settings.oidc_leeway_seconds,
+        clock=clock,
+    )
+    return validator, http_client
+
+
+def build_rate_limiter(
+    settings: Settings, clock: Clock
+) -> tuple[RateLimiter, Redis | None]:
+    """Bind the ``RateLimiter`` port to the configured backend.
+
+    Args:
+        settings: Supplies ``rate_limit_backend`` and ``redis_url``.
+        clock: The in-memory limiter's clock.
+
+    Returns:
+        The limiter and the Redis client it owns (``None`` for ``memory``).
+    """
+    if settings.rate_limit_backend == "redis" and settings.redis_url is not None:
+        # from_url connects lazily, on the first command.
+        redis = Redis.from_url(str(settings.redis_url))
+        return RedisRateLimiter(redis), redis
+    return InMemoryRateLimiter(clock), None
 
 
 def build_container(settings: Settings) -> Container:
@@ -125,6 +227,9 @@ def build_container(settings: Settings) -> Container:
         A container ready to be stored on ``app.state.container``.
     """
     clock = SystemClock()
+    id_generator = Uuid7Generator(clock)
+    token_validator, http_client = build_token_validator(settings, clock)
+    rate_limiter, redis = build_rate_limiter(settings, clock)
     engine = create_engine(settings)
     session_factory = create_session_factory(engine)
     outbox_writer = OutboxWriter(clock)
@@ -132,7 +237,7 @@ def build_container(settings: Settings) -> Container:
     return Container(
         settings=settings,
         clock=clock,
-        id_generator=Uuid7Generator(clock),
+        id_generator=id_generator,
         engine=engine,
         session_factory=session_factory,
         outbox_writer=outbox_writer,
@@ -161,26 +266,35 @@ def build_container(settings: Settings) -> Container:
         place_query_service=SqlAlchemyPlaceQueryService(session_factory),
         hazard_type_query_service=SqlAlchemyHazardTypeQueryService(session_factory),
         impact_metric_query_service=SqlAlchemyImpactMetricQueryService(session_factory),
+        identity_uow_factory=SqlAlchemyUnitOfWorkFactory(
+            SqlAlchemyIdentityUnitOfWork,
+            session_factory=session_factory,
+            outbox_writer=outbox_writer,
+        ),
+        identity_query_service=SqlAlchemyIdentityQueryService(session_factory),
+        token_validator=token_validator,
+        rate_limiter=rate_limiter,
+        idempotency_store=SqlAlchemyIdempotencyStore(session_factory, id_generator),
+        http_client=http_client,
+        redis=redis,
     )
 
 
-def build_seed_handler(
-    container: Container, actor_id: EntityId
-) -> SeedReferenceDataHandler:
+def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
     """Wire the reference-data seed to the container's ports.
 
-    One ``ActorAllowListPolicy`` listing only ``actor_id`` guards the seed and every
-    module load it calls, so the seed can change nothing on behalf of anyone else.
+    One ``CanManageReferenceData`` policy (admins only) guards the seed and every
+    module load it calls, so the seed changes nothing unless its actor is an admin;
+    the command line runs it as a synthetic system actor holding ``admin``.
     The reader reads ``settings.reference_data_dir`` when the handler runs, not now.
 
     Args:
         container: The container whose units of work, clock and ids the loads use.
-        actor_id: The system actor the seed acts as; the only actor allowed.
 
     Returns:
         The seed handler, ready to be called with ``SeedReferenceData``.
     """
-    policy = ActorAllowListPolicy([actor_id])
+    policy = CanManageReferenceData()
     return SeedReferenceDataHandler(
         reader=YamlReferenceFileReader(container.settings.reference_data_dir),
         policy=policy,

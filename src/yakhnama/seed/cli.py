@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict
 
 from yakhnama.modules.geography.public import LoadReport as PlaceLoadReport
 from yakhnama.modules.hazards.public import LoadReport as HazardTypeLoadReport
+from yakhnama.modules.identity.public import Actor, Role
 from yakhnama.modules.impacts.public import LoadReport as ImpactMetricLoadReport
 from yakhnama.platform.container import Container, build_container, build_seed_handler
 from yakhnama.platform.logging import configure_logging
@@ -48,7 +49,7 @@ PROGRAM_NAME: Final = "python -m yakhnama.seed"
 type SeedHandler = Callable[[SeedReferenceData], Awaitable[SeedReport]]
 """The seed use case, usually ``SeedReferenceDataHandler``."""
 
-type SeedHandlerBuilder = Callable[[Container, EntityId], SeedHandler]
+type SeedHandlerBuilder = Callable[[Container], SeedHandler]
 """Builds the seed use case from the container, usually ``build_seed_handler``."""
 
 type LoadReport = HazardTypeLoadReport | ImpactMetricLoadReport | PlaceLoadReport
@@ -217,6 +218,25 @@ def resolve_actor_id(settings: Settings, container: Container) -> EntityId:
     return actor_id
 
 
+def build_system_actor(actor_id: EntityId) -> Actor:
+    """Return the synthetic system actor the seed runs as.
+
+    It holds ``admin`` (which ``CanManageReferenceData`` requires) and ``citizen``,
+    which every active user holds explicitly, and belongs to no organisation.
+
+    Args:
+        actor_id: The resolved system actor id, recorded on every change.
+
+    Returns:
+        The actor.
+    """
+    return Actor(
+        user_id=actor_id,
+        roles=frozenset({Role.CITIZEN, Role.ADMIN}),
+        memberships=frozenset(),
+    )
+
+
 async def seed(
     settings: Settings,
     *,
@@ -235,13 +255,13 @@ async def seed(
     """
     container = build_container(settings)
     try:
-        actor_id = resolve_actor_id(settings, container)
-        handler = build_handler(container, actor_id)
+        actor = build_system_actor(resolve_actor_id(settings, container))
+        handler = build_handler(container)
         return await run_seed(
-            handler, SeedReferenceData(actor_id=actor_id, dry_run=is_dry_run)
+            handler, SeedReferenceData(actor=actor, dry_run=is_dry_run)
         )
     finally:
-        await container.engine.dispose()
+        await container.aclose()
 
 
 def main(

@@ -2,9 +2,9 @@
 
 ``FakeReferenceFileReader`` parses the real ``data/reference`` YAML files (reading
 local fixture files is allowed in unit tests; nothing touches the network) or returns
-models a test hands in. ``AllowAllPolicy`` and ``DenyAllPolicy`` satisfy the
-``AdminOnlyPolicy`` protocol of every module structurally, and record who they were
-asked about. Phase 2 moves the policies to ``tests/fakes/identity.py``.
+models a test hands in. ``AllowAllPolicy`` and ``DenyAllPolicy`` moved to
+``tests.fakes.identity`` in Phase 2; they are re-exported here for one phase so
+existing imports keep working, and new code imports them from there.
 
 Patterns: Fake.
 """
@@ -15,11 +15,23 @@ import yaml
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
+from tests.fakes.identity import AllowAllPolicy, DenyAllPolicy
 from yakhnama.modules.geography.public import PlaceReferenceFile
 from yakhnama.modules.hazards.public import HazardTypeReferenceFile
 from yakhnama.modules.impacts.public import ImpactMetricReferenceFile
 from yakhnama.shared_kernel.errors import ValidationError
-from yakhnama.shared_kernel.ids import EntityId
+
+__all__ = [
+    "HAZARD_TYPES_FILE",
+    "IMPACT_METRICS_FILE",
+    "PLACES_FILE",
+    "REFERENCE_DIRECTORY",
+    "AllowAllPolicy",
+    "DenyAllPolicy",
+    "FakeReferenceFileReader",
+    "parse_reference_file",
+    "read_reference_yaml",
+]
 
 REFERENCE_DIRECTORY = Path(__file__).resolve().parents[2] / "data" / "reference"
 """``data/reference`` at the repository root."""
@@ -122,55 +134,3 @@ class FakeReferenceFileReader:
         if self._places is not None:
             return self._places
         return parse_reference_file(PlaceReferenceFile, PLACES_FILE)
-
-
-class AllowAllPolicy:
-    """``AdminOnlyPolicy`` that allows every actor, including an unknown one.
-
-    Implements: Fake (of Policy).
-
-    Attributes:
-        checked: Actor ids the policy was asked about, in call order.
-    """
-
-    def __init__(self) -> None:
-        """Create the policy."""
-        self.checked: list[EntityId | None] = []
-
-    def is_allowed(self, actor_id: EntityId | None) -> bool:
-        """Record ``actor_id`` and allow it.
-
-        Args:
-            actor_id: The actor asked about.
-
-        Returns:
-            Always ``True``.
-        """
-        self.checked.append(actor_id)
-        return True
-
-
-class DenyAllPolicy:
-    """``AdminOnlyPolicy`` that refuses every actor.
-
-    Implements: Fake (of Policy).
-
-    Attributes:
-        checked: Actor ids the policy was asked about, in call order.
-    """
-
-    def __init__(self) -> None:
-        """Create the policy."""
-        self.checked: list[EntityId | None] = []
-
-    def is_allowed(self, actor_id: EntityId | None) -> bool:
-        """Record ``actor_id`` and refuse it.
-
-        Args:
-            actor_id: The actor asked about.
-
-        Returns:
-            Always ``False``.
-        """
-        self.checked.append(actor_id)
-        return False

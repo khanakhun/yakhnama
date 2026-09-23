@@ -3,8 +3,9 @@
 import pytest
 
 from tests.fakes.clock import FrozenClock
+from tests.fakes.identity import DenyAllPolicy, actor_with
 from tests.fakes.ids import SequentialIdGenerator
-from tests.fakes.seed import AllowAllPolicy, DenyAllPolicy, FakeReferenceFileReader
+from tests.fakes.seed import FakeReferenceFileReader
 from tests.unit.modules.hazards.application.support import (
     NOW,
     entry,
@@ -12,7 +13,10 @@ from tests.unit.modules.hazards.application.support import (
     stored_types,
     unit_of_work,
 )
-from yakhnama.modules.hazards.application.authorisation import AdminOnlyPolicy
+from yakhnama.modules.hazards.application.authorisation import (
+    AuthorisationPolicy,
+    reference_data_policy,
+)
 from yakhnama.modules.hazards.application.commands import (
     LoadReferenceHazardTypes,
     ReactivateHazardType,
@@ -42,10 +46,13 @@ from yakhnama.modules.hazards.domain.value_objects import (
     HazardTypeStatus,
     RetirementReason,
 )
+from yakhnama.modules.identity.public import Role
 from yakhnama.shared_kernel.errors import PermissionDeniedError
 from yakhnama.shared_kernel.value_objects import LocalizedText
 
 ACTOR_ID = SequentialIdGenerator(seed=99).new_id()
+ADMIN = actor_with({Role.ADMIN}, user_id=ACTOR_ID)
+CITIZEN = actor_with(user_id=ACTOR_ID)
 REAL_HAZARD_CODES = 10
 
 
@@ -60,12 +67,12 @@ def retired(hazard_type: HazardType, text: str = "obsolete") -> HazardType:
 
 
 def load_handler(
-    factory: HazardsUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: HazardsUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> LoadReferenceHazardTypesHandler:
     """Build the load handler with deterministic time and ids."""
     return LoadReferenceHazardTypesHandler(
         factory,
-        policy or AllowAllPolicy(),
+        policy or reference_data_policy(),
         FrozenClock(NOW),
         SequentialIdGenerator(),
     )
@@ -81,7 +88,7 @@ async def test_load_reference_hazard_types_with_real_file_creates_every_code() -
     file = FakeReferenceFileReader().read_hazard_types()
     handler = load_handler(factory)
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     assert len(report.created) == REAL_HAZARD_CODES
     assert report.updated == ()
@@ -98,11 +105,11 @@ async def test_load_reference_hazard_types_twice_second_run_is_all_unchanged() -
     uow, factory = unit_of_work()
     file = FakeReferenceFileReader().read_hazard_types()
     handler = load_handler(factory)
-    await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
     state_after_first = dict(uow.hazard_types.committed)
     events_after_first = len(uow.committed_events)
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     assert report.created == ()
     assert report.updated == ()
@@ -119,13 +126,13 @@ async def test_load_reference_hazard_types_when_denied_raises_and_stages_nothing
     policy = DenyAllPolicy()
     handler = load_handler(factory, policy)
     command = LoadReferenceHazardTypes(
-        file=reference_file(entry("example_a")), actor_id=ACTOR_ID
+        file=reference_file(entry("example_a")), actor=ADMIN
     )
 
     with pytest.raises(PermissionDeniedError):
         await handler(command)
 
-    assert policy.checked == [ACTOR_ID]
+    assert policy.checked == [ADMIN]
     assert factory.calls == 0
     assert uow.hazard_types.committed == {}
 
@@ -137,7 +144,7 @@ async def test_load_reference_hazard_types_dry_run_reports_but_commits_nothing()
     handler = load_handler(factory)
     command = LoadReferenceHazardTypes(
         file=reference_file(entry("example_a"), entry("example_b", parent="example_a")),
-        actor_id=ACTOR_ID,
+        actor=ADMIN,
         dry_run=True,
     )
 
@@ -162,7 +169,7 @@ async def test_load_reference_hazard_types_lists_child_first_creates_parent_firs
         entry("example_a"),
     )
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     assert report.created == ("example_a", "example_b", "example_c")
     assert uow.hazard_types.committed["example_c"].parent_code == "example_b"
@@ -175,7 +182,7 @@ async def test_load_reference_hazard_types_with_changed_label_relabels_existing(
     handler = load_handler(factory)
     file = reference_file(entry("example_a", label="Better label"))
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     stored = uow.hazard_types.committed["example_a"]
     assert report.updated == ("example_a",)
@@ -194,7 +201,7 @@ async def test_load_reference_hazard_types_new_retired_entry_creates_then_retire
     reason = RetirementReason(text="superseded", replaced_by="example_b")
     file = reference_file(entry("example_a", retirement=reason), entry("example_b"))
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     stored = uow.hazard_types.committed["example_a"]
     assert report.created == ("example_a", "example_b")
@@ -216,7 +223,7 @@ async def test_load_reference_hazard_types_file_retirement_retires_stored_type()
     reason = RetirementReason(text="no longer used")
     file = reference_file(entry("example_a", retirement=reason))
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     assert report.updated == ("example_a",)
     assert uow.hazard_types.committed["example_a"].retirement == reason
@@ -233,9 +240,7 @@ async def test_load_reference_hazard_types_never_reactivates_a_stored_retirement
     handler = load_handler(factory)
 
     report = await handler(
-        LoadReferenceHazardTypes(
-            file=reference_file(entry("example_a")), actor_id=ACTOR_ID
-        )
+        LoadReferenceHazardTypes(file=reference_file(entry("example_a")), actor=ADMIN)
     )
 
     assert report.unchanged == ("example_a",)
@@ -253,7 +258,7 @@ async def test_load_reference_hazard_types_with_different_retirement_skips_it() 
         entry("example_a", retirement=RetirementReason(text="other reason"))
     )
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     assert report.unchanged == ("example_a",)
     assert [skip.code for skip in report.skipped_with_reason] == ["example_a"]
@@ -274,7 +279,7 @@ async def test_load_reference_hazard_types_with_structural_changes_skips_each() 
         ),
     )
 
-    report = await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+    report = await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     reasons = [skip.reason for skip in report.skipped_with_reason]
     assert report.unchanged == ("example_a", "example_b")
@@ -293,7 +298,7 @@ async def test_load_reference_hazard_types_under_stored_retired_parent_raises() 
     )
 
     with pytest.raises(HazardTypeRetiredError):
-        await handler(LoadReferenceHazardTypes(file=file, actor_id=ACTOR_ID))
+        await handler(LoadReferenceHazardTypes(file=file, actor=ADMIN))
 
     assert uow.committed is False
     assert set(uow.hazard_types.committed) == {"example_a"}
@@ -306,12 +311,12 @@ async def test_load_reference_hazard_types_under_stored_retired_parent_raises() 
 
 
 def retire_handler(
-    factory: HazardsUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: HazardsUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> RetireHazardTypeHandler:
     """Build the retire handler with deterministic time and ids."""
     return RetireHazardTypeHandler(
         factory,
-        policy or AllowAllPolicy(),
+        policy or reference_data_policy(),
         FrozenClock(NOW),
         SequentialIdGenerator(),
     )
@@ -324,7 +329,7 @@ def retire_command(
     return RetireHazardType(
         ref=HazardTypeRef(code=code),
         reason=RetirementReason(text="merged", replaced_by=replaced_by),
-        actor_id=ACTOR_ID,
+        actor=ADMIN,
     )
 
 
@@ -354,7 +359,7 @@ async def test_retire_hazard_type_when_policy_denies_raises_before_reading() -> 
     with pytest.raises(PermissionDeniedError):
         await handler(retire_command())
 
-    assert policy.checked == [ACTOR_ID]
+    assert policy.checked == [ADMIN]
     assert factory.calls == 0
     assert uow.hazard_types.committed["example_a"].is_retired is False
 
@@ -400,12 +405,12 @@ async def test_retire_hazard_type_unknown_replacement_raises_invalid_taxonomy() 
 
 
 def reactivate_handler(
-    factory: HazardsUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: HazardsUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> ReactivateHazardTypeHandler:
     """Build the reactivate handler with deterministic time and ids."""
     return ReactivateHazardTypeHandler(
         factory,
-        policy or AllowAllPolicy(),
+        policy or reference_data_policy(),
         FrozenClock(NOW),
         SequentialIdGenerator(),
     )
@@ -414,7 +419,7 @@ def reactivate_handler(
 def reactivate_command(code: str = "example_a") -> ReactivateHazardType:
     """Return a reactivate command for ``code``."""
     return ReactivateHazardType(
-        ref=HazardTypeRef(code=code), reason="retired by mistake", actor_id=ACTOR_ID
+        ref=HazardTypeRef(code=code), reason="retired by mistake", actor=ADMIN
     )
 
 
@@ -466,3 +471,45 @@ async def test_reactivate_hazard_type_when_active_raises_invalid_transition() ->
 
     assert uow.committed is False
     assert uow.committed_events == ()
+
+
+# --------------------------------------------------------------------------- #
+# Reference-data policy                                                       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_load_reference_hazard_types_citizen_actor_is_denied_by_policy() -> None:
+    uow, factory = unit_of_work()
+    command = LoadReferenceHazardTypes(
+        file=reference_file(entry("example_a")), actor=CITIZEN
+    )
+
+    with pytest.raises(PermissionDeniedError) as raised:
+        await load_handler(factory)(command)
+
+    assert raised.value.details["policy"] == "CanManageReferenceData"
+    assert factory.calls == 0
+    assert uow.hazard_types.committed == {}
+
+
+async def test_retire_hazard_type_citizen_actor_is_denied_by_policy() -> None:
+    uow, factory = unit_of_work(stored_types(("example_a", None)))
+    command = retire_command().model_copy(update={"actor": CITIZEN})
+
+    with pytest.raises(PermissionDeniedError):
+        await retire_handler(factory)(command)
+
+    assert factory.calls == 0
+    assert uow.hazard_types.committed["example_a"].is_retired is False
+
+
+async def test_reactivate_hazard_type_citizen_actor_is_denied_by_policy() -> None:
+    (stored,) = stored_types(("example_a", None))
+    uow, factory = unit_of_work((retired(stored),))
+    command = reactivate_command().model_copy(update={"actor": CITIZEN})
+
+    with pytest.raises(PermissionDeniedError):
+        await reactivate_handler(factory)(command)
+
+    assert factory.calls == 0
+    assert uow.hazard_types.committed["example_a"].is_retired is True

@@ -35,7 +35,17 @@ VERSION_TABLE: Final = "alembic_version"
 # Tables the PostGIS image creates in the public schema; they are not ours.
 POSTGIS_TABLES: Final = frozenset({"spatial_ref_sys"})
 APPLICATION_TABLES_AT_HEAD: Final = frozenset(
-    {"outbox_messages", "places", "place_names", "hazard_types", "impact_metrics"}
+    {
+        "outbox_messages",
+        "places",
+        "place_names",
+        "hazard_types",
+        "impact_metrics",
+        "users",
+        "organizations",
+        "memberships",
+        "idempotency_keys",
+    }
 )
 EXTENSIONS: Final = frozenset({"postgis", "pg_trgm", "unaccent"})
 

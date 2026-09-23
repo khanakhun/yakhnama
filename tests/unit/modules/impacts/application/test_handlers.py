@@ -3,8 +3,9 @@
 import pytest
 
 from tests.fakes.clock import FrozenClock
+from tests.fakes.identity import DenyAllPolicy, actor_with
 from tests.fakes.ids import SequentialIdGenerator
-from tests.fakes.seed import AllowAllPolicy, DenyAllPolicy, FakeReferenceFileReader
+from tests.fakes.seed import FakeReferenceFileReader
 from tests.unit.modules.impacts.application.support import (
     NOW,
     entry,
@@ -12,7 +13,11 @@ from tests.unit.modules.impacts.application.support import (
     stored_metric,
     unit_of_work,
 )
-from yakhnama.modules.impacts.application.authorisation import AdminOnlyPolicy
+from yakhnama.modules.identity.public import Role
+from yakhnama.modules.impacts.application.authorisation import (
+    AuthorisationPolicy,
+    reference_data_policy,
+)
 from yakhnama.modules.impacts.application.commands import (
     LoadReferenceImpactMetrics,
     RetireImpactMetric,
@@ -41,25 +46,33 @@ from yakhnama.shared_kernel.errors import PermissionDeniedError
 from yakhnama.shared_kernel.value_objects import LocalizedText
 
 ACTOR_ID = SequentialIdGenerator(seed=99).new_id()
+ADMIN = actor_with({Role.ADMIN}, user_id=ACTOR_ID)
+CITIZEN = actor_with(user_id=ACTOR_ID)
 REAL_METRIC_CODES = 10
 OBSOLETE = RetirementReason(explanation="obsolete")
 
 
 def load_handler(
-    factory: ImpactsUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: ImpactsUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> LoadReferenceImpactMetricsHandler:
     """Build the load handler with deterministic time and ids."""
     return LoadReferenceImpactMetricsHandler(
-        factory, policy or AllowAllPolicy(), FrozenClock(NOW), SequentialIdGenerator()
+        factory,
+        policy or reference_data_policy(),
+        FrozenClock(NOW),
+        SequentialIdGenerator(),
     )
 
 
 def retire_handler(
-    factory: ImpactsUnitOfWorkFactory, policy: AdminOnlyPolicy | None = None
+    factory: ImpactsUnitOfWorkFactory, policy: AuthorisationPolicy | None = None
 ) -> RetireImpactMetricHandler:
     """Build the retire handler with deterministic time and ids."""
     return RetireImpactMetricHandler(
-        factory, policy or AllowAllPolicy(), FrozenClock(NOW), SequentialIdGenerator()
+        factory,
+        policy or reference_data_policy(),
+        FrozenClock(NOW),
+        SequentialIdGenerator(),
     )
 
 
@@ -68,7 +81,7 @@ def load(
 ) -> LoadReferenceImpactMetrics:
     """Return a load command for a synthetic file."""
     return LoadReferenceImpactMetrics(
-        file=reference_file(*entries), actor_id=ACTOR_ID, dry_run=dry_run
+        file=reference_file(*entries), actor=ADMIN, dry_run=dry_run
     )
 
 
@@ -84,7 +97,7 @@ async def test_load_reference_impact_metrics_with_real_file_creates_every_code()
     file = FakeReferenceFileReader().read_impact_metrics()
 
     report = await load_handler(factory)(
-        LoadReferenceImpactMetrics(file=file, actor_id=ACTOR_ID)
+        LoadReferenceImpactMetrics(file=file, actor=ADMIN)
     )
 
     assert len(report.created) == REAL_METRIC_CODES
@@ -105,7 +118,7 @@ async def test_load_reference_impact_metrics_twice_second_run_is_all_unchanged()
     uow, factory = unit_of_work()
     file = FakeReferenceFileReader().read_impact_metrics()
     handler = load_handler(factory)
-    command = LoadReferenceImpactMetrics(file=file, actor_id=ACTOR_ID)
+    command = LoadReferenceImpactMetrics(file=file, actor=ADMIN)
     await handler(command)
     state_after_first = dict(uow.impact_metrics.committed)
     events_after_first = len(uow.committed_events)
@@ -127,7 +140,7 @@ async def test_load_reference_impact_metrics_when_denied_raises_permission_denie
     with pytest.raises(PermissionDeniedError):
         await load_handler(factory, policy)(load(entry("example_a")))
 
-    assert policy.checked == [ACTOR_ID]
+    assert policy.checked == [ADMIN]
     assert factory.calls == 0
     assert uow.impact_metrics.committed == {}
 
@@ -242,7 +255,7 @@ def retire_command(
     return RetireImpactMetric(
         ref=ImpactMetricRef(code=code),
         reason=RetirementReason(explanation="superseded", replaced_by=replaced_by),
-        actor_id=ACTOR_ID,
+        actor=ADMIN,
     )
 
 
@@ -310,6 +323,36 @@ async def test_retire_self_replacing_raises_inconsistent_metric_definition_error
 
     with pytest.raises(InconsistentMetricDefinitionError):
         await retire_handler(factory)(retire_command(replaced_by="example_a"))
+
+    assert factory.calls == 0
+    assert uow.impact_metrics.committed["example_a"].is_active is True
+
+
+# --------------------------------------------------------------------------- #
+# Reference-data policy                                                       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_load_reference_impact_metrics_citizen_actor_is_denied_by_policy() -> (
+    None
+):
+    uow, factory = unit_of_work()
+    command = load(entry("example_a")).model_copy(update={"actor": CITIZEN})
+
+    with pytest.raises(PermissionDeniedError) as raised:
+        await load_handler(factory)(command)
+
+    assert raised.value.details["policy"] == "CanManageReferenceData"
+    assert factory.calls == 0
+    assert uow.impact_metrics.committed == {}
+
+
+async def test_retire_impact_metric_citizen_actor_is_denied_by_policy() -> None:
+    uow, factory = unit_of_work((stored_metric("example_a"),))
+    command = retire_command().model_copy(update={"actor": CITIZEN})
+
+    with pytest.raises(PermissionDeniedError):
+        await retire_handler(factory)(command)
 
     assert factory.calls == 0
     assert uow.impact_metrics.committed["example_a"].is_active is True

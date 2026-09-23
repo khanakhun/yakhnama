@@ -5,12 +5,14 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from yakhnama.shared_kernel.errors import (
+    AuthenticationError,
     ConflictError,
     InvalidTransitionError,
     InvariantViolationError,
     NotFoundError,
     PermissionDeniedError,
     PreconditionFailedError,
+    PreconditionRequiredError,
     ValidationError,
     YakhnamaError,
 )
@@ -23,6 +25,8 @@ SUBCLASSES_AND_CODES = [
     (InvariantViolationError, "invariant_violation"),
     (InvalidTransitionError, "invalid_transition"),
     (PreconditionFailedError, "precondition_failed"),
+    (PreconditionRequiredError, "precondition_required"),
+    (AuthenticationError, "authentication_failed"),
 ]
 
 

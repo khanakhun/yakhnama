@@ -1,0 +1,145 @@
+{
+  "realm": "yakhnama",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 900,
+  "defaultSignatureAlgorithm": "RS256",
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}]}"
+          ]
+        }
+      }
+    ]
+  },
+  "roles": {
+    "realm": [
+      {
+        "name": "citizen",
+        "description": "Default role for every authenticated user: may submit reports."
+      },
+      {
+        "name": "trusted_reporter",
+        "description": "A citizen whose reports moderators have chosen to trust more."
+      },
+      {
+        "name": "org_member",
+        "description": "A member of an organisation record (government, NGO, research, media, community)."
+      },
+      {
+        "name": "org_admin",
+        "description": "Manages membership of one organisation."
+      },
+      {
+        "name": "moderator",
+        "description": "Verifies reports into canonical events and impact claims."
+      },
+      {
+        "name": "admin",
+        "description": "Full administrative access, including granting roles."
+      },
+      {
+        "name": "default-roles-yakhnama",
+        "description": "Roles granted to every new user of the yakhnama realm.",
+        "composite": true,
+        "clientRole": false,
+        "composites": {
+          "realm": ["citizen"]
+        }
+      }
+    ]
+  },
+  "defaultRole": {
+    "name": "default-roles-yakhnama",
+    "description": "Roles granted to every new user of the yakhnama realm.",
+    "composite": true,
+    "clientRole": false
+  },
+  "clients": [
+    {
+      "clientId": "yakhnama-api",
+      "name": "Yakhnama API",
+      "description": "The backend resource server. Bearer-only: it never authenticates users itself, it only appears as the audience of access tokens issued to other clients.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "yakhnama-dev-cli",
+      "name": "Yakhnama development CLI",
+      "description": "DEVELOPMENT ONLY. Public client with direct access grants (password flow) for obtaining a demo access token from the command line. Never enable direct access grants or deploy this client in production; real clients use an interactive OIDC flow.",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "audience-yakhnama-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "yakhnama-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "demo-citizen",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo-citizen-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["citizen"]
+    },
+    {
+      "username": "demo-moderator",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo-moderator-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["citizen", "moderator"]
+    }
+  ]
+}

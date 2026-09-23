@@ -27,8 +27,9 @@ def test_create_app_test_settings_exposes_title_version_and_versioned_urls(
         "Yakhnama",
         version("yakhnama"),
         "/api/v1/openapi.json",
-        "/api/v1/docs",
-        "/api/v1/redoc",
+        # Swagger UI and ReDoc are off; Scalar is a route at /api/v1/docs (ADR 0014).
+        None,
+        None,
     )
 
 

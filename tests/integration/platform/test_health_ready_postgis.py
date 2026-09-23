@@ -87,7 +87,8 @@ async def test_health_ready_with_refused_connection_returns_503_degraded() -> No
     assert response.json() == {"status": "degraded", "checks": {"database": "failed"}}
     assert DSN_MARKER not in response.text
     assert DSN_MARKER not in str(logs)
-    assert [log["event"] for log in logs] == ["readiness_check_failed"]
+    # The request-logging middleware adds its own "http_request" line.
+    assert [log["event"] for log in logs] == ["readiness_check_failed", "http_request"]
 
 
 async def test_health_ready_with_silent_server_times_out_and_returns_503(
