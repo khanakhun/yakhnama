@@ -175,6 +175,16 @@ Validates `data/reference/hazard_types.yaml` (task T8).
 | `entries[].source` | str, 1–500 | — | Citation for the entry, or `proposed`. | — | Phase 1 |
 | `entries[].notes` | str, 1–2000, or null | — | Remarks for reviewers, for example the open question. | — | Phase 1 |
 
+## JSONB storage
+
+The `hazard_types` table stores the structured value objects as JSONB columns: `labels`
+and `description` (`LocalizedText`), `alignment` (`IrdrAlignment`) and `retirement`
+(`RetirementReason`, null unless retired). Each column holds exactly the JSON form of
+its value object (`model_dump(mode="json")`), with the same fields and meanings as the
+tables above. The mapper validates the column back into the value object on every
+read, so a malformed value fails loudly and never reaches the domain. Nothing but the
+repository writes these columns (`src/yakhnama/modules/hazards/infrastructure/orm.py`).
+
 ## Open questions
 
 These are written in the `docs/open-questions.md` format with provisional `QH-n` numbers;

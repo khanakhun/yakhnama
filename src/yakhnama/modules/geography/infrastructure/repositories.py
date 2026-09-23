@@ -19,7 +19,6 @@ Patterns: Repository (adapter side).
 """
 
 from collections.abc import Iterable
-from typing import Final
 
 from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -36,24 +35,9 @@ from yakhnama.modules.geography.infrastructure.mappers import (
     row_to_place,
 )
 from yakhnama.modules.geography.infrastructure.orm import PlaceNameRow, PlaceRow
+from yakhnama.platform.db import is_unique_violation
 from yakhnama.shared_kernel.errors import ConflictError
 from yakhnama.shared_kernel.ids import EntityId
-
-UNIQUE_VIOLATION: Final = "23505"
-"""PostgreSQL SQLSTATE of a unique constraint violation."""
-
-
-def is_unique_violation(error: IntegrityError) -> bool:
-    """Tell whether ``error`` was raised by a unique constraint or index.
-
-    Args:
-        error: The integrity error SQLAlchemy raised.
-
-    Returns:
-        ``True`` for SQLSTATE 23505, ``False`` for any other integrity error (a
-        foreign key or check violation is a bug, not a conflict, and is re-raised).
-    """
-    return getattr(error.orig, "sqlstate", None) == UNIQUE_VIOLATION
 
 
 class SqlAlchemyPlaceRepository:

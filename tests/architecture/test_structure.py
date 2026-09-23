@@ -1,8 +1,11 @@
 """Structural rules that ``import-linter`` cannot express (``AGENTS.md`` §4.2)."""
 
 import ast
+import importlib
+import inspect
 import re
 import sys
+import typing
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPOSITORY_ROOT / "src" / "yakhnama"
 HOOKS_ROOT = REPOSITORY_ROOT / ".claude" / "hooks"
 SHARED_KERNEL = SOURCE_ROOT / "shared_kernel"
+MODULES_ROOT = SOURCE_ROOT / "modules"
+# Adapter classes are named after the port they implement plus this technology prefix
+# (``SqlAlchemyPlaceRepository`` implements ``PlaceRepository``).
+REPOSITORY_ADAPTER_PREFIX = "SqlAlchemy"
 # Third-party packages the shared kernel may use; everything else outside the standard
 # library is a framework dependency (AGENTS.md §2.1).
 SHARED_KERNEL_ALLOWED_THIRD_PARTY = frozenset({"pydantic", "geojson_pydantic"})
@@ -137,6 +144,58 @@ def _is_allowed_in_shared_kernel(module: str) -> bool:
         or top_level in sys.stdlib_module_names
         or top_level in SHARED_KERNEL_ALLOWED_THIRD_PARTY
     )
+
+
+def _module_directories() -> list[Path]:
+    return sorted(
+        path
+        for path in MODULES_ROOT.iterdir()
+        if path.is_dir() and (path / "__init__.py").is_file()
+    )
+
+
+def _module_name(module_directory: Path) -> str:
+    return module_directory.name
+
+
+def _repository_adapters() -> list[tuple[str, type]]:
+    adapters: list[tuple[str, type]] = []
+    for module_directory in _module_directories():
+        if not (module_directory / "infrastructure" / "repositories.py").is_file():
+            continue
+        name = module_directory.name
+        repositories = importlib.import_module(
+            f"yakhnama.modules.{name}.infrastructure.repositories"
+        )
+        adapters.extend(
+            (name, member)
+            for member_name, member in inspect.getmembers(repositories, inspect.isclass)
+            if member.__module__ == repositories.__name__
+            and member_name.startswith(REPOSITORY_ADAPTER_PREFIX)
+            and member_name.endswith("Repository")
+        )
+    return adapters
+
+
+def _adapter_id(adapter: tuple[str, type]) -> str:
+    return f"{adapter[0]}.{adapter[1].__name__}"
+
+
+def _port_offence(module_name: str, adapter: type) -> str | None:
+    """Return why ``adapter`` does not implement its port, or ``None`` if it does."""
+    ports = importlib.import_module(f"yakhnama.modules.{module_name}.application.ports")
+    port_name = adapter.__name__.removeprefix(REPOSITORY_ADAPTER_PREFIX)
+    port = getattr(ports, port_name, None)
+    if port is None or not typing.is_protocol(port):
+        return f"application/ports.py defines no Protocol named {port_name}"
+    # Protocols are not runtime_checkable (ports stay plain), so compare the member
+    # sets; mypy checks the signatures wherever the adapter is bound to the port.
+    missing = sorted(
+        member
+        for member in typing.get_protocol_members(port)
+        if not hasattr(adapter, member)
+    )
+    return f"{adapter.__name__} lacks {missing} of {port_name}" if missing else None
 
 
 def test_source_root_resolved_from_test_file_is_existing_directory() -> None:
@@ -267,3 +326,58 @@ def test_shared_kernel_import_rule_classifies_modules(
     result = _is_allowed_in_shared_kernel(module)
 
     assert result is is_allowed
+
+
+def test_modules_root_contains_modules() -> None:
+    modules = _module_directories()
+
+    assert modules
+
+
+@pytest.mark.parametrize("module_directory", _module_directories(), ids=_module_name)
+def test_every_module_has_a_public_facade(module_directory: Path) -> None:
+    facade = module_directory / "public.py"
+
+    docstring = ast.get_docstring(_parse(facade)) if facade.is_file() else None
+
+    assert docstring, f"{_relative(module_directory)} needs public.py with a docstring"
+
+
+def test_repository_adapters_are_discovered() -> None:
+    adapters = _repository_adapters()
+
+    assert len(adapters) >= len(_module_directories())
+
+
+@pytest.mark.parametrize("adapter", _repository_adapters(), ids=_adapter_id)
+def test_every_repository_class_implements_a_port(adapter: tuple[str, type]) -> None:
+    module_name, adapter_class = adapter
+
+    offence = _port_offence(module_name, adapter_class)
+
+    assert offence is None
+
+
+def test_port_offence_class_without_matching_port_is_reported() -> None:
+    class SqlAlchemyNothingRepository:
+        """A repository adapter with no port.
+
+        Implements: Fake (of Repository).
+        """
+
+    offence = _port_offence("geography", SqlAlchemyNothingRepository)
+
+    assert offence == "application/ports.py defines no Protocol named NothingRepository"
+
+
+def test_port_offence_class_missing_port_members_is_reported() -> None:
+    class SqlAlchemyPlaceRepository:
+        """A repository adapter implementing none of its port.
+
+        Implements: Fake (of Repository).
+        """
+
+    offence = _port_offence("geography", SqlAlchemyPlaceRepository)
+
+    assert offence is not None
+    assert offence.startswith("SqlAlchemyPlaceRepository lacks [")

@@ -123,6 +123,17 @@ Each entry (`ImpactMetricReferenceEntry`) has the `ImpactMetric` fields `code`, 
 
 `labels` and `description` may be written as a bare `{language: text}` mapping in YAML.
 
+## JSONB storage
+
+The `impact_metrics` table stores the structured value objects as JSONB columns:
+`labels` and `description` (`LocalizedText`), `sendai` (`SendaiIndicator`) and
+`desinventar` (`DesInventarField`, both null when not mapped), and `retirement`
+(`RetirementReason`, null unless retired). Each column holds exactly the JSON form of
+its value object (`model_dump(mode="json")`), with the same fields and meanings as the
+tables above. The mapper validates the column back into the value object on every
+read, so a malformed value fails loudly and never reaches the domain. Nothing but the
+repository writes these columns (`src/yakhnama/modules/impacts/infrastructure/orm.py`).
+
 ## Open questions
 
 - **Sendai indicator mapping list.** Which UNDRR Sendai global indicators (A-1, A-2, B-1,

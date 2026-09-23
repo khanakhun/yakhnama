@@ -1,19 +1,42 @@
 """Unit tests for ``yakhnama.platform.container`` and its wiring in ``create_app``."""
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest
 from fastapi import FastAPI, Request
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
+from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.main import create_app
-from yakhnama.platform.container import Container, build_container, get_container
+from yakhnama.modules.geography.infrastructure.queries import (
+    SqlAlchemyPlaceQueryService,
+)
+from yakhnama.modules.geography.infrastructure.uow import (
+    SqlAlchemyGeographyUnitOfWork,
+)
+from yakhnama.modules.hazards.infrastructure.queries import (
+    SqlAlchemyHazardTypeQueryService,
+)
+from yakhnama.modules.hazards.infrastructure.uow import SqlAlchemyHazardsUnitOfWork
+from yakhnama.modules.impacts.infrastructure.queries import (
+    SqlAlchemyImpactMetricQueryService,
+)
+from yakhnama.modules.impacts.infrastructure.uow import SqlAlchemyImpactsUnitOfWork
+from yakhnama.platform.container import (
+    Container,
+    build_container,
+    build_seed_handler,
+    get_container,
+)
 from yakhnama.platform.outbox.relay import OutboxRelay, SubscriberRegistry
 from yakhnama.platform.outbox.writer import OutboxWriter
 from yakhnama.platform.settings import Settings
 from yakhnama.platform.uow import SqlAlchemyUnitOfWork
+from yakhnama.seed.application import SeedReferenceData, SeedReferenceDataHandler
 from yakhnama.shared_kernel.clock import SystemClock
+from yakhnama.shared_kernel.errors import PermissionDeniedError, ValidationError
 from yakhnama.shared_kernel.ids import Uuid7Generator, is_uuid7
 
 
@@ -74,6 +97,66 @@ def test_build_container_holds_outbox_writer_registry_and_relay(
     assert isinstance(parts[0], OutboxWriter)
     assert isinstance(parts[1], SubscriberRegistry)
     assert isinstance(parts[2], OutboxRelay)
+
+
+def test_build_container_module_uow_factories_open_module_units_of_work(
+    container: Container,
+) -> None:
+    opened = (
+        container.geography_uow_factory(),
+        container.hazards_uow_factory(),
+        container.impacts_uow_factory(),
+    )
+
+    assert isinstance(opened[0], SqlAlchemyGeographyUnitOfWork)
+    assert isinstance(opened[1], SqlAlchemyHazardsUnitOfWork)
+    assert isinstance(opened[2], SqlAlchemyImpactsUnitOfWork)
+    assert opened[0] is not container.geography_uow_factory()
+
+
+def test_build_container_binds_sqlalchemy_query_services(
+    container: Container,
+) -> None:
+    services = (
+        container.place_query_service,
+        container.hazard_type_query_service,
+        container.impact_metric_query_service,
+    )
+
+    assert isinstance(services[0], SqlAlchemyPlaceQueryService)
+    assert isinstance(services[1], SqlAlchemyHazardTypeQueryService)
+    assert isinstance(services[2], SqlAlchemyImpactMetricQueryService)
+
+
+async def test_build_seed_handler_refuses_every_actor_but_the_given_one(
+    container: Container,
+) -> None:
+    ids = SequentialIdGenerator(seed=3)
+    seed_actor, other_actor = ids.new_id(), ids.new_id()
+    handler = build_seed_handler(container, seed_actor)
+
+    with pytest.raises(PermissionDeniedError):
+        await handler(SeedReferenceData(actor_id=other_actor))
+
+    assert isinstance(handler, SeedReferenceDataHandler)
+
+
+async def test_build_seed_handler_reads_the_settings_reference_directory(
+    settings: Settings, tmp_path: Path
+) -> None:
+    # An empty directory: the allowed actor gets past the policy, and the reader
+    # fails on the first file before any load opens a database session.
+    container = build_container(
+        settings.model_copy(update={"reference_data_dir": tmp_path})
+    )
+    seed_actor = SequentialIdGenerator(seed=4).new_id()
+    handler = build_seed_handler(container, seed_actor)
+
+    with pytest.raises(ValidationError) as caught:
+        await handler(SeedReferenceData(actor_id=seed_actor))
+    await container.engine.dispose()
+
+    assert caught.value.details == {"file": "hazard_types.yaml", "reason": "not_found"}
 
 
 def test_create_app_without_container_builds_and_stores_one(app: FastAPI) -> None:

@@ -18,16 +18,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from yakhnama.platform.db import (
     NAMING_CONVENTION,
+    UNIQUE_VIOLATION,
     Base,
     UtcDateTime,
     create_engine,
     create_session_factory,
+    is_unique_violation,
 )
 from yakhnama.platform.settings import Settings
 
@@ -167,3 +170,34 @@ def test_index_on_convention_metadata_uses_column_label() -> None:
     ddl = _ddl(metadata, "events")
 
     assert "CREATE INDEX ix_events_id" in ddl
+
+
+class _DriverError(Exception):
+    """Stands in for the asyncpg adapter's error, which carries ``sqlstate``.
+
+    Implements: Fake (of the driver error SQLAlchemy wraps).
+    """
+
+    def __init__(self, sqlstate: str | None) -> None:
+        super().__init__("driver error")
+        self.sqlstate = sqlstate
+
+
+@pytest.mark.parametrize(
+    ("orig", "expected"),
+    [
+        (_DriverError(UNIQUE_VIOLATION), True),
+        (_DriverError("23503"), False),
+        (_DriverError(None), False),
+        (Exception("no sqlstate attribute"), False),
+    ],
+    ids=["unique", "foreign-key", "none", "no-attribute"],
+)
+def test_is_unique_violation_detects_only_sqlstate_23505(
+    orig: Exception, *, expected: bool
+) -> None:
+    error = IntegrityError("INSERT ...", None, orig)
+
+    result = is_unique_violation(error)
+
+    assert result is expected

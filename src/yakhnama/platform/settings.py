@@ -8,10 +8,13 @@ Patterns: Settings (pydantic-settings ``BaseSettings``, proposed in ADR 0011).
 """
 
 import functools
+from pathlib import Path
 from typing import Annotated, Final, Literal
 
 from pydantic import Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from yakhnama.shared_kernel.ids import EntityId
 
 Environment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -70,6 +73,14 @@ class Settings(BaseSettings):
         otel_service_name: ``service.name`` resource attribute on every span.
         docs_enabled: Serve the OpenAPI document and the interactive docs.
         health_ready_timeout_seconds: Upper bound for each readiness check.
+        reference_data_dir: Directory holding the versioned reference YAML files
+            read by ``python -m yakhnama.seed``. A relative path resolves against the
+            working directory. It is checked when the seed reads it, not when the
+            settings load, so the API starts without it.
+        seed_actor_id: The system actor recorded on every change the seed makes.
+            Must be a UUIDv7. When ``None``, each seed run generates a fresh UUIDv7
+            system actor and logs it, so its changes can still be told apart. A
+            Phase 1 placeholder: Phase 2 replaces it with a real identity.
     """
 
     model_config = SettingsConfigDict(
@@ -111,6 +122,11 @@ class Settings(BaseSettings):
     docs_enabled: bool = True
     health_ready_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
 
+    reference_data_dir: Path = Path("data/reference")
+    # EntityId rather than a bare UUID: every actor id in the system is a UUIDv7
+    # (ADR 0006), so a wrong value fails at startup instead of inside the seed.
+    seed_actor_id: EntityId | None = None
+
     @field_validator("database_url", mode="after")
     @classmethod
     def _require_asyncpg_driver(cls, database_url: PostgresDsn) -> PostgresDsn:
@@ -124,11 +140,11 @@ class Settings(BaseSettings):
             raise ValueError(message)
         return database_url
 
-    @field_validator("otel_exporter_endpoint", mode="before")
+    @field_validator("otel_exporter_endpoint", "seed_actor_id", mode="before")
     @classmethod
-    def _empty_endpoint_means_none(cls, endpoint: object) -> object:
+    def _empty_value_means_none(cls, value: object) -> object:
         # An environment variable cannot hold None; an empty value is its spelling.
-        return None if endpoint == "" else endpoint
+        return None if value == "" else value
 
 
 @functools.lru_cache(maxsize=1)

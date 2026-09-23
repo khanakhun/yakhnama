@@ -13,7 +13,7 @@ having been loaded here is assumed to carry exactly one change (expected version
 Patterns: Repository (adapter side).
 """
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -28,26 +28,11 @@ from yakhnama.modules.impacts.infrastructure.mappers import (
     to_json,
 )
 from yakhnama.modules.impacts.infrastructure.orm import ImpactMetricRow
+from yakhnama.platform.db import is_unique_violation
 from yakhnama.shared_kernel.errors import ConflictError
 
 if TYPE_CHECKING:
     from yakhnama.shared_kernel.ids import EntityId
-
-UNIQUE_VIOLATION: Final = "23505"
-"""PostgreSQL SQLSTATE of a unique constraint violation."""
-
-
-def is_unique_violation(error: IntegrityError) -> bool:
-    """Tell whether ``error`` was raised by a unique constraint or index.
-
-    Args:
-        error: The integrity error SQLAlchemy raised.
-
-    Returns:
-        ``True`` for SQLSTATE 23505; any other integrity error is a bug, not a
-        conflict, and is re-raised by the callers.
-    """
-    return getattr(error.orig, "sqlstate", None) == UNIQUE_VIOLATION
 
 
 class SqlAlchemyImpactMetricRepository:

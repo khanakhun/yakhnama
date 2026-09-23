@@ -105,6 +105,17 @@ an entry in the same file (**proposed**).
 | `entries[].status` | `sourced` \| `proposed` \| `fixture` | — | How far the entry can be trusted: taken from the cited `source`, proposed and awaiting confirmation, or test fixture data that makes no claim about the world. This is data-quality status, not the place lifecycle `Place.status`. | File author. | Phase 1 |
 | `entries[].source` | `str` (1–500), nullable | — | Citation for the entry. It is required when `status` is `sourced`. | File author. | Phase 1 |
 
+## Storage-only columns (`place_names` table)
+
+Most columns of the `places` and `place_names` tables hold the fields above one to one
+(`src/yakhnama/modules/geography/infrastructure/orm.py`). These two columns exist only in
+storage and are never part of the domain model or the public dataset.
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `place_names.position` | `smallint`, from 0 | — | Zero-based position of the name in `Place.names`, so names read back in the order they were recorded. It is unique per place (`uq_place_names_place_id_position`). It is rewritten whenever the place is saved, so it is not a stable identifier. | Computed by the repository mapper on every save. | Phase 1 |
+| `place_names.text_folded` | `text` | — | The search form of `text`: Unicode NFKD with combining marks removed, case-folded and trimmed (`fold_search_text`). For a Latin-script name it also goes through PostgreSQL `unaccent`, so letters such as `ł` or `ø` fold as well. It is unbounded, because folding can make a name longer. A GIN trigram index serves similarity and substring search. It is never displayed. | Derived from `text` by the repository mapper and the database on every save. | Phase 1 |
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |

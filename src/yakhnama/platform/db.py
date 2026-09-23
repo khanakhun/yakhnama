@@ -38,6 +38,7 @@ from uuid import UUID
 
 from sqlalchemy import MetaData, Uuid
 from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -58,6 +59,9 @@ NAMING_CONVENTION: Final = MappingProxyType(
         "ck": "ck_%(table_name)s_%(constraint_name)s",
     }
 )
+
+UNIQUE_VIOLATION: Final = "23505"
+"""PostgreSQL SQLSTATE of a unique constraint or unique index violation."""
 
 # One shared instance for explicit ``mapped_column(UtcDateTime)`` declarations, the same
 # type the annotation map uses for ``Mapped[datetime]``.
@@ -134,3 +138,21 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
         A session factory bound to ``engine``.
     """
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+def is_unique_violation(error: IntegrityError) -> bool:
+    """Tell whether ``error`` was raised by a unique constraint or unique index.
+
+    Repositories turn a unique violation into ``ConflictError`` (a concurrent writer
+    created the same code first) and re-raise every other integrity error, because
+    a foreign key or check violation is a bug, not a conflict. The asyncpg adapter
+    exposes the SQLSTATE as ``sqlstate`` on the wrapped driver error.
+
+    Args:
+        error: The integrity error SQLAlchemy raised.
+
+    Returns:
+        ``True`` for SQLSTATE 23505, ``False`` for any other integrity error or a
+        driver error without a SQLSTATE.
+    """
+    return getattr(error.orig, "sqlstate", None) == UNIQUE_VIOLATION
