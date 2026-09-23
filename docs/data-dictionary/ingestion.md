@@ -291,6 +291,53 @@ synthetic test data that must never be published as real), `source` (a citation 
 publisher's documentation, `proposed`, or `synthetic fixture`) and `notes`. `licence`
 is required. Entries are never removed.
 
+## Persistence
+
+`datasets`, `dataset_versions` and `ingestion_runs` (migration `0015_ingestion_catalog`);
+`observations` and `raster_assets` (migration `0016_observations_and_rasters`).
+
+- **`datasets`.** `code` uses the binary `"C"` collation (the keyset sort key of the
+  catalog listing, which must order the same way the application's Python-side
+  comparisons do); `licence` is JSONB; `spatial_bbox` is a WGS84 `POLYGON` with its own
+  explicit GiST index (`ix_datasets_spatial_bbox_gist`); `temporal_start`/`temporal_end`
+  each carry a paired precision column, checked complete in pairs
+  (`ck_datasets_temporal_start_complete`, `ck_datasets_temporal_end_complete`) and that
+  an end never appears without a start (`ck_datasets_temporal_end_needs_start`).
+- **`dataset_versions`.** `UNIQUE (dataset_id, label)`; `ForeignKeyConstraint` to
+  `datasets`, `ON DELETE RESTRICT` — nothing in the catalog is ever deleted.
+- **`ingestion_runs`.** `counts` and `report` are JSONB; `ForeignKeyConstraint` to
+  `dataset_versions`, `ON DELETE RESTRICT`; indexed by
+  `(dataset_version_id, created_at)` for the newest-first per-dataset listing and by
+  `status` separately. `triggered_by` is a user id of the `identity` module and
+  carries **no foreign key** (the same cross-module rule as everywhere else,
+  `docs/open-questions.md` Q162).
+- **`observations` — no primary-key surrogate, hypertable-ready by construction.** The
+  primary key is the composite natural key `(observed_at, dataset_version_id,
+  variable_code, site_ref)`, `observed_at` first so a later
+  `create_hypertable('observations', 'observed_at', ...)` needs no column or query
+  changed (`docs/architecture/ingestion.md`, "The observation table"). This table has
+  **no foreign keys at all** — not even to `dataset_versions` — a deliberate exception
+  to every other lineage reference in the schema, made so a future partitioning
+  conversion is never blocked by a constraint that would have to span chunks.
+  `site_ref` uses the `"C"` collation; `value` and `unit` are checked null together
+  (`ck_observations_value_complete`); `ix_observations_dataset_version_id_variable_code`
+  covers `(dataset_version_id, variable_code, observed_at, site_ref)`, the exact keyset
+  order `QueryObservations` walks, so no separate time index is created (the primary
+  key's own b-tree already serves range scans on `observed_at`).
+- **`raster_assets`.** `UNIQUE (dataset_version_id, stac_id)`
+  (`uq_raster_assets_dataset_version_id`) — a `stac_id` is unique **per dataset
+  version**, not globally, so the same scene id may recur across different releases of
+  a dataset without colliding. `footprint` (any geometry type, `SRID 4326`) has its own
+  explicit GiST index (`ix_raster_assets_footprint_gist`); `acquired_at` carries its
+  precision column plus the **derived, non-domain** `acquired_start` column (the start
+  instant of the acquisition period), indexed together with `id`
+  (`ix_raster_assets_acquired_start_id`) for the newest-acquisition-first listing —
+  added purely so a precision-aware "start of period" ordering does not need
+  recomputing in SQL on every query, mirroring `events.period_earliest_at`
+  (`docs/data-dictionary/events.md`, "Persistence"). `cloud_cover` is checked to be a
+  percentage (`ck_raster_assets_cloud_cover_percentage`); `bands` and `assets` are
+  JSONB; `ForeignKeyConstraint` to `dataset_versions`, `ON DELETE RESTRICT`.
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |

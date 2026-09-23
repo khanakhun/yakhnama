@@ -52,6 +52,8 @@ nav:
   - Recording flow: architecture/recording.md
   - Media storage: architecture/media.md
   - Data exchange: architecture/exchange.md
+  - Data ingestion: architecture/ingestion.md
+  - Data sources: architecture/data-sources.md
   - Best figure policy: architecture/best-figure.md
   - ADRs:
       - Overview: adr/README.md
@@ -68,6 +70,11 @@ nav:
       - "0011 · Catalog entries for settings and API schemas": adr/0011-catalog-entries-for-settings-and-api-schemas.md
       - "0012 · Catalog entries for commands, queries, DTOs and errors": adr/0012-catalog-entries-for-commands-queries-dtos-and-errors.md
       - "0013 · In-house UUIDv7 generator": adr/0013-in-house-uuidv7-generator.md
+      - "0014 · scalar api reference": adr/0014-scalar-api-reference.md
+      - "0015 · jwt validation with pyjwt and a cached jwks": adr/0015-jwt-validation-with-pyjwt-and-a-cached-jwks.md
+      - "0016 · idempotency keys in postgresql": adr/0016-idempotency-keys-in-postgresql.md
+      - "0017 · rate limiting behind a port": adr/0017-rate-limiting-behind-a-port.md
+      - "0018 · safe text rules in the shared kernel": adr/0018-safe-text-rules-in-the-shared-kernel.md
   - Data dictionary:
       - Overview: data-dictionary/README.md
       - Geography: data-dictionary/geography.md
@@ -90,3 +97,5 @@ nav:
       - Phase 2: plans/phase-2.md
       - Phase 2 report: plans/phase-2-report.md
       - Phase 3: plans/phase-3.md
+      - Phase 3 report: plans/phase-3-report.md
+      - Phase 4: plans/phase-4.md

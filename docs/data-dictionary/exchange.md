@@ -141,6 +141,31 @@ is what a valid row becomes; every column is listed in the
 `monetary` with currency and price year); its confidence is required, as is
 `claimed_at` with its precision.
 
+## Persistence
+
+`export_jobs` and `import_jobs` (migration `0017_exchange_jobs`) store every value
+object beyond the top-level scalars as JSONB, validated through the aggregate on read
+rather than mapped column by column, since a job's `filters`, `artifact`, `sidecar`,
+`report` and `writes` are internal to this module and never queried by another table.
+
+- **`export_jobs`.** `filters` (always present), `artifact` and `sidecar` (JSONB,
+  present only once `completed`). Three indexes serve the three ways a job is listed
+  or looked up: `ix_export_jobs_requested_by_requested_at`
+  (`requested_by, requested_at, id`) for a user's own newest-first listing,
+  `ix_export_jobs_requested_at_id` (`requested_at, id`) for a moderator's listing of
+  every job, and `ix_export_jobs_status` for status lookups (for example a future
+  sweep of stuck jobs, `docs/open-questions.md`).
+- **`import_jobs`.** `source_artifact` (always), `report` (once produced) and `writes`
+  (created event ids, the lineage source id, batches applied — empty for a dry run or
+  a run that wrote nothing) as JSONB. Read by id only (`GET
+  /moderation/imports/{job_id}`), so it carries no secondary index; there is no list
+  route for import jobs yet (open question).
+
+`requested_by` on both tables is a user id of the `identity` module and carries **no
+foreign key** — the same cross-module rule every other Phase 3/4 table follows
+(`docs/open-questions.md` Q162): the database cannot itself prevent a dangling
+reference, and the application relies on users never being deleted instead.
+
 ## Proposed defaults (open)
 
 - The backfill column contract, its five claim slots and 20 place codes per row.
