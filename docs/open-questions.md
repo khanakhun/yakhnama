@@ -207,3 +207,35 @@ catalog change.
 **Blocking:** no
 
 **Status:** open
+
+## Q12 — Bounding boxes crossing the antimeridian
+
+- **Question:** Bounding boxes crossing the antimeridian?
+- **Why it matters:** `BoundingBox` rejects boxes where the minimum longitude exceeds the maximum. No Gilgit-Baltistan use case needs antimeridian boxes, but global datasets might.
+- **Proposed default:** Reject; revisit if an ingestion source ships such extents.
+- **Blocking:** no
+- **Status:** open (raised by the shared-kernel review, Phase 1)
+
+## Q13 — Definition of the `season` date precision
+
+- **Question:** Definition of the `season` date precision?
+- **Why it matters:** `DateWithPrecision.truncate()` floors `season` to meteorological quarters starting December, March, June and September. Local seasonal vocabulary in the valleys may differ.
+- **Proposed default:** Meteorological quarters (DJF, MAM, JJA, SON).
+- **Blocking:** no
+- **Status:** open (raised by the shared-kernel review, Phase 1)
+
+## Q14 — Time zone used when flooring dates
+
+- **Question:** Time zone used when flooring dates?
+- **Why it matters:** Day, month and year floors are computed in UTC; Asia/Karachi (UTC+5) would shift boundaries by five hours for events near midnight.
+- **Proposed default:** UTC in storage; clients render local time (Asia/Karachi).
+- **Blocking:** no
+- **Status:** open (raised by the shared-kernel review, Phase 1)
+
+## Q15 — Signing of pagination cursors
+
+- **Question:** Signing of pagination cursors?
+- **Why it matters:** Cursors are opaque but unsigned; a client can craft a well-formed token. A cursor only positions a query that authorisation has already scoped, and it carries no secrets.
+- **Proposed default:** Unsigned; add an HMAC only if a future cursor must carry data that authorisation does not re-check.
+- **Blocking:** no
+- **Status:** open (raised by the shared-kernel review, Phase 1)

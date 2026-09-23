@@ -226,7 +226,8 @@ All commands run through Poetry and Poe so they behave the same on every OS and 
 
 Allowed abbreviations in code: `id`, `uow`, `dto`, `adr`, `glof`, `glims`, `stac`, `cog`,
 `oidc`, `jwks`, `jwt`, `utc`, `api`, `orm`, `sql`, `csv`, `json`, `url`, `uri`, `uuid`,
-`http`, `mime`, `exif`, `gps`, `osm`, `crs`, `srid`, `bbox`, `db`, `ttl`, `cors`, `etag`.
+`http`, `mime`, `exif`, `gps`, `osm`, `crs`, `srid`, `bbox`, `db`, `ttl`, `cors`, `etag`, `si`,
+`geojson`, `yaml`, `otel`, `jsonb`.
 
 ## 8. How to add things
 

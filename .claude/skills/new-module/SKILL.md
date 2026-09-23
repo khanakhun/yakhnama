@@ -640,6 +640,11 @@ class FakeHazardsUnitOfWork:
         """Queue ``event`` for publication on commit."""
         self._pending_events.append(event)
 
+    @property
+    def collected_events(self) -> tuple[DomainEvent, ...]:
+        """Events recorded in this unit of work and not yet discarded."""
+        return tuple(self._pending_events)
+
 
 class FakeHazardsUnitOfWorkFactory:
     """``HazardsUnitOfWorkFactory`` that always returns the same fake unit of work.

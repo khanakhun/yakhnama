@@ -86,7 +86,7 @@ No public endpoints beyond `/health/live` and `/health/ready` are added in this 
 | Q2 | Hazard attribute schema fields: do you have a reference (ICIMOD GLOF reports, NDMA formats) I should align to? | Avoids inventing science | Minimal proposed schemas, every field marked proposed | no |
 | Q3 | Impact metric list: start from the Sendai Framework global indicators (A-1 deaths, A-2 missing, B-1 affected, C-x economic loss, D-x infrastructure) plus DesInventar basics? | Registry content | Yes, marked proposed with indicator codes | no |
 | Q4 | Administrative hierarchy fixture: Gilgit-Baltistan's 3 divisions and 10 districts (current official count) with no geometry until the boundary source is chosen | Places are needed for tests and seeds | Fixture with `status: fixture` and no polygons | no |
-| Q5 | Language and script codes: `en`, `ur` (Arabic script), `shi`/`bsk`/`bft`/`wbl`/`khw` (ISO 639-3) with script tags `Latn`/`Arab` | Stable keys for names | As listed; no local labels shipped without a source | no |
+| Q5 | Language and script codes: `en`, `ur` (Arabic script), `scl`/`bsk`/`bft`/`wbl`/`khw` (ISO 639-3) with script tags `Latn`/`Arab` | Stable keys for names | As listed; no local labels shipped without a source | no |
 | Q6 | Should Phase 1 expose read endpoints for hazard types, metrics and places now (anonymous public reads need no auth), or wait for Phase 2's API foundations as the specification orders? | Earlier visible progress vs. contract churn | Wait for Phase 2 (idempotency, ETag and error mapping are built there) | no |
 
 Reply "approved" (with any answers) and I will start with T1 and the serial spine.

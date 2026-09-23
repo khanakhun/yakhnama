@@ -46,6 +46,7 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 | [0010] | Licensing of code and data | proposed |
 | [0011] | Catalog entries for settings and API schemas | proposed |
 | [0012] | Catalog entries for commands, queries, DTOs and domain errors | proposed |
+| [0013] | In-house RFC 9562 UUIDv7 generator | proposed |
 
 [0001]: 0001-modular-monolith-with-hexagonal-layers.md
 [0002]: 0002-postgresql-with-postgis.md
@@ -59,3 +60,4 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 [0010]: 0010-licensing.md
 [0011]: 0011-catalog-entries-for-settings-and-api-schemas.md
 [0012]: 0012-catalog-entries-for-commands-queries-dtos-and-errors.md
+[0013]: 0013-in-house-uuidv7-generator.md
