@@ -1,12 +1,17 @@
 """Unit tests for reading export and import jobs."""
 
+from uuid import UUID
+
 import pytest
 
+from tests.fakes.identity import actor_with
 from tests.unit.modules.exchange.application.support import (
     ANONYMOUS,
     CITIZEN,
     MODERATOR,
+    MODERATOR_ID,
     OTHER,
+    OTHER_ID,
     USER_ID,
     ExchangeWorld,
     cells,
@@ -23,7 +28,7 @@ from yakhnama.modules.exchange.domain.errors import (
     ImportJobNotFoundError,
 )
 from yakhnama.modules.exchange.domain.value_objects import ExportDataset, JobStatus
-from yakhnama.modules.identity.public import Actor
+from yakhnama.modules.identity.public import Actor, Role
 from yakhnama.shared_kernel.errors import PermissionDeniedError
 from yakhnama.shared_kernel.pagination import PageRequest
 
@@ -150,3 +155,44 @@ async def test_get_import_job_unknown_raises_not_found() -> None:
         await world.queries.get_import_job(
             GetImportJob(actor=MODERATOR, job_id=USER_ID)
         )
+
+
+async def _completed(
+    world: ExchangeWorld, dataset: ExportDataset, actor: Actor
+) -> UUID:
+    job_id = await world.queued_export(dataset, actor)
+    await world.run_export()(RunExport(job_id=job_id))
+    return job_id
+
+
+@pytest.mark.parametrize("dataset", [ExportDataset.REPORTS, ExportDataset.EVENTS])
+async def test_get_export_job_for_demoted_owner_hides_download_link(
+    dataset: ExportDataset,
+) -> None:
+    world = ExchangeWorld()
+    job_id = await _completed(world, dataset, MODERATOR)
+    demoted = Actor(user_id=MODERATOR_ID, roles=frozenset({Role.CITIZEN}))
+
+    view = await world.queries.get_export_job(
+        GetExportJob(actor=demoted, job_id=job_id)
+    )
+
+    assert view.job.status is JobStatus.COMPLETED
+    assert view.job.visibility == "moderation"
+    assert view.download_url is None
+    assert world.artifacts.presigned == []
+
+
+@pytest.mark.parametrize("dataset", [ExportDataset.REPORTS, ExportDataset.EVENTS])
+async def test_get_export_job_of_moderation_export_links_current_moderator(
+    dataset: ExportDataset,
+) -> None:
+    world = ExchangeWorld()
+    job_id = await _completed(world, dataset, MODERATOR)
+    other_moderator = actor_with({Role.MODERATOR}, user_id=OTHER_ID)
+
+    view = await world.queries.get_export_job(
+        GetExportJob(actor=other_moderator, job_id=job_id)
+    )
+
+    assert view.download_url is not None

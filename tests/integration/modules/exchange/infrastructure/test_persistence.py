@@ -163,6 +163,39 @@ async def test_export_job_each_saved_status_round_trips_exactly(
     assert loaded == [running, completed]
 
 
+async def test_export_job_moderation_visibility_round_trips_with_sidecar(
+    exchange_uow_factory: ExchangeFactory,
+    exchange_queries: SqlAlchemyExchangeQueryService,
+    clock: SteppingClock,
+    ids: SequentialIdGenerator,
+) -> None:
+    queued = ExportJobTestFactory.build(
+        requested_at=REQUESTED,
+        dataset=ExportDataset.REPORTS,
+        format=ExportFormat.CSV,
+        visibility="moderation",
+    )
+    await _add(exchange_uow_factory, exports=(queued,))
+    running = queued.start(clock=clock, ids=ids).state
+    artifact = artifact_for(running)
+    sidecar = sidecar_for(running, artifact).model_copy(
+        update={"visibility": "moderation"}
+    )
+    completed = running.complete(artifact, sidecar, clock=clock, ids=ids).state
+    async with exchange_uow_factory() as uow:
+        await uow.export_jobs.get(queued.id)
+        await uow.export_jobs.save(completed)
+        await uow.commit()
+
+    async with exchange_uow_factory() as uow:
+        loaded = await uow.export_jobs.get(queued.id)
+    detail = await exchange_queries.get_export_job(queued.id)
+
+    assert loaded == completed
+    assert detail is not None
+    assert detail.visibility == "moderation"
+
+
 async def test_export_job_failed_and_cancelled_round_trip(
     exchange_uow_factory: ExchangeFactory,
     clock: SteppingClock,

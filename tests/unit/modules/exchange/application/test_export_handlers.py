@@ -60,7 +60,7 @@ from yakhnama.modules.exchange.domain.value_objects import (
     ExportFormat,
     JobStatus,
 )
-from yakhnama.modules.identity.public import Actor
+from yakhnama.modules.identity.public import Actor, Role
 from yakhnama.shared_kernel.errors import (
     ConflictError,
     NotFoundError,
@@ -509,3 +509,61 @@ def test_export_row_union_names_each_dataset() -> None:
         ExportDataset.CLAIMS,
         ExportDataset.REPORTS,
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Visibility                                                                  #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("actor", "expected"), [(CITIZEN, "public"), (MODERATOR, "moderation")]
+)
+async def test_request_export_fixes_visibility_from_requesting_actor(
+    actor: Actor, expected: str
+) -> None:
+    world = ExchangeWorld()
+
+    job_id = await world.request_export()(request(actor=actor))
+
+    assert world.export_job(job_id).visibility == expected
+    (requested,) = world.uow.committed_events
+    assert isinstance(requested, ExportRequested)
+    assert requested.visibility == expected
+
+
+async def test_run_export_writes_visibility_into_the_sidecar() -> None:
+    world = ExchangeWorld()
+    job_id = await world.request_export()(request(ExportDataset.REPORTS, MODERATOR))
+
+    await world.run_export()(RunExport(job_id=job_id))
+
+    job = world.export_job(job_id)
+    assert job.sidecar is not None
+    assert job.sidecar.visibility == "moderation"
+    stored = world.artifacts.objects[f"exports/{job_id}/reports.sidecar.json"]
+    assert json.loads(stored.data)["visibility"] == "moderation"
+
+
+async def test_run_export_of_public_job_reads_without_roles_gained_since() -> None:
+    world = ExchangeWorld()
+    job_id = await world.request_export()(request())
+    promoted = Actor(
+        user_id=USER_ID, roles=frozenset({Role.CITIZEN, Role.MODERATOR, Role.ADMIN})
+    )
+    world.actors.actors[USER_ID] = promoted
+
+    await world.run_export()(RunExport(job_id=job_id))
+
+    ((_, _, reader),) = world.rows.calls
+    assert reader == Actor(user_id=USER_ID, roles=frozenset({Role.CITIZEN}))
+
+
+async def test_run_export_of_moderation_job_reads_as_the_current_moderator() -> None:
+    world = ExchangeWorld()
+    job_id = await world.request_export()(request(actor=MODERATOR))
+
+    await world.run_export()(RunExport(job_id=job_id))
+
+    ((_, _, reader),) = world.rows.calls
+    assert reader == MODERATOR

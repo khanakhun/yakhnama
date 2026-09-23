@@ -3,16 +3,21 @@
 A job the actor may not see is reported as missing, so job ids cannot be probed:
 an export job is visible to its owner and to moderators, an import job to
 moderators only. A completed export comes with a presigned download link, asked of
-the ``ArtifactStore`` at read time so it is always fresh.
+the ``ArtifactStore`` at read time so it is always fresh, and only for a reader who
+**now** may export the job's dataset and see its visibility (``moderation`` files
+to current moderators only). A demoted owner still sees the job and its status,
+without a link (Phase 4 security review).
 
 Patterns: Query Service, Policy.
 """
 
 from yakhnama.modules.exchange.application.authorisation import (
     export_job_policy,
+    export_policy,
     import_policy,
 )
 from yakhnama.modules.exchange.application.dto import (
+    ExportJobDetail,
     ExportJobSummary,
     ExportJobView,
     ImportJobDetail,
@@ -30,8 +35,12 @@ from yakhnama.modules.exchange.domain.errors import (
     ExportJobNotFoundError,
     ImportJobNotFoundError,
 )
-from yakhnama.modules.exchange.domain.value_objects import JobStatus
+from yakhnama.modules.exchange.domain.value_objects import (
+    PUBLIC_VISIBILITY,
+    JobStatus,
+)
 from yakhnama.modules.identity.public import (
+    Actor,
     CanModerate,
     IsAuthenticated,
     require_allowed,
@@ -62,7 +71,8 @@ class ExchangeJobQueryService:
             query: The job and the actor.
 
         Returns:
-            The job, with a download link once completed.
+            The job, with a download link once completed if the reader may
+            download it now (see the module docs).
 
         Raises:
             PermissionDeniedError: If the actor is anonymous.
@@ -76,7 +86,11 @@ class ExchangeJobQueryService:
         ):
             raise ExportJobNotFoundError.for_id(query.job_id)
         download_url = None
-        if job.status is JobStatus.COMPLETED and job.artifact is not None:
+        if (
+            job.status is JobStatus.COMPLETED
+            and job.artifact is not None
+            and _may_download(job, query.actor)
+        ):
             extension = job.artifact.object_key.rsplit("/", maxsplit=1)[-1]
             download_url = await self._artifacts.presign_download(
                 job.artifact.object_key,
@@ -121,3 +135,10 @@ class ExchangeJobQueryService:
         if job is None:
             raise ImportJobNotFoundError.for_id(query.job_id)
         return job
+
+
+def _may_download(job: ExportJobDetail, reader: Actor) -> bool:
+    # Decided at read time: a role granted when the job was requested may be gone.
+    return export_policy(job.dataset).is_allowed(reader) and (
+        job.visibility == PUBLIC_VISIBILITY or CanModerate().is_allowed(reader)
+    )

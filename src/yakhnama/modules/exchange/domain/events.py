@@ -21,6 +21,7 @@ from yakhnama.modules.exchange.domain.value_objects import (
     IMPORT_MAX_ROWS,
     ExportDataset,
     ExportFormat,
+    ExportVisibility,
     ImportFormat,
     JobVersion,
 )
@@ -54,6 +55,7 @@ class ExportRequested(ExportJobEvent):
         requested_by: The requesting user.
         dataset: Which dataset.
         format: Which format.
+        visibility: ``public`` or ``moderation``.
     """
 
     event_type: ClassVar[str] = "exchange.export_requested"
@@ -61,6 +63,7 @@ class ExportRequested(ExportJobEvent):
     requested_by: EntityId
     dataset: ExportDataset
     format: ExportFormat
+    visibility: ExportVisibility = "public"
 
 
 class ExportStarted(ExportJobEvent):

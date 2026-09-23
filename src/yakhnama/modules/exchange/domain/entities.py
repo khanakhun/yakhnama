@@ -51,6 +51,7 @@ from yakhnama.modules.exchange.domain.value_objects import (
     ExportDataset,
     ExportFilters,
     ExportFormat,
+    ExportVisibility,
     ImportFormat,
     ImportWrites,
     JobErrorSummary,
@@ -58,6 +59,7 @@ from yakhnama.modules.exchange.domain.value_objects import (
     JobVersion,
     MetadataSidecar,
     ValidationReport,
+    require_visibility_fits,
 )
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.events import AggregateChange
@@ -171,9 +173,10 @@ class ExportJob(BaseModel):
 
     - each status has exactly its facts (see the module docs): only a completed
       job has an artifact and a sidecar; only a failed job has an error summary;
-    - the sidecar describes the artifact: same dataset, format and filters, its
-      checksum is the artifact's digest, and the artifact's media type is the
-      format's;
+    - the sidecar describes the artifact: same dataset, format, filters and
+      visibility, its checksum is the artifact's digest, and the artifact's media
+      type is the format's;
+    - a ``reports`` export has ``moderation`` visibility;
     - ``requested_at <= started_at <= finished_at`` where set.
 
     Implements: Entity / Aggregate Root, State.
@@ -184,6 +187,8 @@ class ExportJob(BaseModel):
         dataset: Which dataset.
         format: Which format.
         filters: The filters the rows are selected with.
+        visibility: Whose view of the record the file holds, fixed at request
+            time: ``moderation`` if the requester could moderate, else ``public``.
         status: Where the job is in its lifecycle.
         artifact: The stored file, once completed.
         sidecar: The file's metadata, once completed.
@@ -201,6 +206,7 @@ class ExportJob(BaseModel):
     dataset: ExportDataset
     format: ExportFormat
     filters: ExportFilters = ExportFilters()
+    visibility: ExportVisibility = "public"
     status: JobStatus = JobStatus.QUEUED
     artifact: ArtifactRef | None = None
     sidecar: MetadataSidecar | None = None
@@ -221,6 +227,7 @@ class ExportJob(BaseModel):
             self, self.status, _EXPORT_SHAPES, (*_EXPORT_FACTS, "error_summary")
         )
         _check_order(self.requested_at, self.started_at, self.finished_at)
+        require_visibility_fits(self.dataset, self.visibility)
         if self.artifact is not None and self.sidecar is not None:
             self._check_sidecar(self.artifact, self.sidecar)
         return self
@@ -233,8 +240,12 @@ class ExportJob(BaseModel):
             sidecar.dataset is not self.dataset
             or sidecar.format is not self.format
             or sidecar.filters != self.filters
+            or sidecar.visibility != self.visibility
         ):
-            message = "the sidecar must describe this job's dataset, format, filters"
+            message = (
+                "the sidecar must describe this job's dataset, format, filters "
+                "and visibility"
+            )
             raise ValueError(message)
         if sidecar.checksum != artifact.sha256:
             message = "the sidecar checksum must be the artifact's sha256"

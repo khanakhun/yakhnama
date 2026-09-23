@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import Boolean, Index, Integer, String
+from sqlalchemy import Boolean, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +44,7 @@ class ExportJobRow(Base):
         dataset: ``ExportDataset`` value.
         format: ``ExportFormat`` value.
         filters: ``ExportFilters`` as JSON.
+        visibility: ``ExportVisibility`` value, ``public`` or ``moderation``.
         status: ``JobStatus`` value.
         artifact: ``ArtifactRef`` as JSON, once completed.
         sidecar: ``MetadataSidecar`` as JSON, once completed.
@@ -73,6 +74,9 @@ class ExportJobRow(Base):
     dataset: Mapped[str] = mapped_column(String(32))
     format: Mapped[str] = mapped_column(String(32))
     filters: Mapped[dict[str, object]] = mapped_column(JSONB)
+    # Migration 0018 added the column; the server default labels rows written
+    # before it as public, and the migration relabels their reports exports.
+    visibility: Mapped[str] = mapped_column(String(16), server_default=text("'public'"))
     status: Mapped[str] = mapped_column(String(16), index=True)
     artifact: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     sidecar: Mapped[dict[str, object] | None] = mapped_column(JSONB)

@@ -22,6 +22,7 @@ from yakhnama.modules.exchange.domain.value_objects import (
     ExportDataset,
     ExportFilters,
     ExportFormat,
+    ExportVisibility,
     ImportFormat,
     JobErrorSummary,
     JobStatus,
@@ -64,6 +65,7 @@ class ExportJobDetail(BaseModel):
         dataset: Which dataset.
         format: Which format.
         filters: The filters the rows are selected with.
+        visibility: Whose view of the record the file holds.
         status: Where the job is in its lifecycle.
         artifact: The stored file, once completed.
         sidecar: The file's metadata, once completed.
@@ -81,6 +83,7 @@ class ExportJobDetail(BaseModel):
     dataset: ExportDataset
     format: ExportFormat
     filters: ExportFilters
+    visibility: ExportVisibility
     status: JobStatus
     artifact: ArtifactRef | None
     sidecar: MetadataSidecar | None
@@ -106,6 +109,7 @@ class ExportJobDetail(BaseModel):
             dataset=job.dataset,
             format=job.format,
             filters=job.filters,
+            visibility=job.visibility,
             status=job.status,
             artifact=job.artifact,
             sidecar=job.sidecar,
@@ -171,7 +175,8 @@ class ExportJobView(BaseModel):
     Attributes:
         job: The job.
         download_url: A short-lived presigned link to the file, only when the job
-            is completed.
+            is completed and the reader may, at read time, export its dataset and
+            see its visibility.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

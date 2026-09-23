@@ -253,3 +253,65 @@ def test_migration_history_is_linear() -> None:
         for revision in revisions
     )
     assert all(not revision.branch_labels for revision in revisions)
+
+
+_EXPORT_ROW: Final = (
+    "INSERT INTO export_jobs (id, requested_by, dataset, format, filters, status, "
+    "sidecar, requested_at, version) VALUES ('{id}', "
+    "'01890000-0000-7000-8000-0000000000aa', '{dataset}', 'csv', '{{}}', "
+    "'{status}', {sidecar}, '2026-09-01T00:00:00Z', 1)"
+)
+_REPORTS_JOB: Final = "01890000-0000-7000-8000-0000000000a1"
+_EVENTS_JOB: Final = "01890000-0000-7000-8000-0000000000a2"
+
+
+async def _fetch_visibility(database_url: str) -> dict[str, tuple[object, ...]]:
+    """Return ``id -> (visibility column, sidecar's visibility key)`` per export."""
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            has_column = "visibility" in {
+                column["name"]
+                for column in await connection.run_sync(
+                    lambda sync: inspect(sync).get_columns("export_jobs")
+                )
+            }
+            column = "visibility" if has_column else "NULL"
+            result = await connection.execute(
+                text(
+                    f"SELECT id::text, {column}, sidecar ->> 'visibility', "  # noqa: S608  # reason: the column name is one of two literals above
+                    "sidecar ? 'visibility' FROM export_jobs"
+                )
+            )
+            return {row[0]: tuple(row[1:]) for row in result}
+    finally:
+        await engine.dispose()
+
+
+def test_migration_0018_labels_reports_exports_and_sidecars_reversibly(
+    alembic_config: Config, postgis_url: str
+) -> None:
+    command.upgrade(alembic_config, "0017")
+    reports = _EXPORT_ROW.format(
+        id=_REPORTS_JOB,
+        dataset="reports",
+        status="completed",
+        sidecar="""'{"row_count": 1}'""",
+    )
+    events = _EXPORT_ROW.format(
+        id=_EVENTS_JOB, dataset="events", status="queued", sidecar="NULL"
+    )
+    asyncio.run(_execute(postgis_url, reports))
+    asyncio.run(_execute(postgis_url, events))
+
+    command.upgrade(alembic_config, "0018")
+    upgraded = asyncio.run(_fetch_visibility(postgis_url))
+    command.downgrade(alembic_config, "0017")
+    downgraded = asyncio.run(_fetch_visibility(postgis_url))
+    asyncio.run(_execute(postgis_url, "DELETE FROM export_jobs"))
+
+    assert upgraded == {
+        _REPORTS_JOB: ("moderation", "moderation", True),
+        _EVENTS_JOB: ("public", None, None),
+    }
+    assert downgraded[_REPORTS_JOB] == (None, None, False)

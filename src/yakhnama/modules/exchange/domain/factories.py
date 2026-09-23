@@ -32,7 +32,7 @@ class ExportJobFactory:
 
         Args:
             requested_by: The requesting user.
-            request: Dataset, format and filters.
+            request: Dataset, format, filters and visibility.
             clock: Source of ``requested_at`` and ``occurred_at``.
             ids: Source of the job id and the event id.
 
@@ -46,6 +46,7 @@ class ExportJobFactory:
             dataset=request.dataset,
             format=request.format,
             filters=request.filters,
+            visibility=request.visibility,
             requested_at=now,
         )
         event = ExportRequested(
@@ -56,6 +57,7 @@ class ExportJobFactory:
             requested_by=requested_by,
             dataset=request.dataset,
             format=request.format,
+            visibility=request.visibility,
         )
         return AggregateChange[ExportJob](state=job, events=(event,))
 

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from hypothesis import assume, given, reject
+from hypothesis import given, reject
 from hypothesis import strategies as st
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -592,6 +592,12 @@ PLACE_CODES = st.lists(
     unique=True,
     max_size=4,
 )
+NON_EMPTY_PLACE_CODES = st.lists(
+    st.sampled_from(["pk.gb.test", "pk.gb.test.a", "pk.gb.test.b", "pk.test-c"]),
+    unique=True,
+    max_size=4,
+    min_size=1,
+)
 MEASUREMENT_UNITS = st.sampled_from(
     [unit.value for unit in SiUnit if unit is not SiUnit.COUNT]
 )
@@ -618,8 +624,10 @@ def _text(max_size: int, *, multiline: bool = False) -> st.SearchStrategy[str]:
     alphabet = st.one_of(SAFE_CHARACTERS, st.sampled_from([",", '"', "ی", "خ", " "]))
     if multiline:
         alphabet = st.one_of(alphabet, st.just("\n"))
-    return st.text(alphabet=alphabet, min_size=1, max_size=max_size).filter(
-        lambda text: text.strip() != ""
+    # Map instead of filter: a whitespace-only draw becomes a single safe letter so
+    # the strategy never rejects examples (hypothesis's filter_too_much health check).
+    return st.text(alphabet=alphabet, min_size=1, max_size=max_size).map(
+        lambda text: text if text.strip() else "x"
     )
 
 
@@ -655,7 +663,9 @@ def drafts(draw: st.DrawFn) -> ImportedEventDraft:
         )
     )
     place_codes = draw(PLACE_CODES)
-    assume(geometry is not None or place_codes)
+    if geometry is None and not place_codes:
+        # A row needs a location: draw at least one place code instead of rejecting.
+        place_codes = draw(NON_EMPTY_PLACE_CODES)
     claims = draw(
         st.lists(
             st.builds(

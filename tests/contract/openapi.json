@@ -2034,6 +2034,14 @@
             "minimum": 1.0,
             "title": "Version",
             "type": "integer"
+          },
+          "visibility": {
+            "enum": [
+              "public",
+              "moderation"
+            ],
+            "title": "Visibility",
+            "type": "string"
           }
         },
         "required": [
@@ -2042,6 +2050,7 @@
           "dataset",
           "format",
           "filters",
+          "visibility",
           "status",
           "artifact",
           "sidecar",
@@ -3992,7 +4001,7 @@
       },
       "MetadataSidecar": {
         "additionalProperties": false,
-        "description": "The metadata written next to every export file.\n\n``to_json_dict`` and ``to_json_bytes`` are the boundary: exporters and the API\nuse them and never dump the model themselves, so the sidecar has one JSON\nshape (``model_validate`` of ``to_json_dict()`` returns an equal sidecar).\n\nImplements: Value Object.\n\nAttributes:\n    licence: The data licence and whether it is still proposed.\n    generated_at: When the file was generated, UTC.\n    dataset: Which dataset the file holds.\n    format: The file's format.\n    filters: The filters the rows were selected with.\n    schema_version: Version of the file layout.\n    citation: How to cite the file.\n    row_count: Number of data rows (records) in the file.\n    checksum: SHA-256 of the file's bytes.\n    generator: ``yakhnama/<version>`` of the software that wrote it.",
+        "description": "The metadata written next to every export file.\n\n``to_json_dict`` and ``to_json_bytes`` are the boundary: exporters and the API\nuse them and never dump the model themselves, so the sidecar has one JSON\nshape (``model_validate`` of ``to_json_dict()`` returns an equal sidecar).\n\nImplements: Value Object.\n\nAttributes:\n    licence: The data licence and whether it is still proposed.\n    generated_at: When the file was generated, UTC.\n    dataset: Which dataset the file holds.\n    format: The file's format.\n    filters: The filters the rows were selected with.\n    schema_version: Version of the file layout.\n    citation: How to cite the file.\n    row_count: Number of data rows (records) in the file.\n    checksum: SHA-256 of the file's bytes.\n    generator: ``yakhnama/<version>`` of the software that wrote it.\n    visibility: Whose view of the record the file holds (``public`` or\n        ``moderation``), so a reader of a shared file knows.",
         "properties": {
           "checksum": {
             "pattern": "^[a-f0-9]{64}$",
@@ -4037,6 +4046,15 @@
           "schema_version": {
             "pattern": "^[0-9]{1,4}\\.[0-9]{1,4}$",
             "title": "Schema Version",
+            "type": "string"
+          },
+          "visibility": {
+            "default": "public",
+            "enum": [
+              "public",
+              "moderation"
+            ],
+            "title": "Visibility",
             "type": "string"
           }
         },

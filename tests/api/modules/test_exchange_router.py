@@ -604,3 +604,66 @@ async def test_get_import_as_citizen_returns_403() -> None:
         response = await client.get(f"{IMPORTS}/{UNKNOWN_ID}", headers=citizen())
 
     assert response.status_code == 403
+
+
+# --------------------------------------------------------------------------- #
+# Download links follow the reader's current roles                            #
+# --------------------------------------------------------------------------- #
+
+OTHER_MODERATOR: Final = "exchange-moderator-2"
+
+
+ADMIN: Final = "exchange-admin"
+
+
+async def demote_moderator(client: httpx.AsyncClient) -> None:
+    """Have an administrator revoke the moderator's role through the API."""
+    admin = auth_headers(subject=ADMIN, roles=["admin"])
+    assert (await client.get("/api/v1/me", headers=admin)).status_code == 200
+    me = await client.get("/api/v1/me", headers=moderator())
+    revoked = await client.delete(
+        f"/api/v1/users/{me.json()['id']}/roles/moderator",
+        headers=admin | {"If-Match": me.headers["etag"]},
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert "moderator" not in revoked.json()["roles"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"dataset": "reports", "format": "geojson"}, EVENTS_GEOJSON],
+    ids=["reports", "events"],
+)
+async def test_get_export_for_demoted_owner_returns_job_without_download_url(
+    body: dict[str, str],
+) -> None:
+    api = build_test_app()
+
+    async with api.client() as client:
+        queued = await request_export(client, moderator(), body)
+        await run_export(api, queued["id"])
+        await demote_moderator(client)
+        demoted = await client.get(f"{EXPORTS}/{queued['id']}", headers=moderator())
+        current = await client.get(
+            f"{EXPORTS}/{queued['id']}",
+            headers=auth_headers(subject=OTHER_MODERATOR, roles=["moderator"]),
+        )
+
+    assert demoted.status_code == 200
+    assert demoted.json()["status"] == "completed"
+    assert demoted.json()["visibility"] == "moderation"
+    assert demoted.json()["download_url"] is None
+    assert current.status_code == 200
+    assert current.json()["download_url"] is not None
+
+
+async def test_get_public_export_by_owner_keeps_download_url() -> None:
+    api = build_test_app()
+
+    async with api.client() as client:
+        queued = await request_export(client, citizen())
+        await run_export(api, queued["id"])
+        response = await client.get(f"{EXPORTS}/{queued['id']}", headers=citizen())
+
+    assert response.json()["visibility"] == "public"
+    assert response.json()["download_url"] is not None

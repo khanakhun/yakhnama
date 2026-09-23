@@ -251,6 +251,19 @@ def format_moment(moment: DateWithPrecision) -> str:
     return formats[moment.precision]
 
 
+ExportVisibility = Literal["public", "moderation"]
+"""Whose view of the record an export holds.
+
+``public``: only what anyone may read (published and verified events, their claims).
+``moderation``: what a moderator may read (unpublished events, reports). Fixed when
+the export is requested from the requesting actor's roles; the run never reads more
+than it, and the file is handed out only to readers who may see that view now.
+"""
+
+PUBLIC_VISIBILITY: Final[ExportVisibility] = "public"
+MODERATION_VISIBILITY: Final[ExportVisibility] = "moderation"
+
+
 class ExportRequest(BaseModel):
     """What an export is asked to contain and how it is written.
 
@@ -260,6 +273,8 @@ class ExportRequest(BaseModel):
         dataset: Which dataset.
         format: Which file format.
         filters: Which rows to select.
+        visibility: Whose view of the record it holds; ``reports`` exports are
+            always ``moderation``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -267,6 +282,33 @@ class ExportRequest(BaseModel):
     dataset: ExportDataset
     format: ExportFormat
     filters: ExportFilters = ExportFilters()
+    visibility: ExportVisibility = PUBLIC_VISIBILITY
+
+    @model_validator(mode="after")
+    def _check_visibility(self) -> Self:
+        require_visibility_fits(self.dataset, self.visibility)
+        return self
+
+
+def require_visibility_fits(
+    dataset: ExportDataset, visibility: ExportVisibility
+) -> None:
+    """Refuse a ``reports`` export that claims the public view.
+
+    Reports are never public (moderators only, **proposed**), so their file must
+    never be labelled as readable by everyone.
+
+    Args:
+        dataset: The export's dataset.
+        visibility: Its visibility.
+
+    Raises:
+        ValueError: If a ``reports`` export is ``public``; raised inside Pydantic
+            validators, which turn it into a ``pydantic.ValidationError``.
+    """
+    if dataset is ExportDataset.REPORTS and visibility != MODERATION_VISIBILITY:
+        message = "a reports export always has moderation visibility"
+        raise ValueError(message)
 
 
 # --------------------------------------------------------------------------- #
@@ -408,6 +450,8 @@ class MetadataSidecar(BaseModel):
         row_count: Number of data rows (records) in the file.
         checksum: SHA-256 of the file's bytes.
         generator: ``yakhnama/<version>`` of the software that wrote it.
+        visibility: Whose view of the record the file holds (``public`` or
+            ``moderation``), so a reader of a shared file knows.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -422,6 +466,7 @@ class MetadataSidecar(BaseModel):
     row_count: int = Field(ge=0, le=EXPORT_MAX_ROWS)
     checksum: Sha256
     generator: str = Field(pattern=GENERATOR_PATTERN)
+    visibility: ExportVisibility = PUBLIC_VISIBILITY
 
     @field_validator("generated_at", mode="after")
     @classmethod

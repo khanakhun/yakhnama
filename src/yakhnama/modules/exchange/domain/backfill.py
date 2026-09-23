@@ -473,17 +473,83 @@ _FALLBACK_MESSAGE: Final = "the value is invalid"
 type LocationMapper = Callable[[tuple[int | str, ...]], str | None]
 
 
+# Fixed sentences per Pydantic error type. Pydantic's own ``msg`` is never used: it
+# can echo the value (an unknown unit or union tag, an out-of-range number, the
+# text a custom validator put in its ValueError), and cells may hold personal data
+# (Phase 4 security review). ``value_error``, ``assertion_error`` and any type not
+# listed fall back to ``_FALLBACK_MESSAGE``.
+_ERROR_TYPE_MESSAGES: Final[Mapping[str, str]] = {
+    "missing": _REQUIRED,
+    "extra_forbidden": "the value is not expected here",
+    "string_type": "the value must be text",
+    "string_too_short": "the value is too short",
+    "string_too_long": "the value is too long",
+    "string_pattern_mismatch": "the value does not have the required form",
+    "literal_error": "the value is not one of the allowed values",
+    "enum": "the value is not one of the allowed values",
+    "union_tag_invalid": "the kind is not one of the allowed kinds",
+    "union_tag_not_found": "the kind is missing",
+    "greater_than": "the number is too small",
+    "greater_than_equal": "the number is too small",
+    "less_than": "the number is too large",
+    "less_than_equal": "the number is too large",
+    "finite_number": "the number must be finite",
+    "float_parsing": "the value must be a number",
+    "float_type": "the value must be a number",
+    "int_parsing": "the value must be a whole number",
+    "int_type": "the value must be a whole number",
+    "int_from_float": "the value must be a whole number",
+    "decimal_parsing": "the value must be a decimal number",
+    "decimal_type": "the value must be a decimal number",
+    "decimal_max_places": "the number has too many decimal places",
+    "decimal_max_digits": "the number has too many digits",
+    "decimal_whole_digits": "the number has too many digits",
+    "datetime_parsing": "the value must be a timestamp",
+    "datetime_type": "the value must be a timestamp",
+    "datetime_from_date_parsing": "the value must be a timestamp",
+    "timezone_aware": "the timestamp needs a UTC offset",
+    "json_invalid": "the value is not valid JSON",
+    "json_type": "the value is not valid JSON",
+    "model_type": "the value does not have the required structure",
+    "model_attributes_type": "the value does not have the required structure",
+    "dict_type": "the value does not have the required structure",
+    "list_type": "the value does not have the required structure",
+    "tuple_type": "the value does not have the required structure",
+    "too_short": "the value has too few items",
+    "too_long": "the value has too many items",
+    "url_parsing": "the value is not a valid URL",
+    "url_scheme": "the URL scheme is not allowed",
+    "url_type": "the value is not a valid URL",
+}
+
+
 def _issue_message(text: str) -> str:
-    # Pydantic's messages are fixed texts, but they are cleaned and cut anyway so a
-    # RowIssue can always be built: from_flat_row must never raise.
+    # Every message is a fixed text written in this module, but it is cleaned and
+    # cut anyway so a RowIssue can always be built: from_flat_row must never raise.
     cleaned = "".join(
         " " if is_forbidden_character(character) else character for character in text
     ).strip()
     return cleaned[:ISSUE_MESSAGE_MAX_LENGTH] or _FALLBACK_MESSAGE
 
 
+def _message_of_type(error_type: str) -> str:
+    return _ERROR_TYPE_MESSAGES.get(error_type, _FALLBACK_MESSAGE)
+
+
+def _safe_details(
+    error: PydanticValidationError,
+) -> list[tuple[tuple[int | str, ...], str]]:
+    # include_input=False keeps the value out of the details at all, so no later
+    # change can leak it by accident; only the location and the type are used.
+    return [
+        (tuple(detail["loc"]), _message_of_type(detail["type"]))
+        for detail in error.errors(include_input=False, include_url=False)
+    ]
+
+
 def _describe(error: PydanticValidationError) -> str:
-    return "; ".join(detail["msg"] for detail in error.errors())
+    messages = dict.fromkeys(message for _, message in _safe_details(error))
+    return "; ".join(messages)
 
 
 class _RowReader:
@@ -562,8 +628,8 @@ class _RowReader:
     def report_model_errors(
         self, error: PydanticValidationError, column_of: LocationMapper
     ) -> None:
-        for detail in error.errors():
-            self.report(column_of(tuple(detail["loc"])), detail["msg"])
+        for location, message in _safe_details(error):
+            self.report(column_of(location), message)
 
     def decimal(self, column: str, *, is_required: bool) -> str | None:
         value = (

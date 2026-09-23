@@ -100,11 +100,14 @@ from yakhnama.modules.exchange.domain.value_objects import (
     EXPORT_MAX_ROWS,
     EXPORT_SCHEMA_VERSION,
     IMPORT_MAX_ROWS,
+    MODERATION_VISIBILITY,
     NO_WRITES,
     PROPOSED_DATASET_LICENCE,
+    PUBLIC_VISIBILITY,
     ArtifactRef,
     ExportDataset,
     ExportRequest,
+    ExportVisibility,
     ImportRequest,
     ImportWrites,
     JobStatus,
@@ -118,6 +121,7 @@ from yakhnama.modules.exchange.domain.value_objects import (
 from yakhnama.modules.identity.public import (
     Actor,
     AuthorisationPolicy,
+    CanModerate,
     IsAuthenticated,
     require_allowed,
 )
@@ -325,6 +329,49 @@ def import_failure_summary(error: YakhnamaError) -> str:
     )
 
 
+def visibility_of(actor: Actor) -> ExportVisibility:
+    """Return the visibility an export requested by ``actor`` gets.
+
+    Args:
+        actor: The requesting actor, as the request authenticated it.
+
+    Returns:
+        ``moderation`` if the actor may moderate now, else ``public``.
+    """
+    return (
+        MODERATION_VISIBILITY
+        if CanModerate().is_allowed(actor)
+        else (PUBLIC_VISIBILITY)
+    )
+
+
+def reading_actor(actor: Actor, visibility: ExportVisibility) -> Actor:
+    """Return the actor a run reads rows as, never above the job's visibility.
+
+    A user promoted to moderator between request and run would otherwise put
+    moderator-only rows into a file labelled ``public``; a ``public`` job is
+    therefore read without the roles that allow moderation (memberships and every
+    other role are kept).
+
+    Args:
+        actor: The requesting user, rebuilt at run time.
+        visibility: The job's visibility.
+
+    Returns:
+        ``actor`` for a ``moderation`` job (its current roles are an upper bound
+        already); for a ``public`` job, the same actor without moderating roles.
+    """
+    if visibility == MODERATION_VISIBILITY or actor.user_id is None:
+        return actor
+    policy = CanModerate()
+    kept = frozenset(
+        role
+        for role in actor.roles
+        if not policy.is_allowed(Actor(user_id=actor.user_id, roles=frozenset({role})))
+    )
+    return Actor(user_id=actor.user_id, roles=kept, memberships=actor.memberships)
+
+
 def export_citation(
     job: ExportJob, generated_at: DateWithPrecision, licence: LicenceStatement
 ) -> str:
@@ -394,6 +441,7 @@ class RequestExportHandler:
                         dataset=command.dataset,
                         format=command.format,
                         filters=command.filters,
+                        visibility=visibility_of(command.actor),
                     ),
                     clock=deps.clock,
                     ids=deps.ids,
@@ -590,7 +638,9 @@ class RunExportHandler:
         descriptor = deps.formats.export_descriptor(job.format)
         key = export_artifact_key(job.id, job.dataset, descriptor.extension)
         stream = _RowStream(
-            self._select(job, actor), dataset=job.dataset, coordinates=self._coordinates
+            self._select(job, reading_actor(actor, job.visibility)),
+            dataset=job.dataset,
+            coordinates=self._coordinates,
         )
         async with deps.artifacts.open_sink(key, descriptor.media_type) as sink:
             metered = MeteredSink(sink, max_bytes=self._max_bytes)
@@ -620,6 +670,7 @@ class RunExportHandler:
             row_count=summary.row_count,
             checksum=summary.sha256,
             generator=self._generator,
+            visibility=job.visibility,
         )
         await deps.artifacts.put_bytes(
             export_sidecar_key(job.id, job.dataset),
