@@ -3,7 +3,7 @@
 from typing import Any
 
 import pytest
-from pydantic import PostgresDsn, RedisDsn, ValidationError
+from pydantic import PostgresDsn, RedisDsn, SecretStr, ValidationError
 
 from yakhnama.platform.settings import (
     DEVELOPMENT_TRUSTED_HOSTS,
@@ -32,6 +32,10 @@ def _safe_production_values() -> dict[str, Any]:
         "rate_limit_enabled": True,
         "rate_limit_backend": "redis",
         "task_queue_backend": "redis",
+        "storage_endpoint_url": "https://s3.eu-central-1.amazonaws.com",
+        "storage_secret_access_key": SecretStr("rotated-secret"),
+        "malware_scanner": "clamav",
+        "clamav_host": "clamd.internal",
         "redis_url": RedisDsn("redis://cache.internal:6379/0"),
         "trusted_hosts": ["api.yakhnama.org"],
     }

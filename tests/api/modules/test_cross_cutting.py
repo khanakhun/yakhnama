@@ -23,6 +23,15 @@ ANONYMOUS_OPERATIONS: Final = frozenset(
         ("get", "/api/v1/places"),
         ("get", "/api/v1/places/{place_id}"),
         ("get", "/api/v1/organizations/{organization_id}"),
+        # Phase 3: the public record and its provenance.
+        ("get", "/api/v1/events"),
+        ("get", "/api/v1/events/{event_id}"),
+        ("get", "/api/v1/events/{event_id}/timeline"),
+        ("get", "/api/v1/events/{event_id}/impacts"),
+        ("get", "/api/v1/infrastructure-assets/{asset_id}"),
+        ("get", "/api/v1/media/{asset_id}"),
+        ("get", "/api/v1/sources"),
+        ("get", "/api/v1/sources/{source_id}"),
     }
 )
 

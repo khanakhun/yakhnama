@@ -2,9 +2,10 @@
 
 Only ``yakhnama.main`` and ``yakhnama.platform.container`` bind these protocols to
 adapters (``AGENTS.md`` §2.1): ``StoragePort`` to the S3/MinIO adapter, ``ExifReader``
-and ``MimeSniffer`` to the Pillow and ``filetype`` adapters, ``ReportSourceLookup``
-to the reports facade. Sources are registered and cited through
-``provenance.public``; scans are scheduled through the kernel's ``TaskQueue``.
+and ``MimeSniffer`` to the Pillow and ``filetype`` adapters, ``MalwareScanner`` to the
+no-op or ClamAV adapter, ``ReportSourceLookup`` to the reports facade. Sources are
+registered and cited through ``provenance.public``; scans are scheduled through the
+kernel's ``TaskQueue``.
 
 Patterns: Repository (port side), Unit of Work, Query Service, Adapter (port side).
 """
@@ -19,7 +20,11 @@ from yakhnama.modules.media.application.dto import (
     StoredObject,
 )
 from yakhnama.modules.media.domain.entities import MediaAsset
-from yakhnama.modules.media.domain.value_objects import ExifFacts, MimeType
+from yakhnama.modules.media.domain.value_objects import (
+    ExifFacts,
+    MimeType,
+    ScanStatus,
+)
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.uow import UnitOfWork, UnitOfWorkFactory
 
@@ -224,6 +229,25 @@ class MimeSniffer(Protocol):
 
         Returns:
             The detected type, or ``None`` if it is not an allowed type.
+        """
+        ...
+
+
+class MalwareScanner(Protocol):
+    """Scans a stored original for malware; called by the ``media.scan`` task.
+
+    Implements: Adapter (port side).
+    """
+
+    async def scan(self, key: str) -> ScanStatus:
+        """Scan the original at ``key``.
+
+        Args:
+            key: The original's object key.
+
+        Returns:
+            ``clean``, ``infected``, or ``unavailable`` when no verdict could be
+            reached (scanner down, file too large to scan); never ``pending``.
         """
         ...
 

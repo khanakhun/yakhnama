@@ -32,13 +32,35 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
+from yakhnama.modules.events.api.router import (
+    moderation_router as events_moderation_router,
+)
+from yakhnama.modules.events.api.router import router as events_router
 from yakhnama.modules.geography.api.router import router as geography_router
 from yakhnama.modules.hazards.api.router import router as hazards_router
 from yakhnama.modules.identity.api.router import (
     moderation_router,
 )
 from yakhnama.modules.identity.api.router import router as identity_router
+from yakhnama.modules.impacts.api.claims_router import (
+    moderation_router as impact_claims_moderation_router,
+)
+from yakhnama.modules.impacts.api.claims_router import (
+    router as impact_claims_router,
+)
 from yakhnama.modules.impacts.api.router import router as impacts_router
+from yakhnama.modules.media.api.router import (
+    moderation_router as media_moderation_router,
+)
+from yakhnama.modules.media.api.router import router as media_router
+from yakhnama.modules.provenance.api.router import (
+    moderation_router as provenance_moderation_router,
+)
+from yakhnama.modules.provenance.api.router import router as provenance_router
+from yakhnama.modules.reports.api.router import router as reports_router
+from yakhnama.modules.verification.api.router import (
+    moderation_router as verification_moderation_router,
+)
 from yakhnama.platform import health
 from yakhnama.platform.api_docs import build_api_reference
 from yakhnama.platform.auth.errors import IdentityProviderUnavailableError
@@ -490,4 +512,14 @@ def create_app(
     app.include_router(geography_router)
     app.include_router(identity_router)
     app.include_router(moderation_router)
+    app.include_router(provenance_router)
+    app.include_router(reports_router)
+    app.include_router(media_router)
+    app.include_router(events_router)
+    app.include_router(impact_claims_router)
+    app.include_router(provenance_moderation_router)
+    app.include_router(media_moderation_router)
+    app.include_router(events_moderation_router)
+    app.include_router(impact_claims_moderation_router)
+    app.include_router(verification_moderation_router)
     return app
