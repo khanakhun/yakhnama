@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/khanakhun/yakhnama/security/policy
+    about: >-
+      Do not open a public issue for a security vulnerability. See SECURITY.md for how to
+      report it privately.

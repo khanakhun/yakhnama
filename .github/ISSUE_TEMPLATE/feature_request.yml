@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest an addition or change to the backend.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Feature requests for the frontend, mobile app, ML pipeline or early-warning system
+        belong in their own repositories — this one is the Python backend and system of
+        record only (see `README.md`, "What this repository is not").
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What is missing or difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: dropdown
+    id: module
+    attributes:
+      label: Likely module
+      description: If you know which module this touches, or "not sure".
+      options:
+        - reports
+        - events
+        - hazards
+        - verification
+        - identity
+        - ingestion
+        - exchange
+        - shared_kernel / platform
+        - not sure
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    validations:
+      required: false

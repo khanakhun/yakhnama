@@ -1,6 +1,6 @@
 # Phase 0 plan — Foundation and agent infrastructure
 
-Status: **awaiting maintainer approval**
+Status: **approved by the maintainer on 2026-09-23** (answers recorded in §9)
 Branch: `phase/0-foundation`
 Lead: Fable 5.1 (orchestration only). Subagents: Opus 5.5 (`model: opus` in every agent file).
 
@@ -115,3 +115,23 @@ Blocking first.
 
 Reply "approved" (optionally with answers to Q1–Q6) and I will execute the serial spine,
 then fan out the parallel waves.
+
+## 9. Maintainer answers (2026-09-23) and resulting decisions
+
+| # | Answer | Decision taken |
+|---|--------|----------------|
+| Q1 | Yes | Python 3.13.12 and 3.14.3 via `uv python install` (interpreter download only), Poetry 2.5.1 via the official installer, pre-commit and commitizen as user tools, gitleaks 8.30.1 release binary. No sudo was needed. |
+| Q2 | jev by TypeSafe AI (`jev-mcp`) | Understood: a fast typed-judgment model exposed as an MCP server (diff review, claim verification, completion gating). Not needed in Phase 0; candidate second opinion for the reviewer agents in a later phase, at which point an API key will be requested. |
+| Q3 | Do what is best | Hook input carries `agent_id` only inside a subagent (verified against the Claude Code hooks reference). `guard_protected_paths.py` denies `AGENTS.md` writes when `agent_id` is present. No environment variables involved. |
+| Q4 | Opus 5.5 for important work, Sonnet for medium or low | All implementers and both reviewers run on Opus 5.5; `docs-writer` runs on Sonnet. The lead may route an individual low-risk task to Sonnet in its brief. Skills were written on Opus because they define all future code. |
+| Q5 | Author kashanghori, email kashanghoriii@gmail.com, GitHub khanakhun | Set in `pyproject.toml`, CODEOWNERS, SECURITY and the Code of Conduct contact. |
+| Q6 | MIT or Apache, asked for a recommendation | Apache-2.0 recommended and written to `LICENSE` (explicit patent grant, NOTICE mechanism, common for infrastructure with institutional contributors). ADR 0010 stays `proposed` until the maintainer confirms. Data licence proposed CC BY 4.0. |
+
+Additional request: a proper open-source setup ready to show on GitHub. Added to T9: CHANGELOG,
+Dependabot configuration, a `data_correction` issue template, `mkdocs.yml` documentation site,
+README badges.
+
+Deviation from §3: T3 (app skeleton, compose, `.env.example`) and T5 (hooks, pre-commit, CI)
+were delegated to Opus 5.5 agents acting in the `architect` role instead of being written by
+the lead, to honour the maintainer's model-routing preference. The lead still wrote
+`pyproject.toml`, `AGENTS.md`, `CLAUDE.md`, the agent definitions and the git baseline.

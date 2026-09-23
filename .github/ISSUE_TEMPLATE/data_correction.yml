@@ -1,0 +1,45 @@
+name: Data correction
+description: Report a wrong or missing hazard record, event, or impact figure in the dataset.
+title: "data: "
+labels: ["data-correction", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Use this form for a correction to published data (an event, a report, or an impact
+        claim), not a bug in the software. **Do not post casualty names or other personal
+        details about affected people in this issue** — the dataset never publishes
+        casualty names, and neither should this report. This is a public issue; for
+        anything private, including how a moderator can reach you, email the address in
+        `SECURITY.md` instead.
+  - type: input
+    id: event-id
+    attributes:
+      label: Event, report or impact-claim ID
+      description: The identifier from the API or export, if you have it.
+      placeholder: e.g. a UUID from a GeoJSON feature or CSV row
+    validations:
+      required: false
+  - type: textarea
+    id: what-is-wrong
+    attributes:
+      label: What is wrong or missing?
+      description: Be as specific as possible — which field, value, date, or location.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Source or evidence for the correction
+      description: >
+        A link, document, or description of where the correct information comes from.
+        Every fact in Yakhnama needs a source — the more verifiable, the faster this can be
+        reviewed.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: >
+        Reminder: never include casualty names, contact details or other personal
+        information about affected people or yourself in the fields above. If a moderator
+        needs to follow up privately, email the address in `SECURITY.md`.
