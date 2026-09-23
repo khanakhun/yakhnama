@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 from pydantic import BaseModel, ConfigDict
 from pydantic import ValidationError as PydanticValidationError
 
+from tests.fakes.events import RecordingEventRecorder
 from yakhnama.shared_kernel.events import (
     EVENT_TYPE_MAX_LENGTH,
     AggregateChange,
@@ -42,19 +43,6 @@ class _HazardType(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     is_retired: bool
-
-
-class _RecordingRecorder:
-    """Records events in order.
-
-    Implements: Fake.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[DomainEvent] = []
-
-    def record_event(self, event: DomainEvent) -> None:
-        self.events.append(event)
 
 
 def _retired(**overrides: object) -> HazardTypeRetired:
@@ -189,18 +177,18 @@ def test_aggregate_change_record_into_records_events_in_order_and_returns_state(
     change = AggregateChange[_HazardType](
         state=_HazardType(is_retired=True), events=(first, second)
     )
-    recorder: EventRecorder = _RecordingRecorder()
+    recorder: EventRecorder = RecordingEventRecorder()
 
     state = change.record_into(recorder)
 
     assert state == _HazardType(is_retired=True)
-    assert isinstance(recorder, _RecordingRecorder)
+    assert isinstance(recorder, RecordingEventRecorder)
     assert recorder.events == [first, second]
 
 
 def test_aggregate_change_without_events_records_nothing() -> None:
     change = AggregateChange[_HazardType](state=_HazardType(is_retired=False))
-    recorder = _RecordingRecorder()
+    recorder = RecordingEventRecorder()
 
     change.record_into(recorder)
 

@@ -1,20 +1,28 @@
-"""Shared pytest fixtures: isolated settings, the app factory and an HTTP client."""
+"""Shared pytest fixtures: settings, the app, an HTTP client, a clock and an id source.
+
+``clock`` and ``id_generator`` are the deterministic fakes from ``tests/fakes``.
+"""
 
 import logging
 import os
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 import structlog
 from fastapi import FastAPI
 
+from tests.fakes.clock import FrozenClock
+from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.main import create_app
 from yakhnama.platform.settings import Settings, get_settings
 
 _ENV_PREFIX = "YAKHNAMA_"
 _HANDLER_NAME = "yakhnama"
 _ACCESS_LOGGER_NAME = "uvicorn.access"
+FIXED_NOW = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+"""The instant the ``clock`` fixture is frozen at."""
 
 
 @pytest.fixture(autouse=True)
@@ -64,3 +72,15 @@ async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture
+def clock() -> FrozenClock:
+    """Return a clock frozen at ``FIXED_NOW``; tests move it explicitly."""
+    return FrozenClock(FIXED_NOW)
+
+
+@pytest.fixture
+def id_generator() -> SequentialIdGenerator:
+    """Return a fresh generator of deterministic, increasing UUIDv7 ids."""
+    return SequentialIdGenerator()
