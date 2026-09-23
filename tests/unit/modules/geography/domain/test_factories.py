@@ -7,6 +7,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError as PydanticValidationError
 
+from tests.fakes.clock import FrozenClock
 from yakhnama.modules.geography.domain.entities import Place
 from yakhnama.modules.geography.domain.errors import (
     InvalidPlaceHierarchyError,
@@ -27,17 +28,7 @@ LEVELS = st.sampled_from(list(AdminLevel))
 factory = PlaceFactory()
 
 
-class _FixedClock:
-    """Always returns ``NOW``.
-
-    Implements: Fake.
-    """
-
-    def now(self) -> datetime:
-        return NOW
-
-
-clock = _FixedClock()
+clock = FrozenClock(NOW)
 ids = Uuid7Generator(clock=clock)
 
 

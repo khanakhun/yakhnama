@@ -1,10 +1,14 @@
 """Deterministic clock, ids and sample hazard types for the hazards domain tests.
 
+The clock is the shared ``tests.fakes.clock.SteppingClock``; this module only fixes
+its start and step for the hazards tests.
+
 Patterns: Fake.
 """
 
 from datetime import UTC, datetime, timedelta
 
+from tests.fakes.clock import SteppingClock
 from yakhnama.modules.hazards.domain.entities import HazardType
 from yakhnama.modules.hazards.domain.value_objects import (
     HazardTypeStatus,
@@ -18,32 +22,19 @@ CREATED_AT = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
 ALIGNMENT = IrdrAlignment(family="hydrological", main_event="Flood")
 
 
-class SteppingClock:
-    """``Clock`` that starts at ``CREATED_AT`` and advances one minute per call.
+def stepping_clock(start: datetime = CREATED_AT) -> SteppingClock:
+    """Return the shared ``SteppingClock`` fake, one minute per call.
 
-    Implements: Fake.
+    Args:
+        start: The first instant returned.
+
+    Returns:
+        A clock starting at ``start`` and advancing one minute per call.
     """
-
-    def __init__(self, start: datetime = CREATED_AT) -> None:
-        """Create the clock.
-
-        Args:
-            start: The first instant returned.
-        """
-        self._next = start
-
-    def now(self) -> datetime:
-        """Return the next instant.
-
-        Returns:
-            A UTC instant one minute after the previous one.
-        """
-        current = self._next
-        self._next = current + timedelta(minutes=1)
-        return current
+    return SteppingClock(start, timedelta(minutes=1))
 
 
-ids = Uuid7Generator(SteppingClock())
+ids = Uuid7Generator(stepping_clock())
 
 
 def labels(text: str = "Flood") -> LocalizedText:

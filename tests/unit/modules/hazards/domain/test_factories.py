@@ -6,9 +6,9 @@ from pydantic import ValidationError as PydanticValidationError
 from tests.unit.modules.hazards.domain.sample_hazard_types import (
     ALIGNMENT,
     CREATED_AT,
-    SteppingClock,
     hazard_type,
     labels,
+    stepping_clock,
 )
 from yakhnama.modules.hazards.domain.attributes import HazardAttributeRegistry
 from yakhnama.modules.hazards.domain.entities import HazardTaxonomy
@@ -29,10 +29,10 @@ TAXONOMY = HazardTaxonomy.of(
 
 
 def _factory(registry: HazardAttributeRegistry | None = None) -> HazardTypeFactory:
-    clock = SteppingClock()
+    clock = stepping_clock()
     if registry is None:
-        return HazardTypeFactory(Uuid7Generator(SteppingClock()), clock)
-    return HazardTypeFactory(Uuid7Generator(SteppingClock()), clock, registry)
+        return HazardTypeFactory(Uuid7Generator(stepping_clock()), clock)
+    return HazardTypeFactory(Uuid7Generator(stepping_clock()), clock, registry)
 
 
 def test_create_new_code_returns_active_version_one_and_created_event() -> None:

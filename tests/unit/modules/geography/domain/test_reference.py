@@ -8,6 +8,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError as PydanticValidationError
 
+from tests.fakes.clock import FrozenClock
 from yakhnama.modules.geography.domain.factories import PlaceFactory
 from yakhnama.modules.geography.domain.reference import (
     PlaceReferenceEntry,
@@ -26,16 +27,6 @@ if TYPE_CHECKING:
     from yakhnama.modules.geography.domain.entities import Place
 
 NOW = datetime(2026, 9, 23, tzinfo=UTC)
-
-
-class _FixedClock:
-    """Always returns ``NOW``.
-
-    Implements: Fake.
-    """
-
-    def now(self) -> datetime:
-        return NOW
 
 
 def _entry(
@@ -110,7 +101,7 @@ def test_place_reference_file_to_factory_inputs_orders_parents_first() -> None:
 
 def test_place_reference_file_drafts_feed_the_factory_in_order() -> None:
     reference = PlaceReferenceFile.model_validate(VALID_FILE)
-    clock = _FixedClock()
+    clock = FrozenClock(NOW)
     ids = Uuid7Generator(clock=clock)
     created: dict[str, Place] = {}
 

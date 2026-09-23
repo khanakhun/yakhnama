@@ -9,10 +9,10 @@ from pydantic import ValidationError as PydanticValidationError
 
 from tests.unit.modules.hazards.domain.sample_hazard_types import (
     CREATED_AT,
-    SteppingClock,
     hazard_type,
     ids,
     labels,
+    stepping_clock,
 )
 from yakhnama.modules.hazards.domain.entities import (
     HazardTaxonomy,
@@ -111,7 +111,7 @@ def test_retire_active_type_returns_retired_state_and_event() -> None:
     flood = hazard_type("flood")
     reason = RetirementReason(text="split into two types", replaced_by="riverine")
 
-    change = flood.retire(reason, clock=SteppingClock(LATER), ids=ids)
+    change = flood.retire(reason, clock=stepping_clock(LATER), ids=ids)
 
     assert change.state.is_retired
     assert change.state.retirement == reason
@@ -135,7 +135,7 @@ def test_retire_retired_type_raises_hazard_type_retired() -> None:
     retired = hazard_type("flood", is_retired=True)
 
     with pytest.raises(HazardTypeRetiredError):
-        retired.retire(RetirementReason(text="again"), clock=SteppingClock(), ids=ids)
+        retired.retire(RetirementReason(text="again"), clock=stepping_clock(), ids=ids)
 
 
 def test_retire_replaced_by_own_code_raises_invalid_taxonomy() -> None:
@@ -144,7 +144,7 @@ def test_retire_replaced_by_own_code_raises_invalid_taxonomy() -> None:
     with pytest.raises(InvalidTaxonomyError):
         flood.retire(
             RetirementReason(text="loop", replaced_by="flood"),
-            clock=SteppingClock(),
+            clock=stepping_clock(),
             ids=ids,
         )
 
@@ -153,7 +153,7 @@ def test_reactivate_retired_type_clears_retirement_and_emits_event() -> None:
     retired = hazard_type("flood", replaced_by="riverine")
 
     change = retired.reactivate(
-        "retired by mistake", clock=SteppingClock(LATER), ids=ids
+        "retired by mistake", clock=stepping_clock(LATER), ids=ids
     )
 
     assert change.state.status is HazardTypeStatus.ACTIVE
@@ -168,14 +168,14 @@ def test_reactivate_active_type_raises_hazard_type_not_retired() -> None:
     flood = hazard_type("flood")
 
     with pytest.raises(HazardTypeNotRetiredError):
-        flood.reactivate("why", clock=SteppingClock(), ids=ids)
+        flood.reactivate("why", clock=stepping_clock(), ids=ids)
 
 
 def test_reactivate_empty_reason_raises_validation_error() -> None:
     retired = hazard_type("flood", is_retired=True)
 
     with pytest.raises(PydanticValidationError):
-        retired.reactivate("  ", clock=SteppingClock(), ids=ids)
+        retired.reactivate("  ", clock=stepping_clock(), ids=ids)
 
 
 @pytest.mark.parametrize("is_retired", [False, True])
@@ -185,7 +185,7 @@ def test_relabel_new_labels_returns_relabelled_state_and_event(
     flood = hazard_type("flood", is_retired=is_retired)
     new_labels = labels("River flood")
 
-    change = flood.relabel(new_labels, clock=SteppingClock(LATER), ids=ids)
+    change = flood.relabel(new_labels, clock=stepping_clock(LATER), ids=ids)
 
     assert change.state.labels == new_labels
     assert change.state.version == 2
@@ -198,7 +198,7 @@ def test_relabel_new_labels_returns_relabelled_state_and_event(
 def test_relabel_same_labels_returns_unchanged_state_without_events() -> None:
     flood = hazard_type("flood")
 
-    change = flood.relabel(labels("flood"), clock=SteppingClock(), ids=ids)
+    change = flood.relabel(labels("flood"), clock=stepping_clock(), ids=ids)
 
     assert change.state is flood
     assert change.events == ()
@@ -207,7 +207,7 @@ def test_relabel_same_labels_returns_unchanged_state_without_events() -> None:
 def test_reparent_new_parent_returns_moved_state_and_event() -> None:
     flash = hazard_type("flash_flood")
 
-    change = flash.reparent("flood", clock=SteppingClock(LATER), ids=ids)
+    change = flash.reparent("flood", clock=stepping_clock(LATER), ids=ids)
 
     assert change.state.parent_code == "flood"
     assert change.state.version == 2
@@ -219,7 +219,7 @@ def test_reparent_new_parent_returns_moved_state_and_event() -> None:
 def test_reparent_to_root_records_previous_parent() -> None:
     flash = hazard_type("flash_flood", parent_code="flood")
 
-    change = flash.reparent(None, clock=SteppingClock(), ids=ids)
+    change = flash.reparent(None, clock=stepping_clock(), ids=ids)
 
     assert change.state.parent_code is None
     (event,) = change.events
@@ -230,7 +230,7 @@ def test_reparent_to_root_records_previous_parent() -> None:
 def test_reparent_same_parent_returns_unchanged_state_without_events() -> None:
     flash = hazard_type("flash_flood", parent_code="flood")
 
-    change = flash.reparent("flood", clock=SteppingClock(), ids=ids)
+    change = flash.reparent("flood", clock=stepping_clock(), ids=ids)
 
     assert change.state is flash
     assert change.events == ()
@@ -240,20 +240,20 @@ def test_reparent_to_itself_raises_invalid_taxonomy() -> None:
     flood = hazard_type("flood")
 
     with pytest.raises(InvalidTaxonomyError):
-        flood.reparent("flood", clock=SteppingClock(), ids=ids)
+        flood.reparent("flood", clock=stepping_clock(), ids=ids)
 
 
 def test_reparent_retired_type_raises_hazard_type_retired() -> None:
     retired = hazard_type("flood", is_retired=True)
 
     with pytest.raises(HazardTypeRetiredError):
-        retired.reparent("other", clock=SteppingClock(), ids=ids)
+        retired.reparent("other", clock=stepping_clock(), ids=ids)
 
 
 @given(steps=st.lists(st.sampled_from(["retire", "reactivate", "relabel"]), max_size=8))
 def test_transition_sequence_keeps_code_and_counts_versions(steps: list[str]) -> None:
     current = hazard_type("flood")
-    clock = SteppingClock()
+    clock = stepping_clock()
     changes = 0
 
     for step in steps:
@@ -451,7 +451,7 @@ def test_taxonomy_with_hazard_type_adds_new_type() -> None:
 
 def test_taxonomy_with_hazard_type_replaces_changed_state() -> None:
     taxonomy = _taxonomy()
-    change = taxonomy.get("riverine").reparent(None, clock=SteppingClock(), ids=ids)
+    change = taxonomy.get("riverine").reparent(None, clock=stepping_clock(), ids=ids)
 
     updated = taxonomy.with_hazard_type(change.state)
 
@@ -463,7 +463,7 @@ def test_taxonomy_with_hazard_type_reparent_into_cycle_raises_invalid_taxonomy()
     None
 ):
     taxonomy = _taxonomy()
-    change = taxonomy.get("flood").reparent("glof", clock=SteppingClock(), ids=ids)
+    change = taxonomy.get("flood").reparent("glof", clock=stepping_clock(), ids=ids)
 
     with pytest.raises(InvalidTaxonomyError):
         taxonomy.with_hazard_type(change.state)
@@ -473,7 +473,7 @@ def test_taxonomy_with_hazard_type_reparent_to_unknown_raises_invalid_taxonomy()
     None
 ):
     taxonomy = _taxonomy()
-    change = taxonomy.get("glof").reparent("nowhere", clock=SteppingClock(), ids=ids)
+    change = taxonomy.get("glof").reparent("nowhere", clock=stepping_clock(), ids=ids)
 
     with pytest.raises(InvalidTaxonomyError):
         taxonomy.with_hazard_type(change.state)

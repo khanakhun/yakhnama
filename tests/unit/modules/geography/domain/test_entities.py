@@ -9,6 +9,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError as PydanticValidationError
 
+from tests.fakes.clock import SteppingClock
 from yakhnama.modules.geography.domain.entities import PLACE_MAX_NAMES, Place
 from yakhnama.modules.geography.domain.errors import (
     DuplicatePlaceNameError,
@@ -44,19 +45,9 @@ HUNZA_CENTROID = Coordinates(longitude=74.65, latitude=36.32)
 EN_HUNZA = PlaceName(text="Hunza", language="en", is_preferred=True)
 
 
-class _SteppingClock:
-    """Returns a later instant, one second apart, on every call.
-
-    Implements: Fake.
-    """
-
-    def __init__(self, start: datetime = CREATED_AT + timedelta(days=1)) -> None:
-        self._next = start
-
-    def now(self) -> datetime:
-        current = self._next
-        self._next += timedelta(seconds=1)
-        return current
+def _stepping_clock() -> SteppingClock:
+    # One second per call from a day after CREATED_AT, so every change is later.
+    return SteppingClock(CREATED_AT + timedelta(days=1), timedelta(seconds=1))
 
 
 def _place(**overrides: object) -> Place:
@@ -398,7 +389,7 @@ def test_place_level_is_below_compares_with_another_place() -> None:
 
 def test_place_add_name_appends_name_and_bumps_version() -> None:
     place = _place()
-    clock = _SteppingClock()
+    clock = _stepping_clock()
     name = PlaceName(text="Kanjut", language="en", kind="historical")
 
     change = place.add_name(name, clock=clock, ids=ids)
@@ -414,7 +405,7 @@ def test_place_add_name_event_identifies_the_place_and_new_version() -> None:
     place = _place()
     name = PlaceName(text="Kanjut", language="en")
 
-    event = place.add_name(name, clock=_SteppingClock(), ids=ids).events[0]
+    event = place.add_name(name, clock=_stepping_clock(), ids=ids).events[0]
 
     assert isinstance(event, PlaceNameAdded)
     assert (event.aggregate_id, event.aggregate_type) == (place.id, "place")
@@ -427,7 +418,7 @@ def test_place_add_name_preferred_demotes_previous_preferred() -> None:
     place = _place()
     name = PlaceName(text="Hunza Valley", language="en", is_preferred=True)
 
-    change = place.add_name(name, clock=_SteppingClock(), ids=ids)
+    change = place.add_name(name, clock=_stepping_clock(), ids=ids)
 
     assert change.state.names == (EN_HUNZA.with_preference(is_preferred=False), name)
     changed = change.events[1]
@@ -445,7 +436,7 @@ def test_place_add_name_first_preferred_in_language_reports_no_previous() -> Non
         text="ہنزہ", language="ur", script=ScriptCode.ARAB, is_preferred=True
     )
 
-    change = place.add_name(name, clock=_SteppingClock(), ids=ids)
+    change = place.add_name(name, clock=_stepping_clock(), ids=ids)
 
     changed = change.events[1]
     assert isinstance(changed, PlacePreferredNameChanged)
@@ -458,7 +449,7 @@ def test_place_add_name_duplicate_raises_duplicate_place_name_error() -> None:
     duplicate = PlaceName(text=" Hunza ", language="en", kind="alternative")
 
     with pytest.raises(DuplicatePlaceNameError) as raised:
-        place.add_name(duplicate, clock=_SteppingClock(), ids=ids)
+        place.add_name(duplicate, clock=_stepping_clock(), ids=ids)
 
     assert raised.value.details["code"] == "pk.gb.hunza"
 
@@ -471,7 +462,7 @@ def test_place_add_name_beyond_the_bound_raises_validation_error() -> None:
 
     with pytest.raises(PydanticValidationError):
         place.add_name(
-            PlaceName(text="One more", language="en"), clock=_SteppingClock(), ids=ids
+            PlaceName(text="One more", language="en"), clock=_stepping_clock(), ids=ids
         )
 
 
@@ -480,7 +471,7 @@ def test_place_add_name_at_max_version_raises_validation_error() -> None:
 
     with pytest.raises(PydanticValidationError):
         place.add_name(
-            PlaceName(text="Kanjut", language="en"), clock=_SteppingClock(), ids=ids
+            PlaceName(text="Kanjut", language="en"), clock=_stepping_clock(), ids=ids
         )
 
 
@@ -489,7 +480,7 @@ def test_place_add_name_sequence_keeps_name_invariants(
     names: list[PlaceName],
 ) -> None:
     place = _place()
-    clock = _SteppingClock()
+    clock = _stepping_clock()
 
     for name in names:
         try:
@@ -512,7 +503,9 @@ def test_place_set_preferred_name_switches_preference_within_language() -> None:
     other = PlaceName(text="Kanjut", language="en")
     place = _place(names=(EN_HUNZA, other))
 
-    change = place.set_preferred_name("EN", " Kanjut ", clock=_SteppingClock(), ids=ids)
+    change = place.set_preferred_name(
+        "EN", " Kanjut ", clock=_stepping_clock(), ids=ids
+    )
 
     assert change.state.names == (
         EN_HUNZA.with_preference(is_preferred=False),
@@ -528,7 +521,7 @@ def test_place_set_preferred_name_without_previous_reports_none() -> None:
     urdu = PlaceName(text="ہنزہ", language="ur")
     place = _place(names=(EN_HUNZA, urdu))
 
-    change = place.set_preferred_name("ur", "ہنزہ", clock=_SteppingClock(), ids=ids)
+    change = place.set_preferred_name("ur", "ہنزہ", clock=_stepping_clock(), ids=ids)
 
     event = change.events[0]
     assert isinstance(event, PlacePreferredNameChanged)
@@ -539,7 +532,7 @@ def test_place_set_preferred_name_without_previous_reports_none() -> None:
 def test_place_set_preferred_name_already_preferred_returns_unchanged_place() -> None:
     place = _place()
 
-    change = place.set_preferred_name("en", "Hunza", clock=_SteppingClock(), ids=ids)
+    change = place.set_preferred_name("en", "Hunza", clock=_stepping_clock(), ids=ids)
 
     assert change.state is place
     assert change.events == ()
@@ -549,7 +542,7 @@ def test_place_set_preferred_name_unknown_name_raises_not_found() -> None:
     place = _place()
 
     with pytest.raises(PlaceNameNotFoundError):
-        place.set_preferred_name("en", "Nagar", clock=_SteppingClock(), ids=ids)
+        place.set_preferred_name("en", "Nagar", clock=_stepping_clock(), ids=ids)
 
 
 def test_place_set_preferred_name_ambiguous_script_raises_validation_error() -> None:
@@ -560,7 +553,7 @@ def test_place_set_preferred_name_ambiguous_script_raises_validation_error() -> 
     place = _place(names=names)
 
     with pytest.raises(ValidationError, match="script"):
-        place.set_preferred_name("en", "Hunza", clock=_SteppingClock(), ids=ids)
+        place.set_preferred_name("en", "Hunza", clock=_stepping_clock(), ids=ids)
 
 
 def test_place_set_preferred_name_script_chooses_between_scripts() -> None:
@@ -571,7 +564,7 @@ def test_place_set_preferred_name_script_chooses_between_scripts() -> None:
     place = _place(names=names)
 
     change = place.set_preferred_name(
-        "en", "Hunza", clock=_SteppingClock(), ids=ids, script=ScriptCode.LATN
+        "en", "Hunza", clock=_stepping_clock(), ids=ids, script=ScriptCode.LATN
     )
 
     assert [name.is_preferred for name in change.state.names] == [False, True]
@@ -586,7 +579,7 @@ def test_place_set_geometry_sets_geometry_and_reports_bounding_box() -> None:
     place = _place()
     geometry = PlaceGeometry.from_bounding_box(GB_BOX)
 
-    change = place.set_geometry(geometry, clock=_SteppingClock(), ids=ids)
+    change = place.set_geometry(geometry, clock=_stepping_clock(), ids=ids)
 
     assert change.state.geometry == geometry
     event = change.events[0]
@@ -601,7 +594,7 @@ def test_place_set_geometry_sets_geometry_and_reports_bounding_box() -> None:
 def test_place_set_geometry_none_removes_geometry() -> None:
     place = _place(geometry=PlaceGeometry.from_coordinates(HUNZA_CENTROID))
 
-    change = place.set_geometry(None, clock=_SteppingClock(), ids=ids)
+    change = place.set_geometry(None, clock=_stepping_clock(), ids=ids)
 
     assert change.state.geometry is None
     event = change.events[0]
@@ -617,7 +610,7 @@ def test_place_set_geometry_same_geometry_returns_unchanged_place() -> None:
     place = _place(geometry=PlaceGeometry.from_bounding_box(GB_BOX))
 
     change = place.set_geometry(
-        PlaceGeometry.from_bounding_box(GB_BOX), clock=_SteppingClock(), ids=ids
+        PlaceGeometry.from_bounding_box(GB_BOX), clock=_stepping_clock(), ids=ids
     )
 
     assert (change.state, change.events) == (place, ())
@@ -626,7 +619,7 @@ def test_place_set_geometry_same_geometry_returns_unchanged_place() -> None:
 def test_place_set_centroid_sets_and_reports_previous() -> None:
     place = _place()
 
-    change = place.set_centroid(HUNZA_CENTROID, clock=_SteppingClock(), ids=ids)
+    change = place.set_centroid(HUNZA_CENTROID, clock=_stepping_clock(), ids=ids)
 
     assert change.state.centroid == HUNZA_CENTROID
     event = change.events[0]
@@ -637,7 +630,7 @@ def test_place_set_centroid_sets_and_reports_previous() -> None:
 def test_place_set_centroid_same_centroid_returns_unchanged_place() -> None:
     place = _place(centroid=HUNZA_CENTROID)
 
-    change = place.set_centroid(HUNZA_CENTROID, clock=_SteppingClock(), ids=ids)
+    change = place.set_centroid(HUNZA_CENTROID, clock=_stepping_clock(), ids=ids)
 
     assert (change.state, change.events) == (place, ())
 
@@ -650,7 +643,7 @@ def test_place_set_centroid_same_centroid_returns_unchanged_place() -> None:
 def test_place_retire_sets_status_and_stripped_reason() -> None:
     place = _place()
 
-    change = place.retire("  district abolished  ", clock=_SteppingClock(), ids=ids)
+    change = place.retire("  district abolished  ", clock=_stepping_clock(), ids=ids)
 
     assert (change.state.status, change.state.status_reason) == (
         "retired",
@@ -669,7 +662,7 @@ def test_place_retire_reason_out_of_bounds_raises_validation_error(
     place = _place()
 
     with pytest.raises(PydanticValidationError):
-        place.retire(reason, clock=_SteppingClock(), ids=ids)
+        place.retire(reason, clock=_stepping_clock(), ids=ids)
 
 
 def test_place_merge_into_sets_status_target_and_reason() -> None:
@@ -677,7 +670,7 @@ def test_place_merge_into_sets_status_target_and_reason() -> None:
     target_id = ids.new_id()
 
     change = place.merge_into(
-        target_id, "split recorded twice", clock=_SteppingClock(), ids=ids
+        target_id, "split recorded twice", clock=_stepping_clock(), ids=ids
     )
 
     assert (change.state.status, change.state.merged_into_id) == ("merged", target_id)
@@ -694,17 +687,17 @@ def test_place_merge_into_itself_raises_invariant_violation() -> None:
     place = _place()
 
     with pytest.raises(InvariantViolationError):
-        place.merge_into(place.id, "mistake", clock=_SteppingClock(), ids=ids)
+        place.merge_into(place.id, "mistake", clock=_stepping_clock(), ids=ids)
 
 
 def _retired() -> Place:
-    return _place().retire("abolished", clock=_SteppingClock(), ids=ids).state
+    return _place().retire("abolished", clock=_stepping_clock(), ids=ids).state
 
 
 def _merged() -> Place:
     return (
         _place()
-        .merge_into(ids.new_id(), "duplicate", clock=_SteppingClock(), ids=ids)
+        .merge_into(ids.new_id(), "duplicate", clock=_stepping_clock(), ids=ids)
         .state
     )
 
@@ -714,18 +707,18 @@ def _merged() -> Place:
     "operation",
     [
         lambda place: place.add_name(
-            PlaceName(text="Kanjut", language="en"), clock=_SteppingClock(), ids=ids
+            PlaceName(text="Kanjut", language="en"), clock=_stepping_clock(), ids=ids
         ),
         lambda place: place.set_preferred_name(
-            "en", "Hunza", clock=_SteppingClock(), ids=ids
+            "en", "Hunza", clock=_stepping_clock(), ids=ids
         ),
-        lambda place: place.set_geometry(None, clock=_SteppingClock(), ids=ids),
+        lambda place: place.set_geometry(None, clock=_stepping_clock(), ids=ids),
         lambda place: place.set_centroid(
-            HUNZA_CENTROID, clock=_SteppingClock(), ids=ids
+            HUNZA_CENTROID, clock=_stepping_clock(), ids=ids
         ),
-        lambda place: place.retire("again", clock=_SteppingClock(), ids=ids),
+        lambda place: place.retire("again", clock=_stepping_clock(), ids=ids),
         lambda place: place.merge_into(
-            ids.new_id(), "again", clock=_SteppingClock(), ids=ids
+            ids.new_id(), "again", clock=_stepping_clock(), ids=ids
         ),
     ],
     ids=[
