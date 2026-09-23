@@ -1,0 +1,259 @@
+[project]
+name = "yakhnama"
+version = "0.1.0"
+description = "Chronicle of the ice: the open system of record for natural hazards and disasters in high-mountain regions, starting with Gilgit-Baltistan."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "kashanghori", email = "kashanghoriii@gmail.com" }]
+requires-python = ">=3.13,<4.0"
+keywords = ["disaster-risk", "glof", "gilgit-baltistan", "hazards", "open-data", "fastapi", "postgis"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Typing :: Typed",
+]
+dependencies = ["fastapi (>=0.141.1,<0.142.0)", "uvicorn[standard] (>=0.53.0,<0.54.0)", "pydantic (>=2.13.5,<3.0.0)", "pydantic-settings (>=2.15.0,<3.0.0)", "geojson-pydantic (>=2.2.0,<3.0.0)", "sqlalchemy[asyncio] (>=2.0.54,<3.0.0)", "asyncpg (>=0.31.0,<0.32.0)", "geoalchemy2 (>=0.20.0,<0.21.0)", "alembic (>=1.20.0,<2.0.0)", "shapely (>=2.1.2,<3.0.0)", "structlog (>=26.1.0,<27.0.0)", "httpx (>=0.28.1,<0.29.0)", "opentelemetry-api (>=1.44.0,<2.0.0)", "opentelemetry-sdk (>=1.44.0,<2.0.0)", "opentelemetry-instrumentation-fastapi (>=0.65b0,<0.66)", "prometheus-client (>=0.26.0,<0.27.0)"]
+
+[project.urls]
+Homepage = "https://github.com/khanakhun/yakhnama"
+Repository = "https://github.com/khanakhun/yakhnama"
+Issues = "https://github.com/khanakhun/yakhnama/issues"
+Changelog = "https://github.com/khanakhun/yakhnama/blob/main/CHANGELOG.md"
+
+[tool.poetry]
+packages = [{ include = "yakhnama", from = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.16.8"
+mypy = "^2.3.1"
+import-linter = "^2.15"
+poethepoet = "^0.48.0"
+pre-commit = "^4.6.2"
+commitizen = "^4.19.0"
+pip-audit = "^2.10.1"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^9.1.1"
+pytest-asyncio = "^1.4.0"
+pytest-cov = "^7.1.0"
+diff-cover = "^10.6.0"
+hypothesis = "^6.168.0"
+polyfactory = "^3.3.0"
+
+[tool.poetry.group.docs.dependencies]
+mkdocs-material = "^9.7.7"
+mkdocstrings = {extras = ["python"], version = "^1.0.6"}
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+# --------------------------------------------------------------------------- #
+# Ruff                                                                        #
+# --------------------------------------------------------------------------- #
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+src = ["src", "tests"]
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "D", "UP", "B", "A", "C4", "C90", "SIM", "RET",
+          "PTH", "TID", "TC", "PL", "RUF", "S", "ANN", "ERA", "T20", "DTZ", "PT",
+          "ASYNC", "FBT", "BLE", "EM", "G", "ISC", "PIE", "PERF"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "D103", "ANN201"]
+
+# --------------------------------------------------------------------------- #
+# mypy                                                                        #
+# --------------------------------------------------------------------------- #
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+disallow_any_explicit = false
+files = ["src", "tests", ".claude/hooks"]
+mypy_path = ["src", ".claude/hooks"]
+explicit_package_bases = true
+namespace_packages = true
+pretty = true
+show_error_codes = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# --------------------------------------------------------------------------- #
+# import-linter: layer and module boundaries (§4.2)                           #
+# --------------------------------------------------------------------------- #
+
+[tool.importlinter]
+root_package = "yakhnama"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "shared_kernel is framework-free and depends on nothing inside yakhnama"
+type = "forbidden"
+source_modules = ["yakhnama.shared_kernel"]
+forbidden_modules = [
+  "yakhnama.platform",
+  "yakhnama.modules",
+  "yakhnama.main",
+  "fastapi",
+  "starlette",
+  "sqlalchemy",
+  "geoalchemy2",
+  "alembic",
+  "asyncpg",
+  "httpx",
+  "shapely",
+  "boto3",
+  "botocore",
+  "structlog",
+]
+
+[[tool.importlinter.contracts]]
+name = "platform never imports the application entry point"
+type = "forbidden"
+source_modules = ["yakhnama.platform"]
+forbidden_modules = ["yakhnama.main"]
+
+# --------------------------------------------------------------------------- #
+# pytest and coverage (§11)                                                   #
+# --------------------------------------------------------------------------- #
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", ".claude/hooks"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+xfail_strict = true
+filterwarnings = ["error"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "integration: needs real PostGIS/MinIO via testcontainers",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["yakhnama", ".claude/hooks"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = false
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "@overload",
+  "raise NotImplementedError",
+  "\\.\\.\\.$",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+# --------------------------------------------------------------------------- #
+# commitizen: Conventional Commits and changelog                              #
+# --------------------------------------------------------------------------- #
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+version_scheme = "pep440"
+version_provider = "pep621"
+update_changelog_on_bump = true
+changelog_incremental = true
+
+# --------------------------------------------------------------------------- #
+# Poe tasks: the same commands locally and in CI (§13.5)                      #
+# --------------------------------------------------------------------------- #
+
+[tool.poe]
+poetry_command = ""
+
+[tool.poe.tasks.format]
+help = "Format code and apply safe lint fixes"
+sequence = [
+  { cmd = "ruff format ." },
+  { cmd = "ruff check --fix ." },
+]
+
+[tool.poe.tasks.lint]
+help = "Verify formatting and lint rules (no changes)"
+sequence = [
+  { cmd = "ruff format --check ." },
+  { cmd = "ruff check ." },
+]
+
+[tool.poe.tasks.typecheck]
+help = "mypy --strict over src, tests and hooks"
+cmd = "mypy"
+
+[tool.poe.tasks.arch]
+help = "Enforce layer and module import contracts"
+cmd = "lint-imports"
+
+[tool.poe.tasks.test-unit]
+help = "Unit tests (no I/O) with coverage"
+cmd = "pytest tests/unit --cov --cov-report=term-missing --cov-report=xml"
+
+[tool.poe.tasks.test-api]
+help = "HTTP-level tests against the app factory"
+cmd = "pytest tests/api tests/architecture"
+
+[tool.poe.tasks.cov]
+help = "All non-integration tests with the coverage gate"
+cmd = "pytest tests/unit tests/api tests/architecture --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
+
+[tool.poe.tasks.diff-cover]
+help = "Require >= 90% coverage on lines changed relative to main"
+cmd = "diff-cover coverage.xml --compare-branch=main --fail-under=90"
+
+[tool.poe.tasks.security]
+help = "Secret scan and dependency audit"
+sequence = [
+  { cmd = "gitleaks git --no-banner --redact ." },
+  { shell = "poetry export --without-hashes --all-groups -f requirements.txt | pip-audit --strict --progress-spinner off -r /dev/stdin" },
+]
+
+[tool.poe.tasks.openapi-snapshot]
+help = "Regenerate tests/contract/openapi.json from the app factory"
+cmd = "python -m yakhnama.platform.openapi_snapshot"
+
+[tool.poe.tasks.up]
+help = "Start PostGIS, MinIO, Keycloak and Redis"
+cmd = "docker compose up -d --wait"
+
+[tool.poe.tasks.down]
+help = "Stop the local services"
+cmd = "docker compose down"
+
+[tool.poe.tasks.docs]
+help = "Serve the documentation site locally"
+cmd = "mkdocs serve"
+
+[tool.poe.tasks.check]
+help = "Everything CI runs, in order. Green here means green in CI."
+sequence = ["lint", "typecheck", "arch", "cov", "diff-cover", "security"]
