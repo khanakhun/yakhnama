@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(//**/.env)",
+      "Edit(//**/.env)",
+      "Read(//**/.env.local)",
+      "Edit(//**/.env.local)",
+      "Edit(/poetry.lock)",
+      "Edit(/LICENSE)",
+      "Edit(/.github/CODEOWNERS)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && poetry run python .claude/hooks/guard_protected_paths.py || exit 2"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && poetry run python .claude/hooks/format_and_check_file.py || exit 2"
+          }
+        ]
+      }
+    ]
+  }
+}
