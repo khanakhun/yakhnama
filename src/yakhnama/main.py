@@ -32,13 +32,36 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
+from yakhnama.modules.events.api.router import (
+    moderation_router as events_moderation_router,
+)
+from yakhnama.modules.events.api.router import router as events_router
 from yakhnama.modules.geography.api.router import router as geography_router
 from yakhnama.modules.hazards.api.router import router as hazards_router
 from yakhnama.modules.identity.api.router import (
     moderation_router,
 )
 from yakhnama.modules.identity.api.router import router as identity_router
+from yakhnama.modules.impacts.api.claims_router import (
+    moderation_router as impact_claims_moderation_router,
+)
+from yakhnama.modules.impacts.api.claims_router import (
+    router as impact_claims_router,
+)
 from yakhnama.modules.impacts.api.router import router as impacts_router
+from yakhnama.modules.media.api.router import (
+    moderation_router as media_moderation_router,
+)
+from yakhnama.modules.media.api.router import router as media_router
+from yakhnama.modules.media.infrastructure.adapters.s3_storage import StorageError
+from yakhnama.modules.provenance.api.router import (
+    moderation_router as provenance_moderation_router,
+)
+from yakhnama.modules.provenance.api.router import router as provenance_router
+from yakhnama.modules.reports.api.router import router as reports_router
+from yakhnama.modules.verification.api.router import (
+    moderation_router as verification_moderation_router,
+)
 from yakhnama.platform import health
 from yakhnama.platform.api_docs import build_api_reference
 from yakhnama.platform.auth.errors import IdentityProviderUnavailableError
@@ -64,6 +87,7 @@ from yakhnama.platform.problem_details import (
 from yakhnama.platform.ratelimit.middleware import RateLimitMiddleware
 from yakhnama.platform.request_state import get_request_id
 from yakhnama.platform.settings import Settings, get_settings
+from yakhnama.platform.tasks.errors import TaskQueueUnavailableError
 from yakhnama.platform.telemetry import configure_telemetry
 from yakhnama.shared_kernel.errors import (
     AuthenticationError,
@@ -108,6 +132,13 @@ ERROR_STATUSES: Final[Mapping[type[YakhnamaError], tuple[HTTPStatus, str]]] = (
             InvariantViolationError: (HTTPStatus.CONFLICT, "invariant-violation"),
             InvalidTransitionError: (HTTPStatus.CONFLICT, "invalid-transition"),
             IdentityProviderUnavailableError: (
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "service-unavailable",
+            ),
+            # Object storage or the task broker could not be reached: the request
+            # was valid and may succeed on retry, so it is not a server bug (500).
+            StorageError: (HTTPStatus.SERVICE_UNAVAILABLE, "service-unavailable"),
+            TaskQueueUnavailableError: (
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "service-unavailable",
             ),
@@ -490,4 +521,14 @@ def create_app(
     app.include_router(geography_router)
     app.include_router(identity_router)
     app.include_router(moderation_router)
+    app.include_router(provenance_router)
+    app.include_router(reports_router)
+    app.include_router(media_router)
+    app.include_router(events_router)
+    app.include_router(impact_claims_router)
+    app.include_router(provenance_moderation_router)
+    app.include_router(media_moderation_router)
+    app.include_router(events_moderation_router)
+    app.include_router(impact_claims_moderation_router)
+    app.include_router(verification_moderation_router)
     return app

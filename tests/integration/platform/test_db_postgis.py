@@ -35,6 +35,21 @@ async def test_create_engine_sessions_search_only_the_public_schema(
     assert search_path == "public"
 
 
+async def test_create_engine_sessions_print_shortest_round_trip_floats(
+    container: Container,
+) -> None:
+    async with container.session_factory() as session:
+        digits = await session.scalar(text("SHOW extra_float_digits"))
+        # 0.1 + 0.2 is 0.30000000000000004 in binary; with extra_float_digits 0
+        # PostgreSQL would print 0.3 and SQL rounding would diverge from repr().
+        rendered = await session.scalar(
+            text("SELECT (0.1::float8 + 0.2::float8)::text")
+        )
+
+    assert digits == "1"
+    assert rendered == repr(0.1 + 0.2)
+
+
 async def test_create_engine_timestamptz_values_come_back_aware_in_utc(
     container: Container,
 ) -> None:

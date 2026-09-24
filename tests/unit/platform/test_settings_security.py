@@ -3,7 +3,7 @@
 from typing import Any
 
 import pytest
-from pydantic import PostgresDsn, RedisDsn, ValidationError
+from pydantic import PostgresDsn, RedisDsn, SecretStr, ValidationError
 
 from yakhnama.platform.settings import (
     DEVELOPMENT_TRUSTED_HOSTS,
@@ -31,6 +31,11 @@ def _safe_production_values() -> dict[str, Any]:
         "oidc_issuer": "https://id.yakhnama.org/realms/yakhnama",
         "rate_limit_enabled": True,
         "rate_limit_backend": "redis",
+        "task_queue_backend": "redis",
+        "storage_endpoint_url": "https://s3.eu-central-1.amazonaws.com",
+        "storage_secret_access_key": SecretStr("rotated-secret"),
+        "malware_scanner": "clamav",
+        "clamav_host": "clamd.internal",
         "redis_url": RedisDsn("redis://cache.internal:6379/0"),
         "trusted_hosts": ["api.yakhnama.org"],
     }
@@ -212,6 +217,7 @@ def test_settings_safe_production_values_are_accepted() -> None:
         ({"oidc_issuer": None}, "oidc_issuer"),
         ({"rate_limit_enabled": False}, "rate_limit_enabled"),
         ({"rate_limit_backend": "memory"}, "rate_limit_backend"),
+        ({"task_queue_backend": "memory"}, "task_queue_backend"),
         ({"trusted_hosts": ["*"]}, "trusted_hosts"),
         ({"trusted_hosts": ["api.yakhnama.org", "testserver"]}, "trusted_hosts"),
         ({"trusted_hosts": ["TEST"]}, "trusted_hosts"),

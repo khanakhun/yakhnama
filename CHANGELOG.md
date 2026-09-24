@@ -113,3 +113,75 @@ were written by hand because there is no release yet.
 - `docs/architecture/api.md`: the `/api/v1` conventions (authentication, Problem Details,
   pagination, idempotency, `ETag`/`If-Match`, content negotiation, rate limiting, the
   route table and the OpenAPI workflow).
+
+### Phase 3
+
+- `provenance` domain, application, persistence and API: `Source` (citizen, organisation,
+  government, news, satellite, research, dataset), immutable once any fact cites it, a
+  `Licence` value object, and `GET`/`POST /sources[/{id}]`.
+- `audit` domain, application and persistence: the append-only `AuditEntry` (ids, codes and
+  SHA-256 digests only, never free text), written after commit by an outbox subscriber
+  keyed by `event_id`; a `BEFORE UPDATE OR DELETE` database trigger backs the domain's
+  immutability with a database-level guarantee, and `recorded_at` is a database-default
+  column, both added in migration `0009_audit`.
+- `reports` domain, application, persistence and API: `Report` (reporter, `observed_at` with
+  precision, private exact GPS position, description, hazard-type guess), revisions
+  (`ReportRevised`/`ReportSuperseded`), withdrawal, and the triage Chain of Responsibility
+  (EXIF plausibility, duplicate suspicion, a PII scrub, a spam check) that only suggests;
+  `POST /reports` idempotent on the client's own `client_report_id` as well as on
+  `Idempotency-Key`; `GET /reports[/{id}]` with GeoJSON negotiation and rounded public
+  positions (`shared_kernel/privacy.py`'s `PublicCoordinatePolicy`).
+- `media` domain, application, persistence, adapters and API: `MediaAsset` (private
+  original, EXIF-stripped public copy, SHA-256 deduplication per owner, malware-scanner
+  verdict, moderation status and sensitivity flag); an `aiobotocore` S3/MinIO storage
+  adapter (presigned `PUT`/`GET`), a Pillow-based EXIF reader and metadata stripper, a
+  `filetype` magic-byte MIME sniffer, and the `MalwareScanner` port with a `NoOpScanner`
+  (development) and a `ClamAvScanner` (unverified against a real daemon, see
+  `docs/open-questions.md` Q116); presigned-upload and moderation routes under `/media` and
+  `/moderation/media`.
+- `events` domain, application, persistence and API: `Event` (hazard-specific attributes
+  validated against the `hazards` registry, geometry or point, affected places, report
+  links, status), `EventRelation` (`triggered_by`/`part_of`/`same_as`), and
+  `EventFactory.from_reports` deriving an event's period and centroid from linked reports'
+  rounded public points; `GET /events[/{id}][/timeline]` (anonymous, `published` and
+  `verified` only) and the `/moderation/events` write routes.
+- `verification` domain, application, persistence and API: `VerificationCase` per report,
+  event or claim with the `AGENTS.md` §6.3 transition table (a reason required except for
+  `submitted`; only a human reaches `verified`), and the `/moderation/verification-cases`
+  and `/moderation/verification/{case_id}/...` routes.
+- `impacts` extension (domain, application, persistence and API): the append-only
+  `ImpactClaim` (correction supersedes and retracts in one unit of work),
+  `InfrastructureAsset`, `DamageRecord`, and the documented `BestFigurePolicy` (`sum`,
+  `max` or `latest` per metric, source-rank tie-breaking, minimum contributing
+  confidence — `docs/architecture/best-figure.md`); `GET /events/{id}/impacts`,
+  `GET /infrastructure-assets/{id}` and the `/moderation` write routes for claims, assets
+  and damage.
+- Platform task queue (`platform/tasks/`): the `TaskQueue` port (ADR 0008) bound to a
+  Taskiq adapter with a Redis broker in production and an in-memory fake in tests;
+  `TaskHandlerRegistry` binding task names to handlers; `reports.run_triage` and
+  `media.scan` as one-off tasks, `outbox.relay_once`, `outbox.purge_published` and
+  `idempotency.purge_expired` as periodic tasks scheduled via Taskiq `schedule` labels; the
+  `poe worker` and `poe scheduler` tasks.
+- Platform outbox: lease-based claiming (`SELECT ... FOR UPDATE SKIP LOCKED` plus
+  `leased_until`), dead-lettering after `max_attempts`, and `purge_published` retention,
+  extending the Phase 1 transactional outbox (`platform/outbox/relay.py`).
+- Shared kernel: the `SafeText` free-text type (surrogates, control characters and
+  bidirectional overrides refused), the `public_coordinate_decimals` rounding helper
+  (`shared_kernel/privacy.py`), and the `TaskQueue` port.
+- Migrations `0007_outbox_lease_and_dead_letter` through `0014_impact_claims`: the outbox
+  lease/dead-letter columns and, one per module, `sources`, `audit_entries` (with its
+  append-only trigger), `reports`, `media_assets`, `events`/`event_relations`/
+  `event_report_links`, `verification_cases`, and `infrastructure_assets`/`impact_claims`/
+  `damage_records`.
+- `docs/architecture/recording.md`: the end-to-end recording flow, reporter privacy rules,
+  the gate-flow sequence diagram, task schedules and the outbox's lease/dead-letter/
+  retention semantics.
+- `docs/architecture/api.md`: the Phase 3 route table, GeoJSON rules for reports and
+  events, the report-submission replay rule, and media visibility rules.
+- `docs/architecture/media.md`: extended with the Phase 3 route pointers.
+- Seven new data-dictionary pages: `provenance.md`, `audit.md`, `reports.md`, `media.md`,
+  `events.md`, `verification.md`, and the `impacts` page's claims/assets/damage extension,
+  each with a "Persistence" section for the database-level detail beyond the domain model.
+- `docs/open-questions.md`: Q77–Q173, covering every per-module proposed default from the
+  seven Phase 3 data dictionaries and `docs/architecture/best-figure.md`, plus the
+  cross-cutting defaults and gaps recorded by the Phase 3 implementation reports.

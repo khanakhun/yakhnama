@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Annotated, Final, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import Field, PostgresDsn, RedisDsn, field_validator, model_validator
+from pydantic import (
+    Field,
+    PostgresDsn,
+    RedisDsn,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from yakhnama.shared_kernel.ids import EntityId
@@ -26,6 +33,10 @@ TelemetryExporter = Literal["none", "console", "otlp"]
 # algorithms (HS*) and "none" are impossible to configure, not merely off by default.
 SigningAlgorithm = Literal["RS256", "ES256"]
 RateLimitBackend = Literal["memory", "redis"]
+TaskQueueBackend = Literal["memory", "redis"]
+# "noop" scans nothing and is refused in production; "clamav" streams each original
+# to a clamd daemon (modules/media/infrastructure/adapters/scanner.py).
+MalwareScannerBackend = Literal["noop", "clamav"]
 
 # The only driver the async engine in ``platform/db.py`` supports (ADR 0004).
 ASYNC_POSTGRES_SCHEME: Final = "postgresql+asyncpg"
@@ -35,6 +46,15 @@ ASYNC_POSTGRES_SCHEME: Final = "postgresql+asyncpg"
 DEVELOPMENT_DATABASE_URL: Final = PostgresDsn(
     "postgresql+asyncpg://yakhnama:yakhnama-dev-only@127.0.0.1:5432/yakhnama"
 )
+
+# Match the MinIO service and its development credentials in docker-compose.yml
+# (MINIO_HOST_PORT, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD); real deployments override
+# them through YAKHNAMA_STORAGE_*. The production guard refuses the secret below.
+DEVELOPMENT_STORAGE_ENDPOINT_URL: Final = "http://127.0.0.1:9000"
+DEVELOPMENT_STORAGE_ACCESS_KEY_ID: Final = "minioadmin"
+DEVELOPMENT_STORAGE_SECRET: Final = "minioadmin-dev-only"  # noqa: S105  # reason: the public development credential of docker-compose.yml, refused in production
+# S3 bucket naming rules: 3-63 lower-case letters, digits, dots and hyphens.
+BUCKET_NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
 
 # An origin is scheme + host + port; 2048 matches the common URL length ceiling and
 # keeps a malformed environment value from becoming an unbounded allocation.
@@ -165,6 +185,40 @@ class Settings(BaseSettings):
         max_request_body_bytes: Largest request body accepted; larger bodies get
             413 before the route runs.
         request_id_header: Header that carries the request id in and out.
+        task_queue_backend: ``memory`` (tasks run inside the process that enqueues
+            them; development and tests) or ``redis`` (a Redis stream consumed by
+            ``poe worker``; required in production). ``redis`` needs ``redis_url``.
+        outbox_relay_interval_seconds: How often the scheduler enqueues
+            ``outbox.relay_once``.
+        outbox_batch_size: Outbox messages claimed per relay run.
+        outbox_max_attempts: Delivery attempts after which a message is
+            dead-lettered.
+        outbox_lease_seconds: How long a claimed message is reserved for the relay
+            that claimed it; after that another relay may claim it again. Must be
+            at least ``outbox_subscriber_timeout_seconds``.
+        outbox_subscriber_timeout_seconds: Upper bound for one subscriber call; a
+            slower call is cancelled and counts as a failed attempt.
+        outbox_retention_days: Published outbox messages older than this are
+            deleted by ``outbox.purge_published``; pending and dead-lettered
+            messages are never purged.
+        idempotency_purge_interval_minutes: How often the scheduler enqueues
+            ``idempotency.purge_expired``.
+        storage_endpoint_url: The S3-compatible endpoint; an empty value means
+            AWS's regional default. Must be ``https`` except on a loopback host.
+        storage_region: The region requests are signed for.
+        storage_access_key_id: The storage access key id; excluded from ``repr``.
+        storage_secret_access_key: The storage secret key; a ``SecretStr``, so it
+            is masked in ``repr``, logs and validation errors.
+        storage_private_bucket: Bucket of the unchanged, private originals.
+        storage_public_bucket: Bucket of the metadata-stripped public copies; must
+            differ from the private bucket.
+        storage_presign_ttl_seconds: Lifetime of every presigned upload and
+            download URL.
+        malware_scanner: ``noop`` (development and tests; scans nothing, refused
+            in production) or ``clamav`` (needs ``clamav_host``).
+        clamav_host: Host of the clamd daemon for the ``clamav`` scanner.
+        clamav_port: clamd's TCP port.
+        clamav_timeout_seconds: Upper bound for one whole scan.
     """
 
     model_config = SettingsConfigDict(
@@ -251,6 +305,51 @@ class Settings(BaseSettings):
         default="X-Request-ID", pattern=r"^[A-Za-z][A-Za-z0-9-]{0,63}$"
     )
 
+    # Background work (ADR 0007, ADR 0008). Every default below is a proposed
+    # operational value, not a domain fact, recorded as an open question in the
+    # Phase 3 report until the maintainer confirms it.
+    task_queue_backend: TaskQueueBackend = "memory"
+    # Five seconds bounds how long a committed change waits for its side effects
+    # (audit, best figures) while costing one indexed query per interval when idle.
+    outbox_relay_interval_seconds: int = Field(default=5, ge=1, le=60)
+    outbox_batch_size: int = Field(default=100, ge=1, le=1000)
+    outbox_max_attempts: int = Field(default=5, ge=1, le=100)
+    outbox_lease_seconds: int = Field(default=120, ge=5, le=3600)
+    outbox_subscriber_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    outbox_retention_days: int = Field(default=30, ge=1, le=365)
+    idempotency_purge_interval_minutes: int = Field(default=60, ge=5, le=1440)
+
+    # Object storage (ADR 0009). The development values match docker-compose.yml.
+    storage_endpoint_url: str | None = Field(
+        default=DEVELOPMENT_STORAGE_ENDPOINT_URL, min_length=1, max_length=2048
+    )
+    storage_region: str = Field(default="us-east-1", pattern=r"^[a-z0-9-]{1,32}$")
+    storage_access_key_id: str = Field(
+        default=DEVELOPMENT_STORAGE_ACCESS_KEY_ID,
+        min_length=1,
+        max_length=128,
+        repr=False,
+    )
+    storage_secret_access_key: SecretStr = Field(
+        default=SecretStr(DEVELOPMENT_STORAGE_SECRET), min_length=1, max_length=256
+    )
+    storage_private_bucket: str = Field(
+        default="yakhnama-media-private", pattern=BUCKET_NAME_PATTERN
+    )
+    storage_public_bucket: str = Field(
+        default="yakhnama-media-public", pattern=BUCKET_NAME_PATTERN
+    )
+    # Proposed: 15 minutes lets a phone on a weak network start a 50 MiB upload
+    # while keeping a leaked link short-lived. S3 checks expiry when a request
+    # starts, so a slow upload that started in time still completes.
+    storage_presign_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    malware_scanner: MalwareScannerBackend = "noop"
+    clamav_host: str | None = Field(default=None, min_length=1, max_length=255)
+    clamav_port: int = Field(default=3310, ge=1, le=65_535)
+    # Proposed: a 50 MiB file streams to a local clamd in seconds; a minute leaves
+    # room for a loaded daemon without holding a worker indefinitely.
+    clamav_timeout_seconds: float = Field(default=60.0, ge=1.0, le=600.0)
+
     @field_validator("database_url", mode="after")
     @classmethod
     def _require_asyncpg_driver(cls, database_url: PostgresDsn) -> PostgresDsn:
@@ -270,6 +369,8 @@ class Settings(BaseSettings):
         "oidc_issuer",
         "oidc_jwks_url",
         "redis_url",
+        "storage_endpoint_url",
+        "clamav_host",
         mode="before",
     )
     @classmethod
@@ -277,7 +378,9 @@ class Settings(BaseSettings):
         # An environment variable cannot hold None; an empty value is its spelling.
         return None if value == "" else value
 
-    @field_validator("oidc_issuer", "oidc_jwks_url", "docs_scalar_js_url")
+    @field_validator(
+        "oidc_issuer", "oidc_jwks_url", "docs_scalar_js_url", "storage_endpoint_url"
+    )
     @classmethod
     def _require_secure_url(cls, url: str | None) -> str | None:
         # Keys and issuer metadata fetched over plain http could be swapped by anyone
@@ -298,6 +401,33 @@ class Settings(BaseSettings):
     def _require_redis_url_for_redis_backend(self) -> Self:
         if self.rate_limit_backend == "redis" and self.redis_url is None:
             message = "redis_url is required when rate_limit_backend is 'redis'"
+            raise ValueError(message)
+        if self.task_queue_backend == "redis" and self.redis_url is None:
+            message = "redis_url is required when task_queue_backend is 'redis'"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _require_consistent_media_storage(self) -> Self:
+        # One bucket for both would put every private original, EXIF and GPS
+        # included, behind whatever access the public copies get.
+        if self.storage_private_bucket == self.storage_public_bucket:
+            message = "storage_private_bucket and storage_public_bucket must differ"
+            raise ValueError(message)
+        if self.malware_scanner == "clamav" and self.clamav_host is None:
+            message = "clamav_host is required when malware_scanner is 'clamav'"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _require_lease_to_cover_one_subscriber(self) -> Self:
+        # A lease shorter than one subscriber call would expire during every slow
+        # call, so a second relay would deliver the same message concurrently.
+        if self.outbox_lease_seconds < self.outbox_subscriber_timeout_seconds:
+            message = (
+                "outbox_lease_seconds must be at least "
+                "outbox_subscriber_timeout_seconds"
+            )
             raise ValueError(message)
         return self
 
@@ -380,12 +510,34 @@ PRODUCTION_RULES: Final[tuple[tuple[Callable[[Settings], bool], str], ...]] = (
         "rate_limit_backend must be 'redis'",
     ),
     (
+        lambda settings: settings.task_queue_backend != "redis",
+        "task_queue_backend must be 'redis'",
+    ),
+    (
         lambda settings: "*" in settings.trusted_hosts,
         "trusted_hosts must not contain '*'",
     ),
     (
         _has_test_client_host,
         "trusted_hosts must not contain the test client hosts",
+    ),
+    (
+        lambda settings: settings.malware_scanner == "noop",
+        "malware_scanner must not be 'noop'",
+    ),
+    (
+        lambda settings: (
+            settings.storage_secret_access_key.get_secret_value()
+            == DEVELOPMENT_STORAGE_SECRET
+        ),
+        "storage_secret_access_key must not be the development default",
+    ),
+    (
+        lambda settings: (
+            settings.storage_endpoint_url is not None
+            and not settings.storage_endpoint_url.startswith("https://")
+        ),
+        "storage_endpoint_url must use https",
     ),
 )
 

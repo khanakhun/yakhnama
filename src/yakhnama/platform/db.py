@@ -73,8 +73,15 @@ UtcDateTime: Final = TIMESTAMP(timezone=True)
 # path is pinned to ``public`` because the official PostGIS image adds its ``tiger``
 # and ``topology`` schemas to the database's default search path; an unqualified
 # table name in an application query could otherwise resolve to one of their tables
-# (for example ``tiger.place``) instead of failing loudly.
-_SERVER_SETTINGS: Final = MappingProxyType({"timezone": "UTC", "search_path": "public"})
+# (for example ``tiger.place``) instead of failing loudly. ``extra_float_digits`` is
+# pinned to 1 (the PostgreSQL 12+ default) because the published-coordinate rounding
+# in SQL (``reports.infrastructure.queries.rounded_degrees``) rounds ``float8::text``
+# and relies on that text being the shortest round-trip decimal, like Python's
+# ``repr``; a role or client default of 0 or less would print 15 significant digits
+# and could round a coordinate differently from ``shared_kernel.privacy``.
+_SERVER_SETTINGS: Final = MappingProxyType(
+    {"timezone": "UTC", "search_path": "public", "extra_float_digits": "1"}
+)
 
 
 class Base(DeclarativeBase):
@@ -113,8 +120,8 @@ def create_engine(settings: Settings) -> AsyncEngine:
             ``database_echo``.
 
     Returns:
-        An ``AsyncEngine`` using the asyncpg driver with every session in UTC and
-        its search path set to ``public`` only.
+        An ``AsyncEngine`` using the asyncpg driver with every session in UTC, its
+        search path set to ``public`` only and ``extra_float_digits`` at 1.
     """
     return create_async_engine(
         settings.database_url.unicode_string(),

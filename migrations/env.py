@@ -39,6 +39,13 @@ MODEL_MODULES: Final = (
     "yakhnama.modules.hazards.infrastructure.orm",
     "yakhnama.modules.impacts.infrastructure.orm",
     "yakhnama.modules.identity.infrastructure.orm",
+    "yakhnama.modules.provenance.infrastructure.orm",
+    "yakhnama.modules.audit.infrastructure.orm",
+    "yakhnama.modules.reports.infrastructure.orm",
+    "yakhnama.modules.media.infrastructure.orm",
+    "yakhnama.modules.events.infrastructure.orm",
+    "yakhnama.modules.verification.infrastructure.orm",
+    "yakhnama.modules.impacts.infrastructure.claims_orm",
 )
 
 # Tables that PostGIS itself creates in the public schema. They are not ours, so

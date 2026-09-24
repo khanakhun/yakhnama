@@ -4,8 +4,9 @@ One row per domain event. The row id is the event's own ``event_id`` (a UUIDv7,
 ADR 0006), so recording the same event twice fails on the primary key instead of
 publishing it twice, and subscribers can de-duplicate by the same id.
 
-The Alembic migration that creates the table (``0001_extensions_and_outbox``, task T4)
-must match this model exactly; ``alembic check`` enforces it.
+The Alembic migrations that create the table (``0001_extensions_and_outbox``) and add
+the lease and dead-letter columns (``0007_outbox_lease_and_dead_letter``) must match
+this model exactly; ``alembic check`` enforces it.
 
 Patterns: Transactional Outbox.
 """
@@ -42,18 +43,37 @@ class OutboxMessage(Base):
         created_at: When the row was written (UTC); the relay's delivery order.
         published_at: When every subscriber accepted the event; ``NULL`` while
             pending.
-        attempts: Failed delivery attempts so far.
+        attempts: Delivery attempts started so far. A relay counts the attempt
+            when it claims the row, before any subscriber runs, so an attempt that
+            crashed the relay still counts and a poison message cannot loop forever.
         last_error: ``<subscriber>: <ErrorType>`` for each subscriber that failed in
-            the most recent attempt; never the error message, which may quote data.
+            the most recent failed attempt; never the error message, which may
+            quote data.
+        leased_until: While in the future, the row is reserved for the relay that
+            claimed it; ``NULL`` or past means any relay may claim it.
+        dead_lettered_at: When the row used its last attempt and failed; such a
+            row is never claimed again until an operator clears the column.
     """
 
     __tablename__ = OUTBOX_TABLE_NAME
     __table_args__ = (
         CheckConstraint("attempts >= 0", name="attempts_non_negative"),
+        # A message is either delivered or given up on, never both.
+        CheckConstraint(
+            "published_at IS NULL OR dead_lettered_at IS NULL",
+            name="published_or_dead_lettered",
+        ),
         # The relay's claim query filters on published_at IS NULL and orders by
         # created_at; this composite index serves both.
         Index(
             "ix_outbox_messages_published_at_created_at", "published_at", "created_at"
+        ),
+        # The claim and dead-letter filters: pending, not leased, attempts left.
+        Index(
+            "ix_outbox_messages_published_at_leased_until_attempts",
+            "published_at",
+            "leased_until",
+            "attempts",
         ),
     )
 
@@ -69,3 +89,5 @@ class OutboxMessage(Base):
     published_at: Mapped[datetime | None]
     attempts: Mapped[int] = mapped_column(default=0, server_default=text("0"))
     last_error: Mapped[str | None] = mapped_column(Text)
+    leased_until: Mapped[datetime | None]
+    dead_lettered_at: Mapped[datetime | None]

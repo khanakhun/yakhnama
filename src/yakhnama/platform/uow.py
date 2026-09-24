@@ -140,7 +140,8 @@ class SqlAlchemyUnitOfWork:
 
         Raises:
             InvariantViolationError: If the unit of work is not active or already
-                committed.
+                committed, or an event exceeds the outbox payload cap
+                (``OUTBOX_PAYLOAD_MAX_BYTES``); nothing is committed.
             sqlalchemy.exc.SQLAlchemyError: If the database rejects the transaction;
                 the unit of work then rolls back on exit.
         """

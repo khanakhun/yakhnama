@@ -16,6 +16,7 @@ from yakhnama.main import (
     create_app,
     status_for,
 )
+from yakhnama.modules.media.infrastructure.adapters.s3_storage import StorageError
 from yakhnama.platform.auth.errors import IdentityProviderUnavailableError
 from yakhnama.platform.problem_details import (
     PROBLEM_JSON_MEDIA_TYPE,
@@ -27,6 +28,7 @@ from yakhnama.platform.problem_details import (
     problem_type,
 )
 from yakhnama.platform.settings import Settings
+from yakhnama.platform.tasks.errors import TaskQueueUnavailableError
 from yakhnama.shared_kernel.errors import (
     AuthenticationError,
     ConflictError,
@@ -73,6 +75,8 @@ ERROR_CASES: list[tuple[type[YakhnamaError], int, str]] = [
     (InvariantViolationError, 409, "invariant-violation"),
     (InvalidTransitionError, 409, "invalid-transition"),
     (IdentityProviderUnavailableError, 503, "service-unavailable"),
+    (StorageError, 503, "service-unavailable"),
+    (TaskQueueUnavailableError, 503, "service-unavailable"),
     (HazardTypeMissingError, 404, "not-found"),
 ]
 

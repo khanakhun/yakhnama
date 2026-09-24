@@ -2,9 +2,12 @@
 
 The `impacts` module owns the **impact metric registry**: the list of metrics an impact
 claim can report (`deaths`, `houses_destroyed`, ...). A metric is a definition, not a
-figure. Impact claims (one value, one source, one confidence level), damage records and
-the best-figure read model arrive in Phase 3; they store `metric code + value`, long and
-narrow, so the metric decides what every stored value means.
+figure. Since Phase 3 it also owns **impact claims** (one value, one source, one
+confidence level; append-only), **infrastructure assets**, **damage records**
+(append-only) and the **best figure** read model (see
+[`docs/architecture/best-figure.md`](../architecture/best-figure.md)). Claims store
+`metric code + value`, long and narrow, so the metric decides what every stored value
+means.
 
 Code: `src/yakhnama/modules/impacts/domain/`. Reference data: `data/reference/impact_metrics.yaml`
 (task T8), validated by `ImpactMetricReferenceFile`.
@@ -134,6 +137,152 @@ tables above. The mapper validates the column back into the value object on ever
 read, so a malformed value fails loudly and never reaches the domain. Nothing but the
 repository writes these columns (`src/yakhnama/modules/impacts/infrastructure/orm.py`).
 
+## `ImpactClaim` (aggregate root, Phase 3)
+
+Append-only. The value is never changed in place: a claim is **retracted** (status plus
+reason) or **corrected** (a new claim with `supersedes_id`, and the old claim retracted in
+the same unit of work). Claims are never deleted.
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `id` | `UUID` (v7) | — | Identity of the claim. | Generated (`IdGenerator`) | Phase 3 |
+| `event_id` | `UUID` (v7) | — | The canonical event the figure is about. Called `hazard_event_id` in domain events, because `event_id` there is the event occurrence's id. | Moderator | Phase 3 |
+| `metric` | `ImpactMetricRef` | — | The metric, by stable code. The metric must be active when the claim is recorded. | Moderator | Phase 3 |
+| `value` | `ClaimValue` | the metric's unit or currency | The claimed value. Its `kind` equals the metric's `value_kind`, and its unit or currency equals the metric's. | Source | Phase 3 |
+| `confidence` | `low` \| `medium` \| `high` | — | How far the source's figure can be trusted. | Moderator | Phase 3 |
+| `source_id` | `UUID` (v7) | — | The provenance `Source` the figure comes from. | Moderator | Phase 3 |
+| `source_type` | `SourceTypeName` | — | The source's type (`citizen`, `organisation`, `government`, `news`, `satellite`, `research`, `dataset`), copied from provenance so ranking needs no lookup. | Provenance | Phase 3 |
+| `claimed_at` | `DateWithPrecision` | UTC + precision | When the source made the claim, not when it was entered. | Source | Phase 3 |
+| `recorded_by` | `UUID` (v7) | — | The account that entered the claim. Internal; not a public field. | Authenticated actor | Phase 3 |
+| `scope` | `ClaimScope` | — | The part of the event the figure covers; the whole event when both fields are null. | Moderator | Phase 3 |
+| `note` | safe text, 1 to 1000 characters, line breaks allowed, or null | — | Moderator's note. Never copied into events. Must not contain casualty names. | Moderator | Phase 3 |
+| `status` | `active` \| `retracted` | — | Whether the claim still counts towards the best figure. | Moderator | Phase 3 |
+| `retraction_reason` | safe text, 1 to 1000 characters, or null | — | Why it was retracted. Set exactly when `retracted`. Never copied into events. | Moderator | Phase 3 |
+| `retracted_by` | `UUID` (v7) or null | — | Who retracted it. Set exactly when `retracted`. | Authenticated actor | Phase 3 |
+| `supersedes_id` | `UUID` (v7) or null | — | The claim this one corrects; never the claim itself. | Computed (`correct`) | Phase 3 |
+| `version` | `int` ≥ 1 | — | Optimistic-concurrency version; 1 on creation, +1 on retraction. | Computed | Phase 3 |
+| `created_at` | `datetime` (UTC) | — | When the claim was entered. Precision `exact`. | `Clock` | Phase 3 |
+| `updated_at` | `datetime` (UTC) | — | When it last changed; never before `created_at`. Precision `exact`. | `Clock` | Phase 3 |
+
+For a monetary value, `price_year` must not be later than the year of `claimed_at`.
+
+### `ClaimValue` (discriminated by `kind`)
+
+| `kind` | fields | rule |
+|--------|--------|------|
+| `count` | `count: int` | ≥ 0. Unit is `count`. |
+| `measurement` | `measurement: Measurement` (`value`, `unit`) | Finite, ≥ 0, unit in `KNOWN_UNITS` other than `count`, equal to the metric's unit. |
+| `monetary` | `amount: Decimal`, `currency`, `price_year` | `amount` ≥ 0, at most 20 digits and 2 decimal places (proposed). `currency` is ISO 4217 and equals the metric's currency. `price_year` is 1900 to 2100 (proposed). Nominal and never converted. |
+
+### `ClaimScope`
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `place_code` | geography place code (`^[a-z0-9][a-z0-9_.-]{1,63}$`) or null | — | The place the figure is about, if narrower than the event. The pattern mirrors geography's `PlaceCode`. | Moderator | Phase 3 |
+| `asset_id` | `UUID` (v7) or null | — | The infrastructure asset the figure is about. | Moderator | Phase 3 |
+
+### `SourceRank` (proposed)
+
+This ranking only breaks ties in the best-figure policy: government 7, research 6,
+satellite 5, dataset 4, organisation 3, news 2, citizen 1 (higher wins). The ordering of
+government, research, organisation, news and citizen comes from the Phase 3 plan.
+Placing satellite and dataset between research and organisation is a further proposal.
+The names mirror provenance's `SourceType`. The impacts domain does not import
+provenance, and a unit test pins the list.
+
+## `InfrastructureAsset` (aggregate root, Phase 3)
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `id` | `UUID` (v7) | — | Identity of the asset. | Generated | Phase 3 |
+| `kind` | `AssetKind` | — | `bridge`, `road_segment`, `water_channel`, `power_line`, `building`, `other` (proposed list). Never changes. | Moderator | Phase 3 |
+| `name` | safe text, 1 to 200 characters, single line | — | Display name. Only the latest name is kept (`InfrastructureAssetRenamed`). | Moderator / source | Phase 3 |
+| `osm_id` | `^(node\|way\|relation)/[1-9][0-9]{0,18}$` or null | — | The asset's OpenStreetMap element. | OSM | Phase 3 |
+| `location` | `Coordinates` (WGS84) or null | degrees | A representative point. | Source / moderator | Phase 3 |
+| `place_code` | geography place code or null | — | The place the asset lies in. | Moderator | Phase 3 |
+| `source_id` | `UUID` (v7) | — | The provenance source describing the asset. | Moderator | Phase 3 |
+| `version`, `created_at`, `updated_at` | as for claims | — | Concurrency version and UTC change times. | Computed / `Clock` | Phase 3 |
+
+`relocate` replaces `location`, `place_code` and `osm_id` together, so clearing a wrong
+value is explicit.
+
+## `DamageRecord` (aggregate root, Phase 3)
+
+Append-only. The only change is one retraction with a reason. A different level is a new
+record.
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `id` | `UUID` (v7) | — | Identity of the record. | Generated | Phase 3 |
+| `event_id` | `UUID` (v7) | — | The event that caused the damage (`hazard_event_id` in events). | Moderator | Phase 3 |
+| `asset_id` | `UUID` (v7) | — | The damaged asset. | Moderator | Phase 3 |
+| `level` | `DamageLevel` | — | `damaged` (still standing, needs repair), `destroyed` (unusable, remains in place), `washed_away` (carried off; nothing usable remains). Proposed scale. | Source | Phase 3 |
+| `confidence` | `low` \| `medium` \| `high` | — | How far the source can be trusted. | Moderator | Phase 3 |
+| `source_id` | `UUID` (v7) | — | The provenance source of the record. | Moderator | Phase 3 |
+| `recorded_at` | `DateWithPrecision` | UTC + precision | When the source recorded the damage, not when it was entered. | Source | Phase 3 |
+| `recorded_by` | `UUID` (v7) | — | The account that entered the record. Internal. | Authenticated actor | Phase 3 |
+| `note` | safe text, 1 to 1000 characters, line breaks allowed, or null | — | Moderator's note; never in events. | Moderator | Phase 3 |
+| `status`, `retraction_reason`, `retracted_by` | as for claims | — | Retraction state. | Moderator | Phase 3 |
+| `version`, `created_at`, `updated_at` | as for claims | — | Concurrency version and UTC change times. | Computed / `Clock` | Phase 3 |
+
+## `BestFigure` (read model, Phase 3)
+
+The best figure is derived and never stored as a fact. It is computed by `BestFigurePolicy`
+under the rules in [`best-figure.md`](../architecture/best-figure.md).
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `metric` | `ImpactMetricRef` | — | The metric. | Input | Phase 3 |
+| `value` | `ClaimValue` or null | the metric's | The best value; null when no claim is active. | Computed | Phase 3 |
+| `basis` | `sum` \| `max` \| `latest` \| `none` | — | The aggregation applied. | Computed | Phase 3 |
+| `contributing_claim_ids` | list of `UUID` | — | The claims behind the value, in recording order. | Computed | Phase 3 |
+| `confidence` | `Confidence` or null | — | The lowest confidence among the contributing claims. | Computed | Phase 3 |
+| `computed_at` | `datetime` (UTC) | — | When it was computed. | `Clock` | Phase 3 |
+
+## Phase 3 domain events
+
+Events carry ids and structured, non-personal fields only. Notes, reasons and names stay
+on the aggregate.
+
+| `event_type` | aggregate | extra fields | emitted when |
+|--------------|-----------|--------------|--------------|
+| `impacts.impact_claim_recorded` | `impact_claim` | `hazard_event_id`, `metric_code`, `value`, `confidence`, `source_id`, `source_type`, `claimed_at`, `scope`, `recorded_by` | A claim is recorded |
+| `impacts.impact_claim_retracted` | `impact_claim` | `hazard_event_id`, `metric_code`, `retracted_by`, `superseded_by_id` (set when part of a correction) | A claim is retracted |
+| `impacts.impact_claim_corrected` | `impact_claim` (the new claim) | `hazard_event_id`, `metric_code`, `supersedes_id`, `value`, `confidence`, `claimed_at`, `recorded_by` | A correcting claim is recorded |
+| `impacts.infrastructure_asset_registered` | `infrastructure_asset` | `kind`, `osm_id`, `place_code`, `source_id` | An asset is registered |
+| `impacts.infrastructure_asset_renamed` | `infrastructure_asset` | none | An asset's name changes |
+| `impacts.infrastructure_asset_relocated` | `infrastructure_asset` | `location`, `place_code`, `osm_id` | An asset's location changes |
+| `impacts.damage_recorded` | `damage_record` | `hazard_event_id`, `asset_id`, `level`, `confidence`, `source_id`, `recorded_at`, `recorded_by` | Damage is recorded |
+| `impacts.damage_retracted` | `damage_record` | `hazard_event_id`, `asset_id`, `retracted_by` | A damage record is retracted |
+
+## Persistence (Phase 3: claims, assets, damage)
+
+`infrastructure_assets`, `impact_claims` and `damage_records` (migration
+`0014_impact_claims`) add referential integrity the domain layer cannot express
+(a domain module may not import another module's ORM, `AGENTS.md` §2.1), but
+that the database can enforce within `impacts`' own tables:
+
+- **`impact_claims.metric_code` references `impact_metrics.code`**
+  (`ON DELETE RESTRICT`), not the metric's `id`: `code` is the stable public key
+  claims are recorded against (`ImpactMetricRef`), so the foreign key follows the
+  same key the domain treats as identity. A metric can never be deleted while any
+  claim cites it, matching "a metric code is never reused" and "old claims still
+  need a best figure" even for a retired metric.
+- **`impact_claims.scope_asset_id` references `infrastructure_assets.id`**
+  (`ON DELETE RESTRICT`, nullable — a claim's scope may be a place code instead, or
+  the whole event). `damage_records.asset_id` references the same table and is
+  required (`ON DELETE RESTRICT`).
+- **`UNIQUE (supersedes_id)` on `impact_claims`** enforces "at most one
+  correction replaces a claim" at the database level, the same rule
+  `reports.supersedes_id` enforces for report revisions; `supersedes_id` also
+  references `impact_claims.id` (`ON DELETE RESTRICT`).
+- **`infrastructure_assets.osm_id` is unique** (nullable), and its `location`
+  has an explicit GiST index.
+- Event, source, place and user ids on all three tables carry no foreign key,
+  because they belong to other modules. Indexes: `impact_claims` on
+  `(event_id, metric_code)`, `(event_id, created_at, id)` and `source_id`;
+  `damage_records` on `event_id` and `asset_id`.
+
 ## Open questions
 
 - **Sendai indicator mapping list.** Which UNDRR Sendai global indicators (A-1, A-2, B-1,
@@ -151,3 +300,10 @@ repository writes these columns (`src/yakhnama/modules/impacts/infrastructure/or
   (for example a lake level change)?
 - **Category list.** The seven proposed categories and their alignment above.
 - **Retired metrics frozen.** Proposed that a retired metric cannot be relabelled.
+- **Asset kinds and damage levels.** The six asset kinds and the three damage levels
+  (`damaged`, `destroyed`, `washed_away`) and their meanings. Default: as listed.
+- **Monetary precision and price years.** Two decimal places, price years 1900 to 2100,
+  `price_year` not after the claim's year. Default: as listed.
+- **Source ranking for `satellite` and `dataset`.** Default: between research and
+  organisation. See `docs/architecture/best-figure.md` for the other best-figure
+  questions.

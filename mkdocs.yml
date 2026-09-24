@@ -49,6 +49,9 @@ nav:
   - Architecture: architecture/README.md
   - API conventions: architecture/api.md
   - Authentication: architecture/auth.md
+  - Recording flow: architecture/recording.md
+  - Media storage: architecture/media.md
+  - Best figure policy: architecture/best-figure.md
   - ADRs:
       - Overview: adr/README.md
       - "0001 · Modular monolith with hexagonal layers": adr/0001-modular-monolith-with-hexagonal-layers.md
@@ -70,7 +73,17 @@ nav:
       - Hazards: data-dictionary/hazards.md
       - Impacts: data-dictionary/impacts.md
       - Identity: data-dictionary/identity.md
+      - Provenance: data-dictionary/provenance.md
+      - Audit: data-dictionary/audit.md
+      - Reports: data-dictionary/reports.md
+      - Media: data-dictionary/media.md
+      - Events: data-dictionary/events.md
+      - Verification: data-dictionary/verification.md
   - Open questions: open-questions.md
   - Plans:
       - "Phase 0 · Foundation": plans/phase-0.md
       - "Phase 1 · Shared kernel and reference data": plans/phase-1.md
+      - Phase 1 report: plans/phase-1-report.md
+      - Phase 2: plans/phase-2.md
+      - Phase 2 report: plans/phase-2-report.md
+      - Phase 3: plans/phase-3.md

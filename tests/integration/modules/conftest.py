@@ -5,7 +5,9 @@ Unlike the platform tests, these tests run against the schema the migrations bui
 and downgrades it to ``base`` (and drops Alembic's version table) when the package is
 done, so the migration harness and the platform tests still find an empty database.
 Every test starts from empty tables because ``session_factory`` truncates them after
-it.
+it. ``TRUNCATE`` is used rather than ``DELETE`` on purpose: the append-only trigger
+on ``audit_entries`` (migration 0009) rejects row deletes, and ``TRUNCATE`` fires no
+row triggers.
 """
 
 import asyncio
@@ -24,11 +26,24 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tests.fakes.clock import SteppingClock
 from tests.fakes.ids import SequentialIdGenerator
+from yakhnama.modules.audit.infrastructure.uow import SqlAlchemyAuditUnitOfWork
+from yakhnama.modules.events.infrastructure.uow import SqlAlchemyEventsUnitOfWork
 from yakhnama.modules.geography.infrastructure.uow import (
     SqlAlchemyGeographyUnitOfWork,
 )
 from yakhnama.modules.hazards.infrastructure.uow import SqlAlchemyHazardsUnitOfWork
+from yakhnama.modules.impacts.infrastructure.claims_uow import (
+    SqlAlchemyImpactClaimsUnitOfWork,
+)
 from yakhnama.modules.impacts.infrastructure.uow import SqlAlchemyImpactsUnitOfWork
+from yakhnama.modules.media.infrastructure.uow import SqlAlchemyMediaUnitOfWork
+from yakhnama.modules.provenance.infrastructure.uow import (
+    SqlAlchemyProvenanceUnitOfWork,
+)
+from yakhnama.modules.reports.infrastructure.uow import SqlAlchemyReportsUnitOfWork
+from yakhnama.modules.verification.infrastructure.uow import (
+    SqlAlchemyVerificationUnitOfWork,
+)
 from yakhnama.platform.db import create_engine, create_session_factory
 from yakhnama.platform.outbox.writer import OutboxWriter
 from yakhnama.platform.settings import Settings
@@ -38,6 +53,17 @@ REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[3]
 ALEMBIC_INI: Final = REPOSITORY_ROOT / "alembic.ini"
 VERSION_TABLE: Final = "alembic_version"
 MODULE_TABLES: Final = (
+    "damage_records",
+    "impact_claims",
+    "infrastructure_assets",
+    "verification_cases",
+    "event_report_links",
+    "event_relations",
+    "events",
+    "media_assets",
+    "reports",
+    "audit_entries",
+    "sources",
     "memberships",
     "users",
     "organizations",
@@ -172,6 +198,90 @@ def impacts_uow_factory(
     """Return the SQLAlchemy impacts unit-of-work factory."""
     return SqlAlchemyUnitOfWorkFactory(
         SqlAlchemyImpactsUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def provenance_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyProvenanceUnitOfWork]:
+    """Return the SQLAlchemy provenance unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyProvenanceUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def audit_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyAuditUnitOfWork]:
+    """Return the SQLAlchemy audit unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyAuditUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def reports_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyReportsUnitOfWork]:
+    """Return the SQLAlchemy reports unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyReportsUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def media_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyMediaUnitOfWork]:
+    """Return the SQLAlchemy media unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyMediaUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def events_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyEventsUnitOfWork]:
+    """Return the SQLAlchemy events unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyEventsUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def verification_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyVerificationUnitOfWork]:
+    """Return the SQLAlchemy verification unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyVerificationUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def impact_claims_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyImpactClaimsUnitOfWork]:
+    """Return the SQLAlchemy impact claims unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyImpactClaimsUnitOfWork,
         session_factory=session_factory,
         outbox_writer=outbox_writer,
     )

@@ -744,3 +744,828 @@ questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
 - **Proposed default:** None: anonymous `POST`s are rejected with 401 before idempotency would matter, since every creating route requires an account (Q10).
 - **Blocking:** no
 - **Status:** open (raised in the Phase 2 plan, §7 Q5)
+
+---
+
+The entries below were raised while building `provenance`, `audit`, `reports`, `media`,
+`events`, `verification` and the `impacts` extension (claims, assets, damage) in Phase 3.
+Q77–Q101 are copied from the seven modules' own data-dictionary pages, which remain the
+source of truth for them; Q102–Q173 come from the Phase 3 implementation reports
+(domain, application, persistence, adapter and API tasks) and from
+`docs/architecture/best-figure.md`'s own open-questions table.
+
+## Q77 — How are source licences modelled?
+
+- **Question:** Should `Source.licence` be one of an SPDX-shaped id or free custom text, with SPDX ids checked only for shape (not against the real SPDX list, and no `MIT OR Apache-2.0`-style expressions)?
+- **Why it matters:** Changing the model later means migrating every stored `licence` value.
+- **Proposed default:** As stated; shape check only, no list, no expressions.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/provenance.md`, Q-P1)
+
+## Q78 — Source URL rules
+
+- **Question:** Are the URL rules right: `http` allowed as well as `https`, printable ASCII only (IDNs punycoded), 2048 characters?
+- **Why it matters:** Too strict rejects valid citations; too loose admits unsafe schemes.
+- **Proposed default:** Yes to all three.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/provenance.md`, Q-P2)
+
+## Q79 — Keeping a citizen source anonymous
+
+- **Question:** Should the domain refuse URLs to social-media profiles, or citations that look like names or phone numbers, for a `citizen` source?
+- **Why it matters:** A citizen source must not identify the reporter; the domain cannot tell a person's name from a place name, so it currently only documents the rule for moderators.
+- **Proposed default:** A documented moderator rule only; the reports triage PII scrub may later suggest redactions for citations too.
+- **Blocking:** no (privacy-relevant)
+- **Status:** open (raised in `docs/data-dictionary/provenance.md`, Q-P3)
+
+## Q80 — Custom licence text length
+
+- **Question:** Is 500 characters enough for a custom licence, or should long terms be stored as a document with a URL?
+- **Why it matters:** Determines whether a source with unusual reuse terms can be fully recorded.
+- **Proposed default:** 500 characters, with the full terms' URL in `url` where one exists.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/provenance.md`, Q-P4)
+
+## Q81 — Correcting `source_type` before a source is referenced
+
+- **Question:** May `Source.source_type` be corrected while the source is still unreferenced?
+- **Why it matters:** `source_type` feeds the best-figure source ranking, so a wrong type recorded then corrected changes ranking silently unless a new source is required instead.
+- **Proposed default:** No; a wrong type means registering a new source.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/provenance.md`, Q-P5)
+
+## Q82 — Recording when a source was first referenced
+
+- **Question:** Should a source record `referenced_at`, separately from the `provenance.source_referenced` event and the audit log?
+- **Why it matters:** Determines whether "when did this become immutable" needs its own field or is reconstructed from history.
+- **Proposed default:** The event and the audit log are enough; no extra field.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/provenance.md`, Q-P6)
+
+## Q83 — Audit log retention
+
+- **Question:** How long are audit entries kept, and may they ever be deleted, for example after a legal request about a user?
+- **Why it matters:** The append-only guarantee (Q-A) and any future erasure request are in tension unless the retention rule is explicit.
+- **Proposed default:** Kept indefinitely; entries hold only ids and digests, so a user's erasure removes the user record and the entries keep only an id that no longer resolves.
+- **Blocking:** no (privacy-relevant)
+- **Status:** open (raised in `docs/data-dictionary/audit.md`, Q-A1)
+
+## Q84 — Who may read the audit log
+
+- **Question:** Who may read the audit log?
+- **Why it matters:** The current implementation has no dedicated read API or route for `audit_entries` at all.
+- **Proposed default:** Admins only, never public; to be decided when a read route is built.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/audit.md`, Q-A2)
+
+## Q85 — Actor kinds in the audit log
+
+- **Question:** Is every actor either a user with an id or the system without one? Are there service accounts or organisations acting as actors?
+- **Why it matters:** `AuditEntry.actor_kind` is derived from whether `actor_id` is set; a third kind would need a new derivation rule.
+- **Proposed default:** Only `user` and `system`.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/audit.md`, Q-A3)
+
+## Q86 — Audit field lengths versus event-type lengths
+
+- **Question:** `action` and `target_type` allow 64 characters, but a domain event's `event_type` and `aggregate_type` allow 100. An event beyond 64 cannot be audited today. Should the limits match?
+- **Why it matters:** A future module with a longer `event_type` would silently fail to audit rather than truncate.
+- **Proposed default:** Keep 64 in audit and keep event types short; the outbox subscriber fails loudly on a longer one rather than truncating it.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/audit.md`, Q-A4)
+
+## Q87 — `recorded_at` outside the domain model
+
+- **Question:** Should the entry also record when it was written (`recorded_at`), separate from `occurred_at`?
+- **Why it matters:** Distinguishes "when the change happened" from "when the relay eventually delivered it".
+- **Proposed default:** Not in the domain; persistence adds a database-default column (implemented, migration `0009_audit`; see `docs/data-dictionary/audit.md`, "Persistence").
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/audit.md`, Q-A5)
+
+## Q88 — `TRUNCATE` is not covered by the append-only trigger
+
+- **Question:** The append-only trigger on `audit_entries` rejects `UPDATE`/`DELETE` but not `TRUNCATE`, a separate table-level privilege. Should a dedicated database role with only `INSERT` and `SELECT` be created for it?
+- **Why it matters:** Any role granted `TRUNCATE` on the table could erase the whole audit log without the trigger stopping it.
+- **Proposed default:** Yes; not yet done.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/audit.md`, Q-A6; from the migration `0009_audit` docstring)
+
+## Q89 — Duplicate-report suspicion window
+
+- **Question:** Distance and time window for duplicate suspicion.
+- **Why it matters:** Too tight misses real duplicates; too loose floods moderators with false positives.
+- **Proposed default:** 2 km and 24 hours.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R1)
+
+## Q90 — EXIF plausibility tolerances
+
+- **Question:** EXIF plausibility tolerances for triage.
+- **Why it matters:** Same trade-off as Q89, for a different signal.
+- **Proposed default:** Capture time within 7 days of `observed_at`, position within 5 km of the observation point.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R2)
+
+## Q91 — Which PII patterns triage looks for
+
+- **Question:** Which personal-data patterns does triage look for? CNIC numbers without dashes and landlines with a leading `0` alone are deliberately not matched, to avoid flagging ordinary numbers.
+- **Why it matters:** Under-matching misses real personal data; over-matching flags harmless text.
+- **Proposed default:** Mobile numbers with `0`, `+92` or `0092`; landlines with `+92` or `0092`; emails; CNIC `NNNNN-NNNNNNN-N` only.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R3)
+
+## Q92 — Spam signal thresholds
+
+- **Question:** What description length, link count and repeated-character run should the spam rule flag?
+- **Why it matters:** Sets how aggressively genuine short or link-heavy reports are flagged.
+- **Proposed default:** Shorter than 10 characters, more than 3 links, or one character repeated 10+ times.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R4)
+
+## Q93 — Comparing dates of coarse precision in triage rules
+
+- **Question:** How do triage rules compare times known only to the month, season or year?
+- **Why it matters:** A naive comparison could flag or clear a pair of reports based on an arbitrary floor.
+- **Proposed default:** They do not: comparisons need `exact`, `hour` or `day` precision on both sides; the rule skips the comparison otherwise.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R5)
+
+## Q94 — Confidence per triage rule
+
+- **Question:** What confidence does each triage rule attach to its flags?
+- **Why it matters:** Feeds how much weight a moderator gives each flag.
+- **Proposed default:** EXIF medium, duplicate low, personal data medium, spam low.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R6)
+
+## Q95 — Maximum media assets per report
+
+- **Question:** How many media assets may one report revision carry?
+- **Why it matters:** Bounds both storage cost and the size of the `ReportSubmitted`/`ReportRevised` payloads.
+- **Proposed default:** 20.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R7)
+
+## Q96 — Who generates a revision's id
+
+- **Question:** Who generates the id of a report revision, given an offline client cannot know it in advance?
+- **Why it matters:** Revision 1 uses the client's own id for idempotency; a later revision needs a different rule.
+- **Proposed default:** The platform's `IdGenerator`; a retried revision relies on `Idempotency-Key` instead.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R8)
+
+## Q97 — Which reports may be withdrawn
+
+- **Question:** May any revision be withdrawn, or only a draft or the current revision?
+- **Why it matters:** Determines whether a superseded revision can be withdrawn on its own.
+- **Proposed default:** Drafts and current revisions only; the reporter withdraws the latest revision; withdrawn reports stay on record.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R9)
+
+## Q98 — `observed_at` after the submission time
+
+- **Question:** May `observed_at` lie after the submission time (a wrong client clock)?
+- **Why it matters:** Rejecting it would refuse a legitimate report from a device with a bad clock.
+- **Proposed default:** Not rejected by the domain; the value is the reporter's own statement.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R10)
+
+## Q99 — Does a new triage run replace the previous result
+
+- **Question:** Does re-running triage replace the report's stored `TriageResult`?
+- **Why it matters:** Determines whether moderators see only the latest signal or an accumulating one.
+- **Proposed default:** Yes; the aggregate keeps only the latest result, and every run stays in the outbox and audit log through `ReportTriaged`.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R11)
+
+## Q100 — Hazard and place code formats mirrored into the reports domain
+
+- **Question:** `hazard_guess.hazard_code` and `place_hint` mirror the `hazards` and `geography` code formats because a domain layer may import only the kernel. Should the code formats move into `shared_kernel`?
+- **Why it matters:** Two independent copies of a format can drift; a shared definition cannot.
+- **Proposed default:** Keep the mirrors, guarded by unit tests that compare them with the originals; the application checks existence through the facades.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R12)
+
+## Q101 — Does a revision keep the original's reporter, organisation and source
+
+- **Question:** Does every revision keep the original report's reporter, organisation and source?
+- **Why it matters:** A revision is meant to be a correction by the same reporter, not a new observation from a new source.
+- **Proposed default:** Yes.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/reports.md`, Q-R13)
+
+## Q102 — Report hazard and place codes are not checked for existence
+
+- **Question:** `Report.hazard_guess.hazard_code` and `place_hint` are validated only for shape (Q100), not checked for existence against the `hazards` and `geography` modules at submission time.
+- **Why it matters:** A reporter could submit a well-formed but non-existent code, which a moderator would only discover later.
+- **Proposed default:** Check existence in the application layer through the `hazards`/`geography` facades before Phase 3 is considered complete for production use; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application report)
+
+## Q103 — Media attached after report submission
+
+- **Question:** A reporter may request an upload for an already-submitted report (`POST /reports/{id}/media`), so `media_ids` can grow after `ReportSubmitted` fired with a smaller `media_count`.
+- **Why it matters:** A subscriber or export that reads `media_count` from the submission event alone would undercount; the current media count must be read from the report itself.
+- **Proposed default:** Accept as designed; document that `media_count` on the event is a snapshot, not the final count.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application report)
+
+## Q104 — Triage after a broker failure
+
+- **Question:** If the broker never delivers `reports.run_triage` (a dropped message, a broker outage during enqueue), nothing currently re-triggers it.
+- **Why it matters:** An untriaged report gets no EXIF, duplicate, PII or spam signal for moderators, silently.
+- **Proposed default:** A periodic task that re-enqueues triage for reports with no `TriageResult` past an age threshold; not yet built.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application/adapter reports)
+
+## Q105 — Allowed media types
+
+- **Question:** Which media MIME types may be uploaded?
+- **Why it matters:** Too narrow blocks legitimate evidence (for example HEIC, the iPhone default, is not included); too broad widens the attack surface.
+- **Proposed default:** `image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `application/pdf`.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M1)
+
+## Q106 — Largest accepted upload
+
+- **Question:** What is the largest accepted upload?
+- **Why it matters:** Bounds storage cost and in-memory read size (each full read is capped at this size).
+- **Proposed default:** 50 MiB.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M2)
+
+## Q107 — Does an infected scan quarantine automatically
+
+- **Question:** Does an infected malware-scan verdict quarantine the asset automatically?
+- **Why it matters:** Determines whether a moderator must act before an infected file's public copy (if any) is withdrawn.
+- **Proposed default:** Yes, with a fixed reason, and any public copy is withdrawn immediately.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M3)
+
+## Q108 — Sensitivity flag values
+
+- **Question:** Which sensitivity values exist for media?
+- **Why it matters:** Determines what a moderator can flag and what stays private as a result (Q109).
+- **Proposed default:** `none`, `injured_or_deceased`, `identifiable_people`, `other`; set by a moderator only.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M4)
+
+## Q109 — May sensitive imagery be published
+
+- **Question:** May imagery flagged `injured_or_deceased` or `identifiable_people` ever be published?
+- **Why it matters:** Directly affects the safety and dignity of people shown in reported imagery.
+- **Proposed default:** No; such imagery keeps an approved asset private until the maintainer decides how, if ever, it is shown (blurred, behind a warning, never).
+- **Blocking:** no (safety-relevant)
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M5)
+
+## Q110 — Object key layout
+
+- **Question:** What object key layout do media originals and public copies use?
+- **Why it matters:** Keys must never leak a file name or be guessable from one asset to another.
+- **Proposed default:** `media/original/<id>` and `media/public/<id>`, never from file names.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M6)
+
+## Q111 — Deduplication scope
+
+- **Question:** Is deduplication scoped to the same SHA-256 **and** the same owner, or across owners too?
+- **Why it matters:** Cross-owner deduplication could let one user detect that another already uploaded a specific file.
+- **Proposed default:** Same SHA-256 and same owner only.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M7)
+
+## Q112 — Can a moderator's approval lift a quarantine
+
+- **Question:** Can a moderator's approval lift a quarantine? Can a clean rescan?
+- **Why it matters:** Determines the recovery path for a wrongly-quarantined asset.
+- **Proposed default:** A moderator's approval can (unless the scan says infected); a clean rescan alone cannot.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M8)
+
+## Q113 — What the development scanner should report
+
+- **Question:** The `NoOpScanner` cannot vouch for a file; should it report `unavailable` (nothing publishable in development) or `clean` (indistinguishable from a real verdict)?
+- **Why it matters:** Affects whether a full local publication walkthrough is possible without a real scanner, and whether the domain can ever tell a no-op verdict from a real one.
+- **Proposed default:** `unavailable` by default; a developer may build it to return `clean` for a walkthrough; production refuses to start with the `noop` scanner.
+- **Blocking:** yes, for the T5 scanner adapter (resolved by the adapter's default; confirmation pending)
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M9, and `docs/architecture/media.md`, Q-M9)
+
+## Q114 — `UploadFailed` event, not in the original plan
+
+- **Question:** The Phase 3 plan's event list does not mention `media.upload_failed`; is it needed?
+- **Why it matters:** Without it, a `failed` upload has no event and no audit trail.
+- **Proposed default:** Keep it.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/media.md`, Q-M10)
+
+## Q115 — EXIF capture time zone
+
+- **Question:** Which time zone does a zone-less EXIF `DateTimeOriginal` use, and should an unknown zone lower its precision below `exact`?
+- **Why it matters:** Pakistan Standard Time (UTC+5) is likelier for local phones than UTC; a wrong assumption shifts every EXIF-derived time by up to 5 hours.
+- **Proposed default:** Assume UTC, keep `exact` precision.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M11)
+
+## Q116 — ClamAV adapter unverified against a real daemon
+
+- **Question:** `ClamAvScanner` is unit tested against a fake stream and a loopback stand-in, but not yet verified against a real `clamd`.
+- **Why it matters:** A protocol mismatch (framing, size limits) would only surface once real malware scanning is relied on in production.
+- **Proposed default:** Verify against `clamav/clamav` before production; not yet done.
+- **Blocking:** yes, before production
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M12)
+
+## Q117 — PDF and MP4 metadata not stripped
+
+- **Question:** Must PDF and MP4 metadata (document information, `udta` box) be stripped before publication?
+- **Why it matters:** Either format can carry an author name or a position in its metadata, which the current public copy does not remove.
+- **Proposed default:** Not stripped now, documented as a gap; candidates are `pikepdf` for PDF and remuxing without `udta` for MP4.
+- **Blocking:** yes, before public media launch
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M13)
+
+## Q118 — Placeholder digest for an oversize upload
+
+- **Question:** `StoredObject.sha256` cannot express "not computed" for an object that exceeded the size cap; should the field become optional instead of using a placeholder?
+- **Why it matters:** A placeholder digest of 64 zeros could be mistaken for a real hash by a careless caller.
+- **Proposed default:** Keep the placeholder for now; make the field optional in the DTO in a later phase.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M14)
+
+## Q119 — Path-style versus virtual-hosted S3 addressing
+
+- **Question:** Should production use path-style or virtual-hosted S3 addressing?
+- **Why it matters:** Path-style works with both MinIO and AWS; virtual-hosted is AWS's newer recommendation but is not MinIO-compatible without extra configuration.
+- **Proposed default:** Path-style.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M15)
+
+## Q120 — Public host for presigned links behind a private network
+
+- **Question:** Presigned URLs currently carry the endpoint the API itself uses; behind a private network, external clients would need a different, public host.
+- **Why it matters:** A presigned link generated with the private endpoint is unusable from outside that network.
+- **Proposed default:** One endpoint for now; add a separate public presign endpoint when deploying behind a private network.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M16)
+
+## Q121 — Presigned URL lifetime
+
+- **Question:** How long should a presigned upload or download URL live?
+- **Why it matters:** Too short breaks slow uploads; too long widens the window a leaked link stays usable.
+- **Proposed default:** 15 minutes (`storage_presign_ttl_seconds`, default 900, range 60–3600).
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M17)
+
+## Q122 — Quality-95 re-encoding for the public copy
+
+- **Question:** Is quality-95 JPEG/WebP re-encoding, and dropping the ICC colour profile, acceptable for the public copy?
+- **Why it matters:** Affects the visual fidelity of public imagery; the original keeps full fidelity regardless.
+- **Proposed default:** Yes.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M18)
+
+## Q123 — Event status set
+
+- **Question:** Is `draft | published | retracted | merged` the right event status set, with `retracted` and `merged` final?
+- **Why it matters:** Changing the set later means migrating every stored event and every exported status.
+- **Proposed default:** As proposed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q124 — Event centroid approximation for polygons
+
+- **Question:** Is the vertex mean of a polygon's exterior ring (holes ignored, clamped to the bounding box) an acceptable centroid approximation, given it is not the area centroid and can fall outside a concave shape?
+- **Why it matters:** The domain computes it without Shapely to stay framework-free; a wrong approximation misplaces an event on the map.
+- **Proposed default:** Keep it; infrastructure may store PostGIS `ST_PointOnSurface` beside it if a more accurate point is needed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q125 — Event period validity rule
+
+- **Question:** Is the precision-aware order check (`latest_instant_of(ended_at) >= truncate(started_at)`) the right period-validity rule, rather than the plan's simpler "truncated end >= truncated start" (which would reject a day-precision start with a later month-precision end)?
+- **Why it matters:** The two rules disagree on real cases (for example a start known to the day, an end known only to the month it falls in).
+- **Proposed default:** The precision-aware rule, as implemented.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q126 — Unknown event end in search
+
+- **Question:** Should an event with no `ended_at` be treated, for search, as lasting only for its start period?
+- **Why it matters:** Affects whether an ongoing, still-unresolved event matches a period-overlap search for later dates.
+- **Proposed default:** Yes, as proposed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q127 — Report-link roles
+
+- **Question:** Is `primary | supporting | contradicting` the right set of report-link roles?
+- **Why it matters:** Feeds how a timeline or export explains why a report is linked to an event.
+- **Proposed default:** As proposed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q128 — Affected-place kinds
+
+- **Question:** Is `origin | impacted | reference` the right set of affected-place kinds?
+- **Why it matters:** Feeds place-based search and how an event's geography is explained.
+- **Proposed default:** As proposed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q129 — Bounding-box event search matches only the centroid
+
+- **Question:** Should a bounding-box event search match on the centroid only, or also on any overlap with a polygon/multipolygon geometry?
+- **Why it matters:** A large event whose polygon overlaps a search box but whose centroid falls outside it is currently missed.
+- **Proposed default:** Centroid only, as implemented.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q130 — `triggered_by` cycles are not rejected
+
+- **Question:** Should a cycle of `triggered_by` relations between events be rejected, the way a `part_of` cycle already is?
+- **Why it matters:** An unrejected cycle ("A triggered B triggered A") could confuse any causal-chain export or visualisation.
+- **Proposed default:** Allowed, as implemented; revisit if a real cycle is ever recorded by mistake.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q131 — Event factory combined-period precision
+
+- **Question:** Should `EventFactory.from_reports` take the **coarsest** precision among the linked reports for the derived period, rather than, for example, the finest?
+- **Why it matters:** Determines how precise a freshly created event's period claims to be when its source reports disagree in precision.
+- **Proposed default:** Coarsest, as implemented.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q132 — Does publishing an event require verification first
+
+- **Question:** Should `publish` on the `Event` aggregate itself require a `verified` `VerificationCase`, or is that left entirely to the application and to what public reads show?
+- **Why it matters:** As implemented, the aggregate only checks the event is `draft`; a `published` but not yet `verified` event exists, and is simply hidden from public reads.
+- **Proposed default:** Public reads stay verified-only (as implemented); `publish` itself stays ungated at the aggregate level.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/events.md`, "Open questions")
+
+## Q133 — Verification case initial states
+
+- **Question:** Should reports and claims open their `VerificationCase` in `submitted`, and events in `draft`?
+- **Why it matters:** Sets the very first state a moderator sees for each kind of target.
+- **Proposed default:** As proposed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/verification.md`, "Open questions")
+
+## Q134 — Verification terminal states
+
+- **Question:** Are `rejected` and `retracted` correctly terminal, with a correction always taking the form of a new report revision or a new claim, never a further transition?
+- **Why it matters:** Confirms there is no "un-reject" or "un-retract" path in the state machine.
+- **Proposed default:** Terminal, as implemented; a correction is a new report revision or a new claim.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/verification.md`, "Open questions")
+
+## Q135 — Who may dispute a verified case
+
+- **Question:** Who may move a `verified` case to `disputed` — any moderator, the original reviewer only, or an external party acting through a moderator? May an automated check dispute one?
+- **Why it matters:** Disputing a verified record is a significant action against already-published data.
+- **Proposed default:** Any actor with a reason; authorisation is the application's job, not the state machine's.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/verification.md`, "Open questions")
+
+## Q136 — Automated rejection
+
+- **Question:** May an automated check move a case to `rejected` or `needs_information`, given only `verified` explicitly requires a human?
+- **Why it matters:** Reads literally, the transition table allows it; whether it should be allowed in practice is an application-level policy decision.
+- **Proposed default:** Allowed by the table's literal reading; the application may restrict it further.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/verification.md`, "Open questions")
+
+## Q137 — Assignment on closed verification cases
+
+- **Question:** Should `rejected` and `retracted` cases be unassignable, as implemented?
+- **Why it matters:** Assigning a reviewer to a closed case could imply work remains to be done on it.
+- **Proposed default:** Unassignable, as implemented.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/verification.md`, "Open questions")
+
+## Q138 — Infrastructure asset kinds and damage levels
+
+- **Question:** Are `bridge | road_segment | water_channel | power_line | building | other` the right asset kinds, and `damaged | destroyed | washed_away` the right damage levels?
+- **Why it matters:** Both lists are used to classify every recorded asset and damage claim from Phase 3 onward.
+- **Proposed default:** As listed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/impacts.md`, "Open questions")
+
+## Q139 — Monetary claim precision and price-year bounds
+
+- **Question:** Are two decimal places, price years 1900–2100, and "`price_year` not after the claim's year" the right rules for a monetary `ClaimValue`?
+- **Why it matters:** These bound what a monetary impact claim (once a monetary metric is seeded, see Q34) can express.
+- **Proposed default:** As listed.
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/impacts.md`, "Open questions")
+
+## Q140 — Source ranking for `satellite` and `dataset`
+
+- **Question:** Where do `satellite` and `dataset` sources rank in the best-figure tie-break, given the Phase 3 plan only orders government, research, organisation, news and citizen?
+- **Why it matters:** Decides which of two equally-recent, equal-value claims from these source types wins a tie.
+- **Proposed default:** Between research and organisation (government > research > satellite > dataset > organisation > news > citizen).
+- **Blocking:** no
+- **Status:** open (raised in `docs/data-dictionary/impacts.md` and `docs/architecture/best-figure.md`, "Open questions")
+
+## Q141 — `sum` deduplication and nested scopes
+
+- **Question:** Is "one claim per `(source_id, scope)`, newest kept" the right deduplication for `sum`, and how should nested scopes (a district claim and a village claim inside it) be handled?
+- **Why it matters:** Double counting inflates casualty and damage figures; nested scopes are not currently detected automatically.
+- **Proposed default:** As implemented; nested scopes are the moderator's job (retract the overlapping claim).
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/best-figure.md`, "Open questions")
+
+## Q142 — Flooring `claimed_at` before comparing
+
+- **Question:** Should `claimed_at` be floored to the start of its precision period before two claims are compared for recency?
+- **Why it matters:** Decides which claim counts as "newest" when precisions differ (day versus month, for example).
+- **Proposed default:** Yes, floor to the start of the precision period, in UTC.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/best-figure.md`, "Open questions")
+
+## Q143 — Minimum confidence as the combined figure's confidence
+
+- **Question:** Is the minimum confidence among contributing claims the right combined confidence for a best figure?
+- **Why it matters:** Sets the confidence shown alongside every public figure.
+- **Proposed default:** Yes, the minimum.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/best-figure.md`, "Open questions")
+
+## Q144 — Monetary sums across different price years
+
+- **Question:** Is a nominal sum across different price years, labelled with the latest contributing price year, an acceptable presentation?
+- **Why it matters:** A nominal (unconverted) sum across years is only nominally meaningful, not real-terms comparable.
+- **Proposed default:** Nominal sum, latest price year label, no conversion.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/best-figure.md`, "Open questions")
+
+## Q145 — May a retired metric's claims be corrected
+
+- **Question:** May a claim under a retired `ImpactMetric` be corrected, given a retired metric accepts no new claims?
+- **Why it matters:** Without correction, an error recorded against a metric before it was retired could never be fixed.
+- **Proposed default:** No; a retired metric accepts no new claims, corrections included.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/best-figure.md`, "Open questions")
+
+## Q146 — Should source rank ever override recency or size
+
+- **Question:** Should `SourceRank` ever override a newer claim (`latest`) or a larger value (`max`), rather than only breaking ties?
+- **Why it matters:** Changing this would let a government claim silently override a more recent or larger claim from another source type.
+- **Proposed default:** No; rank only breaks ties.
+- **Blocking:** no
+- **Status:** open (raised in `docs/architecture/best-figure.md`, "Open questions")
+
+## Q147 — Orphaned sources and duplicate original media objects
+
+- **Question:** Nothing currently cleans up a `Source` registered but never cited by any fact, or an original media object left in storage after its asset row would otherwise be considered abandoned (for example a `failed` upload).
+- **Why it matters:** Both accumulate storage cost and unreferenced records with no automatic removal.
+- **Proposed default:** A periodic clean-up task, in a later phase; not yet built.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 persistence/adapter reports)
+
+## Q148 — System tasks act with no actor
+
+- **Question:** Background tasks (`reports.run_triage`, `media.scan`) run with no `Actor` — their commands and events record `actor_id = null` ("system"), the same convention `audit` uses.
+- **Why it matters:** Confirms this is deliberate and consistent, not an oversight, since a human reading an audit entry with no actor needs to know that is expected for these actions.
+- **Proposed default:** Keep it; document `actor_id = null` as meaning "the system", consistently.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application report)
+
+## Q149 — Cross-module application calls are not atomic
+
+- **Question:** A use case that calls another module's facade (for example `events` calling `reports`, or `reports` calling `provenance`) does so as a separate call, not inside one distributed transaction; a failure partway through can leave one module changed and another not.
+- **Why it matters:** A distributed transaction or a saga across modules is disproportionate for a modular monolith; the alternative is to make every cross-module call safe to repeat.
+- **Proposed default:** Every cross-module call the application layer makes is idempotent, so a retried handler completes the work without duplicating it, mirroring the Phase 1 seed's own non-atomicity (Q44).
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application report)
+
+## Q150 — "Published and verified" as the public-visibility gate
+
+- **Question:** Is requiring **both** `status = published` **and** a `verified` `VerificationCase` the right combined gate for anonymous, public reads of an event?
+- **Why it matters:** A stricter or looser gate changes what the public dataset shows versus what moderators can see in progress.
+- **Proposed default:** Both required, as implemented (`EventRecordQueryService`); see also Q132.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application/API reports)
+
+## Q151 — Verification rules for reporter resubmission and disputes
+
+- **Question:** May a reporter themselves move their own report's case from `needs_information` back to `submitted`, and are disputes raised by moderators only, never directly by a member of the public?
+- **Why it matters:** Determines whether a reporter has any direct role in their own report's verification lifecycle, versus only through resubmitting a revision.
+- **Proposed default:** A reporter corrects by submitting a new revision (which does not itself move the verification case); disputes are raised by moderators only. Not yet enforced as a distinct authorisation rule beyond `CanModerate` on every verification route.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application report)
+
+## Q152 — Merging an event does not move its claims or verification case
+
+- **Question:** When an event is merged into another (`merge_into`), its impact claims, damage records and its own `VerificationCase` are not moved or re-pointed to the surviving event.
+- **Why it matters:** A reader following only the surviving event after a merge would miss the merged event's claims unless they also follow `merged_into` links.
+- **Proposed default:** Leave claims and the case on the merged event; a reader (or the API) needing the combined picture must follow the merge; consider moving them explicitly in a later phase.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain/application reports)
+
+## Q153 — `EventFactory.from_reports` has no `summary` parameter
+
+- **Question:** Event creation from reports takes `title` and `attributes` but not `summary`; a moderator must set it afterwards, if at all, through a route that does not yet exist for it alone.
+- **Why it matters:** `summary` currently has no dedicated command to set it after creation.
+- **Proposed default:** Add `summary` to the factory or a dedicated `SetEventSummary` command in a later phase; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain/API reports)
+
+## Q154 — Impact claims have no verification case in Phase 3
+
+- **Question:** `VerificationCase.target.kind` includes `claim`, and claims open in `submitted` (Q133), but no Phase 3 command actually opens a `VerificationCase` for a recorded `ImpactClaim`.
+- **Why it matters:** The domain and data dictionary describe claim verification, but it is not yet wired up end to end.
+- **Proposed default:** Wire `RecordImpactClaim` to open a case in a later phase; until then, claim verification is modelled but not exercised.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 application report)
+
+## Q155 — No `expected_version` on events or verification commands
+
+- **Question:** Unlike reports, the `events` and `verification` commands carry no `expected_version`, so their routes' `If-Match` check (comparing against a freshly re-read current tag before the command runs) only narrows, and does not close, a race with a concurrent change.
+- **Why it matters:** Two concurrent moderator actions on the same event or case can still both succeed, even with `If-Match` sent.
+- **Proposed default:** Add `expected_version` to these commands in a later phase, matching the pattern `reports` already uses; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 API reports; also noted in the `events` and `verification` router docstrings)
+
+## Q156 — Actor dependency helpers copied per API package
+
+- **Question:** Each Phase 3 module's `api/dependencies.py` defines its own `CurrentActor`/`ModeratorActor`/`OptionalActor` FastAPI dependency aliases, rather than sharing one definition (the same pattern already noted for `identity` in Q70).
+- **Why it matters:** Seven near-identical copies is a maintenance cost, though it keeps each module's `api` layer free of a direct import of another module's dependencies.
+- **Proposed default:** Keep the duplication for now, consistent with Q70's reasoning; revisit if `platform/auth` grows a shared helper all modules can use directly.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 API report)
+
+## Q157 — Two `ModerationStatus` names in the OpenAPI document
+
+- **Question:** The generated OpenAPI schema contains more than one component schema named `ModerationStatus` (from `media` and from other Phase 3 modules' own moderation-decision enums), which some client generators handle by suffixing or colliding.
+- **Why it matters:** A generated client in a strict tool could produce two conflicting types or overwrite one with the other.
+- **Proposed default:** Rename one enum to a more specific name (for example `MediaModerationStatus`) in a later phase; not yet done, and not blocking because FastAPI's own schema still validates correctly.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 API report)
+
+## Q158 — `PATCH` on an event runs one command per changed member
+
+- **Question:** `PATCH /moderation/events/{id}` runs `SetEventGeometry`, `SetEventPeriod` and `SetEventAttributes` as separate commands, in sequence, rather than one combined command; a failure part-way through leaves the members before it applied.
+- **Why it matters:** The response always reflects the current event, but a client sending several members in one request may see a partially-applied change if one command fails.
+- **Proposed default:** Accept as documented behaviour (the router docstring already states it); consider one combined command in a later phase if partial application proves confusing in practice.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 API report; also documented in `modules/events/api/router.py`'s `update_event` docstring)
+
+## Q159 — No read routes for one impact claim or one damage record
+
+- **Question:** There is no `GET` route for a single `ImpactClaim` or `DamageRecord` by id; both are only ever read as part of `GET /events/{id}/impacts`.
+- **Why it matters:** A client that only has a claim or damage-record id (for example from an event, from a moderator's earlier response) has no direct way to re-fetch it.
+- **Proposed default:** Add dedicated `GET` routes in a later phase if a real need appears; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 API report)
+
+## Q160 — Infrastructure assets have no generic update
+
+- **Question:** `InfrastructureAsset` supports `rename` and `relocate` as its only two changes; there is no generic "save every field" update.
+- **Why it matters:** A field added later (for example a new descriptive attribute) would need its own dedicated command, following the same pattern, rather than reusing a generic one.
+- **Proposed default:** Keep the two dedicated commands; add another dedicated command per new field, consistent with the append-only and explicit-change style used across Phase 3.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain/application reports)
+
+## Q161 — SQL coordinate rounding depends on `extra_float_digits`
+
+- **Question:** A PostgreSQL query that rounds or compares coordinates server-side depends on the session's `extra_float_digits` setting for consistent `float`-to-text conversion; this is now pinned in the connection setup, but the dependency itself is worth recording.
+- **Why it matters:** A session with a different `extra_float_digits` value could round or format a coordinate differently than the application layer's `PublicCoordinatePolicy` does, producing a mismatch between what is stored, what SQL reports and what the API returns.
+- **Proposed default:** Keep `extra_float_digits` pinned in the engine's connection setup, as implemented; prefer the application-layer `round_coordinates` over server-side rounding wherever a choice exists.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 persistence report)
+
+## Q162 — No cross-module foreign keys
+
+- **Question:** Every Phase 3 table's references to another module's records (reporter ids, organisation ids, source ids, place codes, hazard codes, asset ids from a different module) carry no database foreign key, consistent with the modular-monolith rule that a module's persistence never imports another module's ORM.
+- **Why it matters:** The database cannot itself prevent a dangling reference (for example a report citing a source id that no longer exists, which should never happen because sources are never deleted, but the database does not enforce it).
+- **Proposed default:** Accept as the intended consequence of module boundaries (`AGENTS.md` §2.1); rely on application-layer existence checks and the "referenced data is never deleted" rules instead.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 persistence report)
+
+## Q163 — `find_nearby`-style queries cannot use the GiST index
+
+- **Question:** A nearest-neighbour or "within distance" query over `reports.observation`, `events.centroid` or `infrastructure_assets.location` that does not use PostGIS's `<->`/`ST_DWithin` operators cannot use the GiST index built for each column, and falls back to a sequential scan.
+- **Why it matters:** Any future proximity query (for example a real duplicate-suspicion query run in SQL rather than in the domain, or a "assets near this event" query) needs to be written against the indexable operators from the start.
+- **Proposed default:** Document the indexable operators for each geometry column; write proximity queries in `infrastructure/queries.py` against them, not a manual haversine calculation in SQL.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 persistence report)
+
+## Q164 — Cursor-parsing logic copied per module
+
+- **Question:** Each Phase 3 module's query-service or router implements its own parsing of the opaque pagination cursor into the module's own sort key, rather than sharing one generic cursor codec beyond `shared_kernel/pagination.py`'s `encode_cursor`/`decode_cursor`.
+- **Why it matters:** Seven near-identical "decode, then build this module's keyset predicate" blocks are a maintenance cost, similar to Q156.
+- **Proposed default:** Keep the duplication; the shared part (`encode_cursor`/`decode_cursor`) already lives in `shared_kernel`, and the module-specific part (which columns the keyset walks) genuinely differs per module.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 persistence report)
+
+## Q165 — Delayed (scheduled-for-later) tasks are unsupported
+
+- **Question:** The `TaskQueue` port and its Taskiq adapter support enqueueing a task for immediate delivery and periodic tasks (via `platform/tasks/scheduled.py`), but not a one-off task scheduled for a specific future time.
+- **Why it matters:** A future feature needing "run this once, in an hour" (for example a delayed re-triage) has no port method to call yet.
+- **Proposed default:** Add delayed one-off scheduling to the `TaskQueue` port only once a real use case needs it; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 adapter report)
+
+## Q166 — No back-off between outbox or task retries
+
+- **Question:** Neither the outbox relay (Q47) nor a failed background task waits progressively longer between retries; a failed outbox row is retried on the very next relay run, and a failed task is not retried by the broker at all (the outbox is what drives eventually-consistent work instead).
+- **Why it matters:** A systematically failing subscriber or handler (for example a downstream outage) is retried at full speed until `max_attempts` is reached, rather than backing off.
+- **Proposed default:** Add exponential back-off to the outbox relay's retry timing in a later, dedicated operational pass; not yet done (see also Q47).
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 adapter report)
+
+## Q167 — Redis stream cap may drop tasks under sustained backlog
+
+- **Question:** The Taskiq Redis broker's stream has a maximum length; under a sustained backlog (workers down for longer than it takes to fill the stream), the oldest unconsumed tasks could be evicted before a worker ever sees them.
+- **Why it matters:** A dropped `media.scan` or `reports.run_triage` task would silently leave an asset or report without its expected side effect, with only the outbox (for domain events, not tasks) as a separate safety net.
+- **Proposed default:** Monitor stream length in production; document the cap and revisit if it needs raising or if a re-enqueue sweep (like Q104's) should also cover missed tasks generally.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 adapter report)
+
+## Q168 — The "ids and non-personal fields only" outbox payload rule is not mechanically enforced
+
+- **Question:** The Phase 2 outbox payload contract (ids and non-personal fields only, size cap) is followed by convention and code review in every Phase 3 domain event, but nothing automatically rejects a payload that breaks it (for example a future contributor accidentally adding a description field to an event).
+- **Why it matters:** A silent violation would leak personal data into the outbox, and from there into the audit log's `payload_digest` computation (though not the audit entry itself) and to every subscriber.
+- **Proposed default:** Keep relying on code review and the module docstrings' explicit "never carries X" statements for now; consider a schema-level check (for example a test that inspects every registered event's field names against a denylist) in a later phase.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain/security reports)
+
+## Q169 — `LocalizedText` is not yet built on the shared `SafeText` type
+
+- **Question:** `shared_kernel`'s `LocalizedText` (used by `hazards` and `impacts` labels since Phase 1) validates its own text rather than reusing the `SafeText` type Phase 3 introduced for `reports`, `provenance`, `media`, `events`, `verification` and `impacts` claims' free-text fields.
+- **Why it matters:** Two independent text-validation implementations can drift (for example if a new forbidden character class is added to one but not the other).
+- **Proposed default:** Migrate `LocalizedText` onto `SafeText` in a later phase, once the Phase 1 modules are touched again for another reason; not blocking on its own.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain report)
+
+## Q170 — `identity` keeps its own copy of the safe-text rule
+
+- **Question:** `identity`'s `display_name` validation (Phase 2) predates the shared kernel `SafeText` type and still carries its own copy of the same rule (no control characters, lone surrogates or bidirectional overrides) rather than importing `SafeText`.
+- **Why it matters:** Same drift risk as Q169, for the one personal-data field `identity` stores.
+- **Proposed default:** Migrate `identity.display_name` onto `SafeText` in a later phase; not blocking.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain report)
+
+## Q171 — Cataloguing `PublicCoordinatePolicy` and `round_coordinates`
+
+- **Question:** `shared_kernel/privacy.py`'s `PublicCoordinatePolicy` declares `Implements: Policy` (`AGENTS.md` §3's Policy row, currently scoped to "Authorisation rules"); is coordinate-rounding the right fit for that catalog entry, or does it need its own row?
+- **Why it matters:** `AGENTS.md` §3 is protected and changes only with maintainer approval; using an existing pattern label for a different concern (privacy transformation rather than authorisation) is a judgement call worth flagging rather than silently stretching the catalog's meaning.
+- **Proposed default:** Keep `Implements: Policy` for now (a composable, rule-based decision, which is the catalog's own general description of Policy); propose a dedicated catalog row only if the maintainer disagrees.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain report)
+
+## Q172 — Task payload size limits
+
+- **Question:** The `TaskQueue` port and its adapter document no explicit maximum payload size for an enqueued task, unlike the outbox's documented payload contract (Q168) and the HTTP body-size guard (`platform/http.py`).
+- **Why it matters:** Every current Phase 3 task payload is tiny (one id), so this has not mattered yet, but nothing stops a future task from being given a large payload by mistake.
+- **Proposed default:** Document and, if needed, enforce a payload size cap on `TaskQueue.enqueue` in a later phase; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 adapter report)
+
+## Q173 — Additional Unicode characters allowed by `SafeText`
+
+- **Question:** `SafeText` (Phase 3's shared free-text validator) currently allows U+200B (zero-width space), U+FEFF (byte-order mark / zero-width no-break space), and U+2028/U+2029 (line and paragraph separator) through, having rejected only control characters, lone surrogates and bidirectional overrides/embeddings/isolates.
+- **Why it matters:** These characters are invisible or format-affecting rather than displayable text; U+2028/U+2029 in particular can break naive single-line rendering assumptions the same way a literal newline would, and a string of only zero-width characters could pass a "non-empty after stripping" check while displaying as nothing.
+- **Proposed default:** Reject U+200B, U+FEFF, U+2028 and U+2029 too, tightening `SafeText` in a later, small change; not yet done, and not blocking because no known exploit depends on them today.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 3 domain/security reports)
+
+## Q174 — JWKS response streaming cap
+
+- **Question:** JWKS response streaming cap?
+- **Why it matters:** The JWKS client checks the response size only after reading the whole body; a hostile or misconfigured provider could send a very large document.
+- **Proposed default:** Deferred to Phase 4: cap while streaming (`httpx` `aiter_bytes`) at the configured size.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q175 — Access-token `typ` check
+
+- **Question:** Access-token `typ` check?
+- **Why it matters:** Tokens whose `typ` header is not an access token (for example ID tokens) are accepted if otherwise valid.
+- **Proposed default:** Deferred to Phase 4: reject `typ` values other than `JWT`/`at+jwt` when present.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q176 — Account-creation limits
+
+- **Question:** Account-creation limits?
+- **Why it matters:** Any valid token from the provider creates a user on first sight; self-registration at the provider would let anyone create accounts at will.
+- **Proposed default:** Deferred to Phase 4: rate-limit first-sight mirroring per provider subject range, or require an invitation for non-citizen roles.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q177 — IPv6 rate-limit keys
+
+- **Question:** IPv6 rate-limit keys?
+- **Why it matters:** Anonymous rate limiting hashes the full client address, so an IPv6 caller can rotate through a /64 to evade limits.
+- **Proposed default:** Deferred to Phase 4: key anonymous limits on the /64 prefix for IPv6 and the /32 address for IPv4.
+- **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
+- **Status:** deferred to Phase 4
+
+## Q178 — Source citation lookup for public reads
+
+- **Question:** How should the provenance read service learn whether a citizen or organisation source is cited by a published, verified event?
+- **Why it matters:** Until a `SourceCitationChecker` adapter exists, such sources are hidden from anonymous and non-member readers even when the citing event is public, so public event pages cannot link to their citizen sources.
+- **Proposed default:** No checker bound in Phase 3 (safe: nothing leaks). Phase 4 adds an events read `is_source_cited_by_public_event(source_id)` and wires it.
+- **Blocking:** no
+- **Status:** open (Phase 3 security review)

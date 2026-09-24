@@ -1,10 +1,12 @@
-"""Factories for the ``impacts`` domain: impact metrics.
+"""Factories for the ``impacts`` domain: metrics, claims, assets and damage records.
 
 ``ImpactMetricTestFactory`` is suffixed ``TestFactory`` because the domain already has
 an ``ImpactMetricFactory`` (``yakhnama.modules.impacts.domain.factories``) that tests
 use to exercise creation; this factory builds an ``ImpactMetric`` directly for
 arranging state. Codes come from a counter (``test_metric_<n>``), so they never collide
-with each other or with a real registry code.
+with each other or with a real registry code. The claim, asset and damage factories
+are suffixed the same way for the same reason; claims default to a whole-event
+``count`` value of metric ``test_metric_count``.
 
 Patterns: Factory.
 """
@@ -22,16 +24,32 @@ from tests.factories.base import (
     sequence,
 )
 from tests.factories.shared_kernel import LocalizedTextFactory
+from yakhnama.modules.impacts.domain.assets import InfrastructureAsset
+from yakhnama.modules.impacts.domain.claims import ImpactClaim
+from yakhnama.modules.impacts.domain.damage import DamageRecord
 from yakhnama.modules.impacts.domain.entities import ImpactMetric
 from yakhnama.modules.impacts.domain.value_objects import (
     COUNT_UNIT,
     DEFAULT_CURRENCY,
+    SOURCE_TYPE_NAMES,
     Aggregation,
+    AssetKind,
+    CountValue,
+    DamageLevel,
+    ImpactMetricRef,
     MetricCategory,
     ValueKind,
     default_aggregation,
 )
-from yakhnama.shared_kernel.value_objects import KNOWN_UNITS
+from yakhnama.shared_kernel.value_objects import (
+    KNOWN_UNITS,
+    Confidence,
+    DatePrecision,
+    DateWithPrecision,
+)
+
+CLAIM_METRIC_CODE = "test_metric_count"
+"""Metric code of claims built by ``ImpactClaimTestFactory`` unless overridden."""
 
 MEASUREMENT_UNITS: tuple[str, ...] = tuple(sorted(KNOWN_UNITS - {COUNT_UNIT}))
 """Units a ``measurement`` metric may use: every registered unit except ``count``."""
@@ -88,5 +106,72 @@ class ImpactMetricTestFactory(YakhnamaModelFactory[ImpactMetric]):
     unit = PostGenerated(_unit_for_kind)
     currency = PostGenerated(_currency_for_kind)
     aggregation = PostGenerated(_aggregation_for_kind)
+    created_at = Use(random_instant)
+    updated_at = PostGenerated(_same_as_created_at)
+
+
+def _random_count_value() -> CountValue:
+    return CountValue(count=FACTORY_RANDOM.randint(0, 1000))
+
+
+def _random_day() -> DateWithPrecision:
+    return DateWithPrecision(value=random_instant(), precision=DatePrecision.DAY)
+
+
+class ImpactClaimTestFactory(YakhnamaModelFactory[ImpactClaim]):
+    """Builds active, whole-event ``count`` claims at version 1.
+
+    Pass ``metric=`` and a matching ``value=`` for other kinds.
+
+    Implements: Factory.
+    """
+
+    __model__ = ImpactClaim
+
+    id = Use(FACTORY_IDS.new_id)
+    event_id = Use(FACTORY_IDS.new_id)
+    metric = Use(ImpactMetricRef, code=CLAIM_METRIC_CODE)
+    value = Use(_random_count_value)
+    confidence = pick(list(Confidence))
+    source_id = Use(FACTORY_IDS.new_id)
+    source_type = pick(SOURCE_TYPE_NAMES)
+    claimed_at = Use(_random_day)
+    recorded_by = Use(FACTORY_IDS.new_id)
+    created_at = Use(random_instant)
+    updated_at = PostGenerated(_same_as_created_at)
+
+
+class InfrastructureAssetTestFactory(YakhnamaModelFactory[InfrastructureAsset]):
+    """Builds assets at version 1 without OSM id, location or place.
+
+    Implements: Factory.
+    """
+
+    __model__ = InfrastructureAsset
+
+    id = Use(FACTORY_IDS.new_id)
+    kind = pick(list(AssetKind))
+    name = sequence("Test asset {:05d}")
+    source_id = Use(FACTORY_IDS.new_id)
+    created_at = Use(random_instant)
+    updated_at = PostGenerated(_same_as_created_at)
+
+
+class DamageRecordTestFactory(YakhnamaModelFactory[DamageRecord]):
+    """Builds active damage records at version 1.
+
+    Implements: Factory.
+    """
+
+    __model__ = DamageRecord
+
+    id = Use(FACTORY_IDS.new_id)
+    event_id = Use(FACTORY_IDS.new_id)
+    asset_id = Use(FACTORY_IDS.new_id)
+    level = pick(list(DamageLevel))
+    confidence = pick(list(Confidence))
+    source_id = Use(FACTORY_IDS.new_id)
+    recorded_at = Use(_random_day)
+    recorded_by = Use(FACTORY_IDS.new_id)
     created_at = Use(random_instant)
     updated_at = PostGenerated(_same_as_created_at)

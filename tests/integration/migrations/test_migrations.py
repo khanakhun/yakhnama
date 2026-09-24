@@ -45,6 +45,17 @@ APPLICATION_TABLES_AT_HEAD: Final = frozenset(
         "organizations",
         "memberships",
         "idempotency_keys",
+        "sources",
+        "audit_entries",
+        "reports",
+        "media_assets",
+        "events",
+        "event_relations",
+        "event_report_links",
+        "verification_cases",
+        "infrastructure_assets",
+        "impact_claims",
+        "damage_records",
     }
 )
 EXTENSIONS: Final = frozenset({"postgis", "pg_trgm", "unaccent"})
