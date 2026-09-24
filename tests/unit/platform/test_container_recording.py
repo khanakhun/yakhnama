@@ -67,6 +67,7 @@ from yakhnama.platform.wiring.impacts import (
     HazardEventDirectoryAdapter,
     ImpactSourceMarkerAdapter,
 )
+from yakhnama.platform.wiring.provenance import SourceCitationCheckerAdapter
 from yakhnama.platform.wiring.verification import (
     ReportOwnerAdapter,
     ReviewerEligibilityAdapter,
@@ -204,6 +205,18 @@ def test_build_container_binds_every_cross_module_port_to_its_adapter(
     assert isinstance(claims.events, HazardEventDirectoryAdapter)
     assert isinstance(claims.sources, ImpactSourceMarkerAdapter)
     assert claims.uow_factory is container.impact_claims_uow_factory
+
+
+def test_build_container_source_reads_check_citations_through_the_events_read(
+    container: Container,
+) -> None:
+    checker = container.source_queries._citation_checker
+
+    assert isinstance(checker, SourceCitationCheckerAdapter)
+    # Widened to object: the two read ports are unrelated Protocols to mypy, yet
+    # one SQL service answers both.
+    citations: object = checker._citations
+    assert citations is container.event_query_service
 
 
 def test_build_container_timeline_reads_verification_and_impacts(

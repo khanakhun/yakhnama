@@ -18,6 +18,7 @@ from yakhnama.platform.ratelimit.limiter import InMemoryRateLimiter, RateLimitDe
 from yakhnama.platform.ratelimit.middleware import (
     RateLimitMiddleware,
     client_key,
+    client_network,
     rate_limit_headers,
 )
 from yakhnama.platform.ratelimit.redis_limiter import (
@@ -291,6 +292,65 @@ def test_client_key_without_client_address_uses_unknown_bucket() -> None:
     key = client_key({"type": "http", "client": None})
 
     assert key.startswith("ip:")
+
+
+def _anonymous_scope(host: str) -> Scope:
+    return {"type": "http", "client": (host, 50000)}
+
+
+def test_client_key_two_ipv6_addresses_in_one_slash_64_share_a_bucket() -> None:
+    first = client_key(_anonymous_scope("2001:db8:1:2::1"))
+    second = client_key(_anonymous_scope("2001:db8:1:2:ffff:ffff:ffff:fffe"))
+
+    assert first == second
+
+
+def test_client_key_ipv6_addresses_in_different_slash_64s_do_not_share() -> None:
+    first = client_key(_anonymous_scope("2001:db8:1:2::1"))
+    second = client_key(_anonymous_scope("2001:db8:1:3::1"))
+
+    assert first != second
+
+
+def test_client_key_two_ipv4_addresses_in_one_subnet_do_not_share() -> None:
+    first = client_key(_anonymous_scope("203.0.113.7"))
+    second = client_key(_anonymous_scope("203.0.113.8"))
+
+    assert first != second
+
+
+def test_client_key_ipv4_mapped_ipv6_address_shares_the_ipv4_bucket() -> None:
+    mapped = client_key(_anonymous_scope("::ffff:203.0.113.7"))
+    plain = client_key(_anonymous_scope("203.0.113.7"))
+
+    assert mapped == plain
+
+
+def test_client_key_never_contains_the_raw_address() -> None:
+    key = client_key(_anonymous_scope("2001:db8:1:2::1"))
+
+    assert "2001" not in key
+    assert "db8" not in key
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("2001:db8:1:2:3:4:5:6", "2001:db8:1:2::/64"),
+        ("2001:DB8:1:2::9", "2001:db8:1:2::/64"),
+        ("::1", "::/64"),
+        ("203.0.113.7", "203.0.113.7"),
+        ("::ffff:198.51.100.1", "198.51.100.1"),
+        ("testserver", "testserver"),
+        ("unknown", "unknown"),
+    ],
+)
+def test_client_network_keys_ipv6_by_slash_64_and_ipv4_by_address(
+    host: str, expected: str
+) -> None:
+    network = client_network(host)
+
+    assert network == expected
 
 
 def test_rate_limit_headers_refused_decision_includes_retry_after() -> None:

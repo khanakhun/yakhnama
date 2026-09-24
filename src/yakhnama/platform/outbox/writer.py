@@ -4,8 +4,8 @@ Payload contract (Phase 2 security review): an event's serialised form is at mos
 ``OUTBOX_PAYLOAD_MAX_BYTES``. The cap keeps one event from bloating the table, the
 relay's memory and every subscriber, and it makes an event that carries a whole
 document instead of identifiers fail loudly in the unit of work that raised it. The
-stricter rule, identifiers and non-personal fields only, is a structural test planned
-for Phase 4; until then it is enforced by review.
+stricter rule, identifiers and non-personal fields only, is the structural test
+``tests/architecture/test_outbox_payloads.py``, which inspects every event class.
 
 Patterns: Transactional Outbox.
 """

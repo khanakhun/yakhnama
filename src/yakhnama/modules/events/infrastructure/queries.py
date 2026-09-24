@@ -28,6 +28,12 @@ A negation wraps its operand in ``coalesce(..., false)`` first, so an event with
 a centroid or without a case matches ``NOT bbox`` or ``NOT verified`` exactly as the
 in-memory ``NOT is_satisfied_by`` does, instead of SQL's unknown dropping it.
 
+**Citations.** ``is_source_cited_by_public_event`` is one ``EXISTS`` over
+``events``: ``source_ids @> '["<id>"]'`` (the ids are stored as canonical UUID
+strings by the mapper), ``status = 'published'`` and the same verification-state
+subquery equal to ``verified``. The containment test is served by the GIN index
+``ix_events_source_ids_gin`` (migration 0015).
+
 **Order and paging.** Newest first by ``period_earliest_at`` then id, both
 descending, by keyset; the cursor's ``sort_key`` is the earliest instant in ISO 8601
 and ``last_id`` the last event's id, as the port requires. Search never loads the
@@ -46,6 +52,7 @@ from sqlalchemy import (
     Uuid,
     and_,
     column,
+    exists,
     false,
     func,
     not_,
@@ -68,6 +75,7 @@ from yakhnama.modules.events.domain.specifications import (
     EventStatusSpecification,
     VerifiedEventSpecification,
 )
+from yakhnama.modules.events.domain.value_objects import EventStatus
 from yakhnama.modules.events.infrastructure.mappers import (
     affected_places_from_column,
     element_to_coordinates,
@@ -304,9 +312,9 @@ def _summary(row: Row[tuple[object, ...]]) -> EventSummary:
 
 
 class SqlAlchemyEventQueryService:
-    """PostgreSQL-backed implementation of ``EventQueryService``.
+    """PostgreSQL-backed ``EventQueryService`` and ``EventCitationQueryService``.
 
-    Implements: Query Service (port ``EventQueryService``).
+    Implements: Query Service (adapter side of both ports).
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -418,3 +426,22 @@ class SqlAlchemyEventQueryService:
             verification_state=verification_state,
             relations=[row_to_relation(relation) for relation in relation_rows],
         )
+
+    async def is_source_cited_by_public_event(self, source_id: EntityId) -> bool:
+        """Tell whether a published and verified event lists ``source_id``.
+
+        Args:
+            source_id: The source.
+
+        Returns:
+            ``True`` if such an event exists.
+        """
+        statement = select(
+            exists().where(
+                EventRow.source_ids.contains([str(source_id)]),
+                EventRow.status == EventStatus.PUBLISHED.value,
+                verification_state_of_event() == VERIFIED_STATE,
+            )
+        )
+        async with self._session_factory() as session:
+            return bool((await session.execute(statement)).scalar_one())

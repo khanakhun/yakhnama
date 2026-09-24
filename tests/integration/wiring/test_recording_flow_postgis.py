@@ -19,29 +19,26 @@ The coordinates, texts and file are synthetic.
 
 import dataclasses
 import re
-from collections.abc import AsyncIterator
 from io import BytesIO
-from typing import Any, Final
+from typing import Final
 from uuid import UUID
 
 import httpx
 import pytest
 from PIL import Image
 from sqlalchemy import select
-from taskiq import InMemoryBroker
 
-from tests.fakes.auth import (
-    DEFAULT_ISSUED_AT,
-    TEST_AUDIENCE,
-    TEST_ISSUER,
-    FakeJwksClient,
-    StaticRateLimiter,
-    access_token_claims,
-    issue_token,
-    session_key_pair,
-)
-from tests.fakes.clock import FrozenClock
 from tests.fakes.identity import actor_with
+from tests.integration.wiring.flow_steps import (
+    API,
+    MODERATION,
+    Json,
+    bearer_headers,
+    drain_tasks,
+    json_body,
+    scheduled_task,
+    verify_event,
+)
 from tests.unit.modules.media.infrastructure.adapters.images import gps_photo
 from yakhnama.main import create_app
 from yakhnama.modules.identity.public import Role
@@ -49,25 +46,18 @@ from yakhnama.modules.media.infrastructure.adapters.scanner import (
     NoOpMalwareScanner,
 )
 from yakhnama.modules.media.public import ScanStatus
-from yakhnama.platform.auth.tokens import TokenValidator
 from yakhnama.platform.container import (
     Container,
-    build_container,
     build_seed_handler,
     build_task_handlers,
 )
 from yakhnama.platform.outbox.models import OutboxMessage
-from yakhnama.platform.settings import Settings
 from yakhnama.platform.tasks.handlers import MEDIA_SCAN_TASK, REPORTS_TRIAGE_TASK
 from yakhnama.seed.application import SeedReferenceData
 from yakhnama.shared_kernel.pagination import MAX_PAGE_LIMIT, PageRequest
-from yakhnama.shared_kernel.tasks import ScheduledTask, TaskId
 
 pytestmark = pytest.mark.integration
 
-API: Final = "/api/v1"
-MODERATION: Final = f"{API}/moderation"
-CASES: Final = f"{MODERATION}/verification-cases"
 REPORTER: Final = "wiring-reporter"
 NEIGHBOUR: Final = "wiring-neighbour"
 MODERATOR: Final = "wiring-moderator"
@@ -91,19 +81,11 @@ AUDIT_FIELDS: Final = {
     "event_id",
     "payload_digest",
 }
-VERIFY_PATH: Final = ("submitted", "under_review", "verified")
-# Any: decoded JSON bodies, the external boundary of this test.
-type Json = dict[str, Any]
 
 
-def _headers(subject: str, roles: tuple[str, ...] = ()) -> dict[str, str]:
-    claims = access_token_claims(subject=subject, realm_roles=roles)
-    return {"Authorization": f"Bearer {issue_token(claims, session_key_pair())}"}
-
-
-REPORTER_HEADERS: Final = _headers(REPORTER)
-NEIGHBOUR_HEADERS: Final = _headers(NEIGHBOUR)
-MODERATOR_HEADERS: Final = _headers(MODERATOR, ("moderator",))
+REPORTER_HEADERS: Final = bearer_headers(REPORTER)
+NEIGHBOUR_HEADERS: Final = bearer_headers(NEIGHBOUR)
+MODERATOR_HEADERS: Final = bearer_headers(MODERATOR, ("moderator",))
 
 
 def _report_body(client_report_id: str, media_ids: list[str]) -> Json:
@@ -119,38 +101,8 @@ def _report_body(client_report_id: str, media_ids: list[str]) -> Json:
     }
 
 
-@pytest.fixture
-async def container(wiring_settings: Settings) -> AsyncIterator[Container]:
-    """Yield the production container with a locally keyed token validator."""
-    built = build_container(wiring_settings)
-    validator_clock = FrozenClock(DEFAULT_ISSUED_AT)
-    container = dataclasses.replace(
-        built,
-        token_validator=TokenValidator(
-            jwks_client=FakeJwksClient([session_key_pair()]),
-            issuer=TEST_ISSUER,
-            audience=TEST_AUDIENCE,
-            algorithms=["RS256"],
-            leeway_seconds=0,
-            clock=validator_clock,
-        ),
-        # The flow sends more requests per minute than the default budget allows.
-        rate_limiter=StaticRateLimiter(),
-    )
-
-    yield container
-
-    await built.aclose()
-
-
-def _json(response: httpx.Response, status: int) -> Json:
-    assert response.status_code == status, response.text
-    body: Json = response.json()
-    return body
-
-
 async def _upload_photo(client: httpx.AsyncClient, body: bytes) -> str:
-    grant = _json(
+    grant = json_body(
         await client.post(
             f"{API}/media", json={"mime_type": "image/jpeg"}, headers=REPORTER_HEADERS
         ),
@@ -163,55 +115,11 @@ async def _upload_photo(client: httpx.AsyncClient, body: bytes) -> str:
         )
     assert stored.status_code == 200, stored.text
     asset_id = str(grant["asset_id"])
-    _json(
+    json_body(
         await client.post(f"{API}/media/{asset_id}/complete", headers=REPORTER_HEADERS),
         200,
     )
     return asset_id
-
-
-async def _drain_tasks(container: Container) -> None:
-    # The memory backend runs each enqueued task as an asyncio task in this
-    # process; wait for them so the test never races a background write.
-    broker = container.task_broker
-    assert isinstance(broker, InMemoryBroker)
-    await broker.wait_all()
-
-
-def _task(task_name: str, payload: dict[str, object]) -> ScheduledTask:
-    return ScheduledTask.model_validate(
-        {
-            "task_id": TaskId(value=f"{task_name}-1"),
-            "task_name": task_name,
-            "payload": payload,
-        }
-    )
-
-
-async def _verify(client: httpx.AsyncClient, event_id: str) -> None:
-    cases = _json(
-        await client.get(
-            CASES, params={"target_kind": "event"}, headers=MODERATOR_HEADERS
-        ),
-        200,
-    )
-    case_id = next(
-        item["id"] for item in cases["items"] if item["target"]["target_id"] == event_id
-    )
-    for state in VERIFY_PATH:
-        case = _json(
-            await client.get(f"{CASES}/{case_id}", headers=MODERATOR_HEADERS), 200
-        )
-        if case["state"] == state:
-            continue
-        _json(
-            await client.post(
-                f"{MODERATION}/verification/{case_id}/transitions",
-                json={"to_state": state, "reason": "Checked against the field team."},
-                headers=MODERATOR_HEADERS,
-            ),
-            200,
-        )
 
 
 async def _relay_everything(container: Container) -> None:
@@ -246,14 +154,14 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
         transport=transport, base_url="http://localhost"
     ) as client:
         photo_id = await _upload_photo(client, gps_photo())
-        await _drain_tasks(container)
+        await drain_tasks(container)
         scan_container = dataclasses.replace(
             container, malware_scanner=NoOpMalwareScanner(verdict=ScanStatus.CLEAN)
         )
         await build_task_handlers(scan_container)[MEDIA_SCAN_TASK](
-            _task(MEDIA_SCAN_TASK, {"asset_id": photo_id})
+            scheduled_task(MEDIA_SCAN_TASK, {"asset_id": photo_id})
         )
-        approved = _json(
+        approved = json_body(
             await client.post(
                 f"{MODERATION}/media/{photo_id}/decision",
                 json={"decision": "approved", "sensitivity": "none"},
@@ -261,7 +169,7 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
             ),
             200,
         )
-        report = _json(
+        report = json_body(
             await client.post(
                 f"{API}/reports",
                 json=_report_body(str(container.id_generator.new_id()), [photo_id]),
@@ -269,11 +177,11 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
             ),
             201,
         )
-        await _drain_tasks(container)
+        await drain_tasks(container)
         await build_task_handlers(container)[REPORTS_TRIAGE_TASK](
-            _task(REPORTS_TRIAGE_TASK, {"report_id": report["id"]})
+            scheduled_task(REPORTS_TRIAGE_TASK, {"report_id": report["id"]})
         )
-        corroborating = _json(
+        corroborating = json_body(
             await client.post(
                 f"{API}/reports",
                 json=_report_body(str(container.id_generator.new_id()), []),
@@ -281,8 +189,8 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
             ),
             201,
         )
-        await _drain_tasks(container)
-        event = _json(
+        await drain_tasks(container)
+        event = json_body(
             await client.post(
                 f"{MODERATION}/events",
                 json={
@@ -294,7 +202,7 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
             ),
             201,
         )
-        _json(
+        json_body(
             await client.post(
                 f"{MODERATION}/events/{event['id']}/reports",
                 json={"report_id": corroborating["id"], "role": "supporting"},
@@ -302,7 +210,7 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
             ),
             200,
         )
-        source = _json(
+        source = json_body(
             await client.post(
                 f"{MODERATION}/sources",
                 json={
@@ -316,7 +224,7 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
             ),
             201,
         )
-        _json(
+        json_body(
             await client.post(
                 f"{MODERATION}/events/{event['id']}/impact-claims",
                 json={
@@ -330,15 +238,15 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
             ),
             201,
         )
-        hidden = _json(await client.get(f"{API}/events"), 200)
-        _json(
+        hidden = json_body(await client.get(f"{API}/events"), 200)
+        json_body(
             await client.post(
                 f"{MODERATION}/events/{event['id']}/publication",
                 headers=MODERATOR_HEADERS,
             ),
             200,
         )
-        await _verify(client, event["id"])
+        await verify_event(client, event["id"], MODERATOR_HEADERS)
         responses = (
             await client.get(f"{API}/events"),
             await client.get(
@@ -351,7 +259,7 @@ async def test_gate_flow_from_uploaded_photo_to_public_verified_event(  # noqa: 
         )
         public_texts.extend(response.text for response in responses)
         listing, geojson, detail, impacts, timeline, media = (
-            _json(response, 200) for response in responses
+            json_body(response, 200) for response in responses
         )
     async with httpx.AsyncClient() as storage_client:
         public_copy = await storage_client.get(media["public_download"]["url"])

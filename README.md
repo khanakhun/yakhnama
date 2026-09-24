@@ -141,19 +141,25 @@ poetry run pre-commit install
 poetry run poe check       # everything CI runs
 ```
 
-Reports, media, events, verification and impact claims (from Phase 3) go through
-background tasks — triage, malware scanning, the outbox relay and idempotency purge — run
-by a Taskiq worker, with periodic tasks enqueued by exactly one scheduler process per
-deployment:
+Reports, media, events, verification and impact claims (from Phase 3), and data exports,
+imports and ingestion runs (from Phase 4) all go through background tasks — triage,
+malware scanning, the outbox relay, idempotency purge, running an export or import job,
+and running an ingestion pipeline — run by a Taskiq worker, with periodic tasks enqueued
+by exactly one scheduler process per deployment:
 
 ```bash
-poetry run poe worker      # runs every task (needs YAKHNAMA_TASK_QUEUE_BACKEND=redis)
+poetry run poe worker      # runs every task, including exchange.run_export,
+                            # exchange.run_import and ingestion.run (from Phase 4);
+                            # needs YAKHNAMA_TASK_QUEUE_BACKEND=redis
 poetry run poe scheduler   # enqueues the periodic tasks; run exactly one per deployment
 ```
 
 See `docs/architecture/recording.md` for the full report-to-event flow (submission,
-triage, media upload and moderation, event creation, impact claims, verification) and
-`docs/architecture/media.md` for the upload, EXIF-stripping and malware-scanning pipeline.
+triage, media upload and moderation, event creation, impact claims, verification),
+`docs/architecture/media.md` for the upload, EXIF-stripping and malware-scanning
+pipeline, `docs/architecture/exchange.md` for requesting an export or a historical-data
+import, and `docs/architecture/ingestion.md` for the dataset catalog and the ingestion
+pipeline.
 
 If a default port is already taken on your machine, override it in `.env` before running
 `poe up`: `POSTGRES_HOST_PORT`, `MINIO_HOST_PORT`, `MINIO_CONSOLE_HOST_PORT`,
@@ -266,20 +272,22 @@ docs/   adr/ architecture/ data-dictionary/ plans/
 - Geometry is WGS84 (EPSG:4326).
 - Measurements are stored in SI units, value plus unit.
 - Identifiers are UUIDv7.
-- Public exports are GeoJSON, CSV and GeoParquet (fixed by the project specification; the
-  `exchange` module arrives in Phase 4), each shipped with a licence sidecar file naming the
-  dataset's licence and attribution requirements.
+- Public exports are JSON, GeoJSON, CSV and GeoParquet (fixed by the project
+  specification, via the `exchange` module from Phase 4), each shipped with a licence
+  sidecar file naming the dataset's licence and attribution requirements.
 
 ## Status
 
-**Phase 3: core recording — complete (pending review)**, per `docs/plans/phase-3.md`
-(approved in advance by the maintainer). Report submission and revision with a Chain of
-Responsibility triage that only suggests, presigned media upload with EXIF handling and
-SHA-256 deduplication, moderator-created events linked to reports, append-only impact
-claims with a documented best-figure policy, a `verification` state machine governing every
-report, event and claim, and an append-only `audit` log written by an outbox subscriber all
-exist, behind a Taskiq task queue for the outbox relay and background work. See
-`docs/architecture/recording.md` for the end-to-end flow and
+**Phase 4: data exchange and ingestion — complete (pending review)**, per
+`docs/plans/phase-4.md` (approved in advance by the maintainer). Researchers can request
+a JSON, GeoJSON, CSV or GeoParquet export of verified events, claims or (moderators only)
+reports, run as a background job with a licence sidecar and a presigned download; a
+moderator can import a historical backfill file (CSV or GeoJSON) with a dry run and a
+row-level validation report before anything is written; and a dataset catalog, a
+Template Method ingestion pipeline, a hypertable-ready observation time series and a
+STAC-aligned raster asset catalog exist, fed today by one synthetic fixture source with
+no live network calls. See `docs/architecture/exchange.md` and
+`docs/architecture/ingestion.md` for the end-to-end flows and
 `docs/architecture/api.md` for the route table.
 
 Roadmap:
@@ -296,11 +304,11 @@ Roadmap:
 - **Phase 3 — Core recording.** `provenance`, `audit`, `reports`, `media`, `events`,
   `verification` and the `impacts` claims/assets/damage extension, the Taskiq task queue,
   and the recording API. Complete (pending review).
-
-Phase 4 is planned, subject to an approved `docs/plans/phase-4.md`:
-
-- **Phase 4 — Data sources.** External source adapters and import/export formats; see
-  `docs/architecture/data-sources.md`, added in this phase.
+- **Phase 4 — Data exchange and ingestion.** The `exchange` module (exports, historical
+  backfill imports) and the `ingestion` module (the dataset catalog, the ingestion
+  pipeline, observations, raster assets); see `docs/architecture/data-sources.md` for the
+  implemented fixture source and every documented candidate source. Complete (pending
+  review).
 
 ## Contributing
 

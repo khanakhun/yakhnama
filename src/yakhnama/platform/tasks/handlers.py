@@ -48,6 +48,12 @@ REPORTS_TRIAGE_TASK: Final = "reports.run_triage"
 """Run the triage chain on one report. Payload: ``report_id`` (bound by reports)."""
 MEDIA_SCAN_TASK: Final = "media.scan"
 """Scan and process one uploaded asset. Payload: ``asset_id`` (bound by media)."""
+EXCHANGE_RUN_EXPORT_TASK: Final = "exchange.run_export"
+"""Write one export's file and sidecar. Payload: ``export_job_id`` (exchange)."""
+EXCHANGE_RUN_IMPORT_TASK: Final = "exchange.run_import"
+"""Validate and write one import. Payload: ``import_job_id`` (exchange)."""
+INGESTION_RUN_TASK: Final = "ingestion.run"
+"""Execute one requested ingestion run. Payload: ``run_id`` (ingestion)."""
 
 TASK_NAMES: Final = (
     OUTBOX_RELAY_TASK,
@@ -55,6 +61,9 @@ TASK_NAMES: Final = (
     IDEMPOTENCY_PURGE_TASK,
     REPORTS_TRIAGE_TASK,
     MEDIA_SCAN_TASK,
+    EXCHANGE_RUN_EXPORT_TASK,
+    EXCHANGE_RUN_IMPORT_TASK,
+    INGESTION_RUN_TASK,
 )
 """Every task the worker registers; enqueueing any other name is refused."""
 

@@ -13,6 +13,12 @@ contributor guide live in the repository's `README.md` and `CONTRIBUTING.md`.
   idempotency, `ETag`/`If-Match`, content negotiation, rate limiting and the route table.
 - **[Authentication](architecture/auth.md)** — the OIDC token flow, the development
   Keycloak realm and the backend's validation rules.
+- **[Data exchange](architecture/exchange.md)** — exporting events, claims and reports
+  (JSON, GeoJSON, CSV, GeoParquet) and importing a historical backfill.
+- **[Data ingestion](architecture/ingestion.md)** — the dataset catalog, the Template
+  Method ingestion pipeline, observations and the STAC-aligned raster asset catalog.
+- **[Data sources](architecture/data-sources.md)** — the implemented fixture source and
+  every documented, not-yet-implemented candidate source.
 - **[Architecture decision records](adr/README.md)** — the recorded reasoning behind the
   structural choices, MADR format.
 - **[Data dictionary](data-dictionary/README.md)** — conventions for documenting every

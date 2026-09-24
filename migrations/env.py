@@ -46,14 +46,24 @@ MODEL_MODULES: Final = (
     "yakhnama.modules.events.infrastructure.orm",
     "yakhnama.modules.verification.infrastructure.orm",
     "yakhnama.modules.impacts.infrastructure.claims_orm",
+    "yakhnama.modules.ingestion.infrastructure.orm",
+    "yakhnama.modules.exchange.infrastructure.orm",
 )
 
 # Tables that PostGIS itself creates in the public schema. They are not ours, so
 # autogenerate must neither drop nor compare them.
+# The raster catalog views of postgis_raster are named exactly rather than matched by
+# a "raster_" prefix: a prefix would also hide the application's own raster_assets
+# table (migration 0016) from autogenerate and let alembic check miss its drift.
 POSTGIS_TABLES: Final = frozenset(
-    {"spatial_ref_sys", "geography_columns", "geometry_columns"}
+    {
+        "spatial_ref_sys",
+        "geography_columns",
+        "geometry_columns",
+        "raster_columns",
+        "raster_overviews",
+    }
 )
-POSTGIS_TABLE_PREFIXES: Final = ("raster_",)
 
 VERSION_TABLE: Final = "alembic_version"
 DATABASE_URL_ARGUMENT: Final = "database_url"
@@ -135,11 +145,7 @@ def include_object(
     del item, reflected, compare_to
     if type_ != "table" or name is None:
         return True
-    return not (
-        name == VERSION_TABLE
-        or name in POSTGIS_TABLES
-        or name.startswith(POSTGIS_TABLE_PREFIXES)
-    )
+    return not (name == VERSION_TABLE or name in POSTGIS_TABLES)
 
 
 def _configure_context(connection: Connection | None, url: str | None) -> None:

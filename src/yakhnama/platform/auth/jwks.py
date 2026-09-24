@@ -12,6 +12,11 @@ When the JWKS URL is not configured it is discovered once from
 ``<issuer>/.well-known/openid-configuration`` (OpenID Connect Discovery 1.0), whose
 ``issuer`` must equal the configured issuer exactly.
 
+Every response body is read as a stream and abandoned as soon as it exceeds
+``max_document_bytes`` (a declared ``Content-Length`` above the cap is refused before
+any byte is read), so a hostile or broken endpoint cannot make the API buffer an
+unbounded document on the request path. The cap applies to the decoded bytes.
+
 Nothing here logs a token or a key; a failed fetch is logged with the error type
 only.
 
@@ -20,6 +25,7 @@ Anti-Corruption Layer (the discovery document model).
 """
 
 import asyncio
+import json
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from types import MappingProxyType
@@ -156,6 +162,7 @@ class HttpJwksClient:
         jwks_url: str | None,
         cache_ttl: timedelta,
         refetch_interval: timedelta = UNKNOWN_KID_REFETCH_INTERVAL,
+        max_document_bytes: int = MAX_DOCUMENT_BYTES,
     ) -> None:
         """Create the client; no request is made until a key is needed.
 
@@ -168,6 +175,8 @@ class HttpJwksClient:
             cache_ttl: How long a fetched key set is trusted.
             refetch_interval: Minimum time between two fetches forced by an
                 unknown ``kid``.
+            max_document_bytes: Largest discovery or JWKS body read; the stream
+                is abandoned as soon as it grows past this.
         """
         self._http_client = http_client
         self._clock = clock
@@ -175,6 +184,7 @@ class HttpJwksClient:
         self._jwks_url = jwks_url
         self._cache_ttl = cache_ttl
         self._refetch_interval = refetch_interval
+        self._max_document_bytes = max_document_bytes
         self._cached: _CachedKeys | None = None
         self._last_attempt_at: datetime | None = None
         self._lock = asyncio.Lock()
@@ -279,16 +289,29 @@ class HttpJwksClient:
     # discovery model or by signing_keys_from_jwks.
     async def _fetch_json(self, url: str) -> object:
         try:
-            response = await self._http_client.get(
-                url, headers={"Accept": "application/json"}
-            )
-            response.raise_for_status()
-            if len(response.content) > MAX_DOCUMENT_BYTES:
-                raise self._unavailable(DOCUMENT_TOO_LARGE)
-            return response.json()
+            async with self._http_client.stream(
+                "GET", url, headers={"Accept": "application/json"}
+            ) as response:
+                response.raise_for_status()
+                body = await self._read_capped(response)
+            return json.loads(body)
         except (httpx.HTTPError, ValueError) as error:
             # ValueError covers a body that is not JSON (json.JSONDecodeError).
             raise self._unavailable(type(error).__name__) from error
+
+    async def _read_capped(self, response: httpx.Response) -> bytes:
+        limit = self._max_document_bytes
+        declared = response.headers.get("Content-Length", "")
+        # A declared length over the cap is refused before reading anything; an
+        # absent or false one is caught by the running count below.
+        if declared.isdigit() and int(declared) > limit:
+            raise self._unavailable(DOCUMENT_TOO_LARGE)
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > limit:
+                raise self._unavailable(DOCUMENT_TOO_LARGE)
+        return bytes(body)
 
     @staticmethod
     def _unavailable(reason: str) -> IdentityProviderUnavailableError:

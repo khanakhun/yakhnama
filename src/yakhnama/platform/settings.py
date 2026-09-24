@@ -49,7 +49,7 @@ DEVELOPMENT_DATABASE_URL: Final = PostgresDsn(
 
 # Match the MinIO service and its development credentials in docker-compose.yml
 # (MINIO_HOST_PORT, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD); real deployments override
-# them through YAKHNAMA_STORAGE_*. The production guard refuses the secret below.
+# them through YAKHNAMA_STORAGE_*. The production guard refuses both below.
 DEVELOPMENT_STORAGE_ENDPOINT_URL: Final = "http://127.0.0.1:9000"
 DEVELOPMENT_STORAGE_ACCESS_KEY_ID: Final = "minioadmin"
 DEVELOPMENT_STORAGE_SECRET: Final = "minioadmin-dev-only"  # noqa: S105  # reason: the public development credential of docker-compose.yml, refused in production
@@ -82,6 +82,27 @@ TEST_CLIENT_HOSTS: Final = frozenset({"testserver", "test"})
 CLAIM_PATH_PATTERN: Final = r"^[A-Za-z0-9_:-]+(\.[A-Za-z0-9_:-]+)*$"
 KIBIBYTE: Final = 1024
 MEBIBYTE: Final = 1024 * KIBIBYTE
+
+
+# RFC 9068 names access tokens "at+jwt"; Keycloak and most providers still send
+# the generic "JWT". ID tokens some providers sign with the same keys carry another
+# type (Keycloak: "ID"), which is what the check refuses.
+DEFAULT_ACCEPTED_TOKEN_TYPES: Final = ("JWT", "at+jwt")
+# A JOSE "typ" is a media type name, optionally without "application/" (RFC 7515
+# §4.1.9); restricted to the RFC 6838 name characters.
+_MEDIA_TYPE_NAME: Final = r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*"
+TokenType = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=127,
+        pattern=rf"^{_MEDIA_TYPE_NAME}(/{_MEDIA_TYPE_NAME})?$",
+    ),
+]
+
+
+def _default_accepted_token_types() -> list[str]:
+    return list(DEFAULT_ACCEPTED_TOKEN_TYPES)
 
 
 def _default_algorithms() -> list[SigningAlgorithm]:
@@ -150,6 +171,10 @@ class Settings(BaseSettings):
             read by ``python -m yakhnama.seed``. A relative path resolves against the
             working directory. It is checked when the seed reads it, not when the
             settings load, so the API starts without it.
+        ingestion_fixtures_dir: Directory holding the synthetic ingestion fixture
+            files the reference source adapters read (the ``local_csv_temperature``
+            adapter reads ``temperature_sample.csv`` there). Relative paths resolve
+            against the working directory; checked when a run reads it.
         seed_actor_id: The system actor recorded on every change the seed makes.
             Must be a UUIDv7. When ``None``, each seed run generates a fresh UUIDv7
             system actor and logs it, so its changes can still be told apart. A
@@ -164,6 +189,9 @@ class Settings(BaseSettings):
         oidc_jwks_url: The JWKS endpoint. When ``None`` it is read lazily from the
             issuer's ``/.well-known/openid-configuration`` on the first request.
         oidc_allowed_algorithms: The JWS algorithms a token may be signed with.
+        oidc_accepted_token_types: The JOSE ``typ`` header values a token may
+            carry, compared case-insensitively; a token without ``typ`` is not
+            refused for it.
         oidc_leeway_seconds: Clock skew tolerated on ``exp``, ``nbf`` and ``iat``.
         oidc_http_timeout_seconds: Timeout for each discovery or JWKS request.
         jwks_cache_ttl_seconds: How long fetched signing keys are trusted before
@@ -261,6 +289,7 @@ class Settings(BaseSettings):
     health_ready_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
 
     reference_data_dir: Path = Path("data/reference")
+    ingestion_fixtures_dir: Path = Path("data/fixtures/ingestion")
     # EntityId rather than a bare UUID: every actor id in the system is a UUIDv7
     # (ADR 0006), so a wrong value fails at startup instead of inside the seed.
     seed_actor_id: EntityId | None = None
@@ -272,6 +301,9 @@ class Settings(BaseSettings):
     oidc_jwks_url: str | None = Field(default=None, min_length=1, max_length=2048)
     oidc_allowed_algorithms: list[SigningAlgorithm] = Field(
         default_factory=_default_algorithms, min_length=1, max_length=2
+    )
+    oidc_accepted_token_types: list[TokenType] = Field(
+        default_factory=_default_accepted_token_types, min_length=1, max_length=8
     )
     oidc_roles_claim: str = Field(
         default="realm_access.roles", max_length=200, pattern=CLAIM_PATH_PATTERN
@@ -531,6 +563,15 @@ PRODUCTION_RULES: Final[tuple[tuple[Callable[[Settings], bool], str], ...]] = (
             == DEVELOPMENT_STORAGE_SECRET
         ),
         "storage_secret_access_key must not be the development default",
+    ),
+    (
+        # The key id alone is no secret, but "minioadmin" is the well-known root
+        # user of every MinIO install: seeing it in production means the
+        # deployment still runs on the development identity.
+        lambda settings: (
+            settings.storage_access_key_id == DEVELOPMENT_STORAGE_ACCESS_KEY_ID
+        ),
+        "storage_access_key_id must not be the development default",
     ),
     (
         lambda settings: (

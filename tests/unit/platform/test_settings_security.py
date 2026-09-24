@@ -33,6 +33,7 @@ def _safe_production_values() -> dict[str, Any]:
         "rate_limit_backend": "redis",
         "task_queue_backend": "redis",
         "storage_endpoint_url": "https://s3.eu-central-1.amazonaws.com",
+        "storage_access_key_id": "yakhnama-api-prod",
         "storage_secret_access_key": SecretStr("rotated-secret"),
         "malware_scanner": "clamav",
         "clamav_host": "clamd.internal",
@@ -225,6 +226,7 @@ def test_settings_safe_production_values_are_accepted() -> None:
         ({"oidc_issuer": "http://localhost:8080/realms/yakhnama"}, "oidc_issuer"),
         ({"log_level": "DEBUG"}, "log_level"),
         ({"database_echo": True}, "database_echo"),
+        ({"storage_access_key_id": "minioadmin"}, "storage_access_key_id"),
     ],
 )
 def test_settings_production_guard_each_rule_rejects_its_unsafe_value(
@@ -289,3 +291,31 @@ def test_settings_environment_omitted_is_not_in_fields_set() -> None:
     settings = Settings(_env_file=None)
 
     assert "environment" not in settings.model_fields_set
+
+
+def test_settings_accepted_token_types_default_to_jwt_and_at_jwt() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.oidc_accepted_token_types == ["JWT", "at+jwt"]
+
+
+@pytest.mark.parametrize("token_type", ["", "at jwt", "a/b/c", "x" * 128, "/jwt"])
+def test_settings_malformed_accepted_token_type_raises_validation_error(
+    token_type: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, oidc_accepted_token_types=[token_type])
+
+
+def test_settings_empty_accepted_token_types_raise_validation_error() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, oidc_accepted_token_types=[])
+
+
+def test_production_problems_development_storage_key_id_is_reported_by_name() -> None:
+    settings = Settings(_env_file=None, environment="test")
+
+    problems = production_problems(settings)
+
+    assert "storage_access_key_id must not be the development default" in problems
+    assert all("minioadmin" not in problem for problem in problems)

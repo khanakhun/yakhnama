@@ -111,6 +111,9 @@ class EventRow(Base):
             "affected_places",
             postgresql_using="gin",
         ),
+        # Serves the citation check's JSONB containment test on source_ids
+        # (is_source_cited_by_public_event); added by migration 0015.
+        Index("ix_events_source_ids_gin", "source_ids", postgresql_using="gin"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)

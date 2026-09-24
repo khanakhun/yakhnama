@@ -9,6 +9,7 @@ from starlette.requests import Request
 from tests.factories.identity import ActorTestFactory
 from tests.fakes.api import build_test_app
 from yakhnama.modules.events.api.dependencies import get_events_services
+from yakhnama.modules.exchange.api.dependencies import get_exchange_services
 from yakhnama.modules.geography.api.dependencies import get_geography_services
 from yakhnama.modules.hazards.api.dependencies import get_hazards_services
 from yakhnama.modules.identity.api.dependencies import get_identity_services
@@ -18,6 +19,7 @@ from yakhnama.modules.impacts.api.claims_dependencies import (
     get_impact_claims_services,
 )
 from yakhnama.modules.impacts.api.dependencies import get_impacts_services
+from yakhnama.modules.ingestion.api.dependencies import get_ingestion_services
 from yakhnama.modules.media.api.dependencies import get_media_services
 from yakhnama.modules.provenance.api.dependencies import get_provenance_services
 from yakhnama.modules.reports.api.dependencies import get_reports_services
@@ -40,6 +42,8 @@ from yakhnama.shared_kernel.errors import AuthenticationError, NotFoundError
         get_verification_services,
         get_impact_claims_services,
         get_provenance_services,
+        get_exchange_services,
+        get_ingestion_services,
     ],
 )
 def test_services_provider_without_container_raises_runtime_error(
@@ -78,6 +82,8 @@ async def test_read_me_when_user_record_is_missing_raises_not_found() -> None:
         f"/api/v1/events/{ActorTestFactory.build().user_id}/impacts",
         "/api/v1/reports",
         "/api/v1/moderation/verification-cases",
+        "/api/v1/exports",
+        "/api/v1/datasets",
     ],
 )
 async def test_public_route_with_rejected_token_returns_401(path: str) -> None:
@@ -108,3 +114,16 @@ async def test_protected_route_anonymous_returns_401_with_challenge(
 
     assert response.status_code == 401
     assert response.headers["www-authenticate"].startswith("Bearer")
+
+
+async def test_admin_route_with_rejected_token_returns_401() -> None:
+    api = build_test_app()
+
+    async with api.client() as client:
+        response = await client.post(
+            "/api/v1/admin/datasets",
+            json={},
+            headers={"Authorization": "Bearer not-a-jwt"},
+        )
+
+    assert response.status_code == 401

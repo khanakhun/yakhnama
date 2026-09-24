@@ -1536,7 +1536,7 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** The JWKS client checks the response size only after reading the whole body; a hostile or misconfigured provider could send a very large document.
 - **Proposed default:** Deferred to Phase 4: cap while streaming (`httpx` `aiter_bytes`) at the configured size.
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** resolved (2026-09-23) in Phase 4 T7: `HttpJwksClient` streams discovery and JWKS bodies with `aiter_bytes()` and abandons the stream once the decoded body exceeds `max_document_bytes` (default 256 KiB); a declared `Content-Length` above the cap is refused before any byte is read.
 
 ## Q175 — Access-token `typ` check
 
@@ -1544,7 +1544,7 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** Tokens whose `typ` header is not an access token (for example ID tokens) are accepted if otherwise valid.
 - **Proposed default:** Deferred to Phase 4: reject `typ` values other than `JWT`/`at+jwt` when present.
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** resolved (2026-09-23) in Phase 4 T7: when the JOSE header carries `typ`, `TokenValidator` accepts only `oidc_accepted_token_types` (default `JWT`, `at+jwt`), compared case-insensitively with an optional `application/` prefix (RFC 7515 §4.1.9); a token without `typ` is not refused for it; rejections are logged as `token_type_not_accepted`.
 
 ## Q176 — Account-creation limits
 
@@ -1560,7 +1560,7 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** Anonymous rate limiting hashes the full client address, so an IPv6 caller can rotate through a /64 to evade limits.
 - **Proposed default:** Deferred to Phase 4: key anonymous limits on the /64 prefix for IPv6 and the /32 address for IPv4.
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** resolved (2026-09-23) in Phase 4 T7: anonymous rate-limit keys hash the /64 prefix of an IPv6 peer and the full address of an IPv4 peer (IPv4-mapped IPv6 counts as IPv4); `client_network` in `platform/ratelimit/middleware.py`.
 
 ## Q178 — Source citation lookup for public reads
 
@@ -1568,4 +1568,560 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Why it matters:** Until a `SourceCitationChecker` adapter exists, such sources are hidden from anonymous and non-member readers even when the citing event is public, so public event pages cannot link to their citizen sources.
 - **Proposed default:** No checker bound in Phase 3 (safe: nothing leaks). Phase 4 adds an events read `is_source_cited_by_public_event(source_id)` and wires it.
 - **Blocking:** no
-- **Status:** open (Phase 3 security review)
+- **Status:** resolved (2026-09-23) in Phase 4 T7: the events read port `EventCitationQueryService.is_source_cited_by_public_event` (SQL `EXISTS` on `source_ids @>`, `status = 'published'` and the verification case `verified`) answers `SourceCitationChecker` through `platform/wiring/provenance.py`, bound in `build_recording_services`. Only the event's own `source_ids` count (linked reports' sources are already added there); a source cited only by an impact claim stays hidden.
+
+## Q179 — Domain event fields that carry coordinates or free text
+
+- **Question:** `tests/architecture/test_outbox_payloads.py` lists 22 event fields (place and event centroids and bounding boxes, place names, retirement and merge reasons, relabel texts, claim values, asset locations) under `PENDING_REMOVAL`. Should they be dropped from the events so subscribers re-read the aggregate?
+- **Why it matters:** The outbox payload contract is ids and non-personal scalars only; today the only subscriber digests the payload, so nothing leaks, but a future subscriber could copy these fields.
+- **Proposed default:** Drop them module by module in a follow-up; the test refuses new offenders and any listed entry that stops offending must be removed from the list.
+- **Blocking:** no
+- **Status:** open (Phase 4 T7)
+
+---
+
+The entries below were raised while building `exchange` and `ingestion` in Phase 4
+(tasks T2–T6): exports, imports, the historical backfill contract, the dataset
+catalog, the ingestion pipeline, observations and raster assets. Item-level entries
+already recorded in the two modules' own data-dictionary pages (`docs/data-dictionary/exchange.md`,
+`docs/data-dictionary/ingestion.md`, whose `Q-I*` entries remain their source of
+truth) are not repeated here except where a cross-cutting decision needed its own
+entry.
+
+## Q180 — Who may export which dataset
+
+- **Question:** Any authenticated user may export `events` and `claims`; only
+  moderators may export `reports` (`export_policy`). Is this the right split?
+- **Why it matters:** Reports carry a reporter's rounded position and are the closest
+  thing to personal data the recording modules hold; a wrong default either over- or
+  under-restricts a bulk-download path the read API does not otherwise offer.
+- **Proposed default:** As implemented.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3a)
+
+## Q181 — An import with any blocking row error creates nothing
+
+- **Question:** A dry run, an empty file, or a real import whose validation report has
+  any `error`-severity issue writes **nothing at all**, not even the rows without a
+  problem — is "all or nothing" the right rule, rather than writing the valid rows and
+  reporting the rest as skipped?
+- **Why it matters:** "All or nothing" makes a moderator's fix-and-retry loop simple
+  (the report is authoritative and repeatable), but it also means one bad row in a
+  10 000-row file blocks every good row in the same file until it is removed or fixed.
+- **Proposed default:** Keep "all or nothing", as implemented and stated in the Phase
+  4 plan (§1).
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3a)
+
+## Q182 — No sweeper for stuck or crashed export/import jobs, and no per-batch progress
+
+- **Question:** A job left `running` by a crashed worker (one that started `_start`
+  and then died before `_complete`/`_fail`) stays `running` forever; nothing reclaims
+  it the way the outbox relay reclaims leased rows. A running import's `writes` field
+  is also only ever visible once the job reaches a terminal status, not batch by batch
+  while it runs.
+- **Why it matters:** A stuck job is invisible to its owner (it looks "still running")
+  and to a moderator deciding whether to trust an in-progress large import; without a
+  sweeper, only a human noticing an old `running` row can free it up.
+- **Proposed default:** Add a time-based sweeper (parallel to a future ingestion-run
+  sweeper, Q195) and expose `writes`/row progress on a running job in a later phase;
+  not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3a)
+
+## Q183 — A failed `enqueue` after commit leaves the job `queued`
+
+- **Question:** `RequestExportHandler`/`RequestImportHandler` commit the job, then
+  call `tasks.enqueue`; if the enqueue call itself fails, the job is left `queued`
+  with no task ever delivered, exactly the same pattern `reports` already accepts
+  (`docs/open-questions.md`, this entry's sibling in `reports`). Is a periodic sweep of
+  old `queued` jobs the right robustness mechanism, given there isn't one yet?
+- **Why it matters:** Without a sweep, a job stuck at `queued` because of a transient
+  broker outage never runs unless someone requests it again.
+- **Proposed default:** A `queued`-job sweep in a later, dedicated operational pass,
+  consistent with the outbox relay's own retry model; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3a)
+
+## Q184 — `EventFactory.from_record` does not exist
+
+- **Question:** `CreateHistoricalEventHandler` (the backfill's way of creating an
+  event, with no linked reports) builds the `Event` directly with
+  `Event.model_validate` in the application layer, because `EventFactory` currently
+  only knows how to derive an event from reports (`EventFactory.from_reports`).
+  Should a `EventFactory.from_record` classmethod give this construction path a home
+  in the `events` domain layer instead?
+- **Why it matters:** Two different places construct an `Event` from scratch today
+  (the domain factory for reports, the application handler for historical records),
+  which is a modest but real drift risk if the aggregate's construction invariants
+  ever need to change in one place and not the other.
+- **Proposed default:** Add `EventFactory.from_record` in a later phase, when the
+  `events` domain is next touched; not yet done. This is the `events` module's open
+  question, not `exchange`'s, even though `exchange` depends on the handler it
+  concerns.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3a; documented in
+  `CreateHistoricalEventHandler`'s own docstring)
+
+## Q185 — Export row visibility relies entirely on the events/impacts/reports facades
+
+- **Question:** `ExportRowSource` streams rows through `EventRecordQueryService`,
+  `EventImpactsQueryService` and `AuthorisedReportQueryService`, the same read ports
+  the API itself uses, so `exchange` enforces no visibility rule of its own beyond
+  `export_policy` (which dataset an actor may request at all). Is delegating every
+  row-level visibility check to the owning module's own facade sufficient, or does an
+  export need an additional, dedicated check?
+- **Why it matters:** A future visibility rule added to one owning module's query
+  service (for example a new report-visibility tier) automatically applies to exports
+  too, which is the intended benefit, but also means `exchange` itself has nothing to
+  audit for row-level correctness beyond trusting those three ports.
+- **Proposed default:** Accept the delegation as the intended design (it is exactly
+  what "the same visibility rules as the API" in the Phase 4 plan asks for); revisit
+  only if a visibility rule specific to bulk export, rather than to reading one
+  record, is ever needed.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3a)
+
+## Q186 — The export citation's author is a fixed "Yakhnama contributors"
+
+- **Question:** Every export's metadata sidecar cites `CITATION_AUTHOR = "Yakhnama
+  contributors"` as a fixed string. Is this the wording the maintainer wants for the
+  dataset's citation, or does ADR 0010's eventual acceptance also settle a different
+  author line (for example naming the project, not "contributors")?
+- **Why it matters:** The citation line is copied into every exported file already in
+  this phase; changing it later does not retroactively fix files already downloaded.
+- **Proposed default:** Keep `"Yakhnama contributors"` until ADR 0010 settles the
+  dataset's citation wording (also recorded in `docs/data-dictionary/exchange.md`
+  under `MetadataSidecar.citation`); matches Q9's proposed `NOTICE` copyright line.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3a)
+
+## Q187 — No lifecycle rule for completed export files or aborted uploads
+
+- **Question:** A completed export's file and sidecar live in object storage forever
+  once written (`GET /exports/{id}` just asks for a fresh presigned link each time);
+  a `DELETE /exports/{job_id}` only cancels a **queued** job, never removes a
+  completed one's files. Likewise, an import upload granted by `POST
+  /moderation/imports/uploads` but never followed by a real `POST
+  /moderation/imports` request leaves an orphaned object under `imports/` forever,
+  and a multipart export upload aborted partway through (`ArtifactStore.open_sink`
+  raising) is documented to leave no partial object, but nothing sweeps an
+  storage-provider-side incomplete multipart upload itself.
+- **Why it matters:** Without a retention or cleanup rule, object storage accumulates
+  orphaned export files and abandoned upload grants indefinitely, which is both a
+  storage cost and, for the rare case of a cancelled-after-completion export, a data
+  a user might expect to have gone away.
+- **Proposed default:** Define a retention policy and a sweep (or a storage
+  lifecycle rule, for example an S3 bucket lifecycle configuration expiring
+  incomplete multipart uploads and old `imports/` objects) in a later, dedicated
+  operational pass; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5a)
+
+## Q188 — A claim's `geometry` column/field is always null in every spatial export format
+
+- **Question:** `ClaimExportRow`/`flat_layout.geometry_of` and `GeoJsonExporter` both
+  give a claim `geometry: null` in every geometry-capable format, because a claim
+  carries no location of its own (only its event does). Is `null` the right choice, or
+  should a claim inherit its event's geometry/centroid when exported, so a claims
+  GeoJSON file is directly mappable without a join back to the events file?
+- **Why it matters:** A researcher who only downloads the `claims` dataset in GeoJSON
+  or GeoParquet gets no map-ready geometry at all today; they must also download
+  `events` and join on `event_id`.
+- **Proposed default:** Keep `null` (a claim's location is genuinely its event's, not
+  its own, and inheriting it would duplicate data across every claim of the same
+  event); document the join requirement instead. Revisit if researcher feedback shows
+  this is a real friction point.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5a)
+
+## Q189 — Object storage bucket for exports and imports is not a dedicated setting
+
+- **Question:** `ArtifactStore` writes and reads through the same storage
+  configuration `media` already uses (bucket, endpoint, credentials from
+  `platform/storage`), rather than a dedicated `exports`/`imports` bucket setting.
+  Should exchange artifacts have their own bucket, separate from media, for example so
+  a different retention or public-access policy can apply to each?
+- **Why it matters:** Sharing one bucket is simpler operationally but means a bucket
+  policy (public read, lifecycle rules) cannot differ between uploaded media and
+  exchange artifacts without prefix-based rules instead of bucket-based ones.
+- **Proposed default:** Share the one configured bucket, prefixed (`exports/`,
+  `imports/`) as implemented; add a dedicated setting only if a real operational need
+  (for example a different retention period) appears.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5a)
+
+## Q190 — `IMPORT_MAX_BYTES` for a whole-file GeoJSON parse is not yet an enforced setting
+
+- **Question:** `GeoJsonImporter` reads and parses an entire GeoJSON file in memory
+  (a `FeatureCollection` cannot be tokenised row by row the way CSV can), bounded only
+  by `IMPORT_UPLOAD_MAX_BYTES` (50 MiB) at the upload-grant stage and by
+  `MeteredSource`'s cap at read time — there is no dedicated, documented
+  `IMPORT_MAX_BYTES` applied specifically to the parse step itself.
+- **Why it matters:** A large, validly-sized-but-pathological GeoJSON file (very many
+  small features, or deeply nested geometry) could still cost significant memory and
+  CPU during the single parse call, since the format's own structure forces reading
+  the whole file before any row can be validated.
+- **Proposed default:** Treat `IMPORT_UPLOAD_MAX_BYTES` (50 MiB, Q193) as the
+  effective cap for now, since it already bounds the file the importer reads; add a
+  dedicated, possibly lower, `IMPORT_MAX_BYTES` setting for whole-file-parse formats
+  specifically if GeoJSON imports prove to need a tighter bound in practice.
+- **Blocking:** no (security-relevant: an unbounded parse is a denial-of-service
+  surface)
+- **Status:** open (raised from the Phase 4 adapter report, T5a)
+
+## Q191 — The CSV formula guard has no ADR of its own
+
+- **Question:** `CsvExporter.defuse_formula` (the leading-apostrophe OWASP mitigation
+  for spreadsheet formula injection) is implemented and documented in code and in
+  `docs/architecture/exchange.md`, but, unlike comparable security-relevant defaults
+  in this project (for example ADR 0015 for JWT validation, ADR 0016 for idempotency),
+  it has no dedicated ADR recording the threat model and the alternatives considered
+  (for example quoting differently, or refusing such cells outright).
+- **Why it matters:** A security-relevant mitigation without a recorded rationale is
+  easy to accidentally weaken or remove in a later refactor, since nothing forces a
+  reviewer to reconsider the threat model.
+- **Proposed default:** Keep the mitigation as implemented; write a short ADR
+  recording it in a later phase, following the `write-adr` skill; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5a)
+
+## Q192 — The export column layout (CSV/GeoParquet) is a proposed default, not a confirmed schema
+
+- **Question:** `flat_layout.py`'s per-dataset column names, order and typed-variant
+  split (for example a claim's `count`/`measurement_value`/`amount` columns) are the
+  domain modeller's/integration engineer's proposal, not a schema the maintainer or a
+  downstream data consumer has confirmed.
+- **Why it matters:** Every published `.csv`/`.parquet` file's column names become a
+  de facto public contract the moment a researcher builds tooling against it; renaming
+  a column later is a breaking change to every consumer, not just to Yakhnama's own
+  tests.
+- **Proposed default:** Ship the layout as documented in `docs/architecture/exchange.md`
+  and `docs/data-dictionary/exchange.md`; bump `EXPORT_SCHEMA_VERSION` (currently
+  `1.0`) and record the change in the sidecar and the changelog before any column is
+  renamed or removed, once the maintainer or real consumers give feedback.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5a)
+
+## Q193 — A presigned `PUT` cannot itself enforce the 50 MiB import upload cap
+
+- **Question:** `POST /moderation/imports/uploads` grants a presigned `PUT` with
+  `max_bytes: IMPORT_UPLOAD_MAX_BYTES` (50 MiB) in its response, but whether the
+  underlying object-storage provider actually **refuses** an upload larger than that
+  at the storage layer depends on the provider's presigned-URL implementation
+  (S3-compatible providers vary); the size is otherwise only checked **after the
+  fact**, when the import worker reads the file back through `MeteredSource`, which
+  aborts once the declared `byte_size` is exceeded.
+- **Why it matters:** If storage does not itself cap the `PUT`, a moderator's client
+  (or a compromised one) could store a much larger file than declared before the
+  import ever runs, consuming storage and bandwidth even though the import itself will
+  correctly refuse to process it.
+- **Proposed default:** Verify the configured storage adapter's presigned-`PUT`
+  behaviour against the size constraint in a later security-focused pass, and document
+  the confirmed behaviour; until then, treat the read-time check as the only
+  guaranteed enforcement.
+- **Blocking:** no (security-relevant)
+- **Status:** open (raised from the Phase 4 adapter report, T5a)
+
+## Q194 — `IMPORT_UPLOAD_MAX_BYTES` (50 MiB) is a proposed operational default
+
+- **Question:** Is 50 MiB the right cap for an uploaded import file, given
+  `IMPORT_MAX_ROWS` (10 000 rows) and the backfill contract's per-cell limits?
+- **Why it matters:** Too low rejects a legitimate large historical backfill file with
+  many claims per row; too high widens the exposure window of Q193 and Q190.
+- **Proposed default:** Keep 50 MiB (`IMPORT_UPLOAD_MAX_BYTES`), about 5 KiB per row at
+  the maximum row count, as implemented.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 API report, T6)
+
+## Q195 — Missing read routes: import job listing, a single raster asset, dataset versions
+
+- **Question:** Three read routes a client might reasonably expect do not exist yet:
+  `GET /moderation/imports` (listing every import job, the way `GET /exports` lists
+  export jobs), `GET /raster-assets/{id}` (one raster by id, rather than only through
+  the list route's filters), and `GET /datasets/{code}/versions` (a dedicated,
+  paginated list, rather than only the "most recent versions" inline on
+  `GET /datasets/{code}`).
+- **Why it matters:** A moderator has no way to review past imports except by id
+  (which they must already have); a client that only has a raster asset's id (for
+  example from a STAC search elsewhere) cannot re-fetch it directly; a dataset with
+  many versions cannot page through all of them.
+- **Proposed default:** Add the three routes in a later phase if a real need appears,
+  following the pattern of the equivalent Phase 3 gaps (`docs/open-questions.md`
+  Q159); not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 API report, T6)
+
+## Q196 — Admin `If-Match` is optional, not required, on every `exchange`/`ingestion` write
+
+- **Question:** Every admin/moderator write with a concurrency-sensitive target
+  (`POST /admin/datasets/{code}/status`, and every organisation/user administrator
+  route from Phase 2, Q66) accepts `If-Match` and checks it when sent, but does not
+  require it.
+- **Why it matters:** Same race as Q66: two concurrent administrative changes to the
+  same dataset can both succeed even though `If-Match` exists, because neither request
+  is forced to send it.
+- **Proposed default:** Keep `If-Match` optional on these routes for the same reason
+  Q66 gives (administrative actions are comparatively rare and usually sequential);
+  revisit together with Q66 if either sees high-concurrency use.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 API report, T6; duplicate reasoning of Q66)
+
+## Q197 — No sweeper for ingestion runs stuck `running` after a worker crash
+
+- **Question:** Like Q182 for exchange jobs, an `IngestionRun` left `running` by a
+  crashed worker (between `IngestionRun.start()` and the pipeline's
+  `record_lineage`) has no time-based reclaim mechanism.
+- **Why it matters:** A stuck run looks like an ingestion still in progress
+  indefinitely, and a curator has no signal to retry it (a retry is always a new run,
+  so the stuck one is simply abandoned, not resumed).
+- **Proposed default:** Add a time-based sweeper marking a run `failed` after a
+  configurable timeout, in a later, dedicated operational pass alongside Q182; not yet
+  done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3b)
+
+## Q198 — Which duplicate observation wins is a pipeline-wide default, not per-source
+
+- **Question:** `IngestionPipeline.deduplicate`'s default keeps the **first** record
+  in source order within one run's batch, and `ObservationRepository.append_many`
+  keeps whichever was **stored first** across runs; is "first wins" the right general
+  default, given that some publishers document their own tie-breaking rule (for
+  example "latest revision wins")?
+- **Why it matters:** A source whose publisher means the opposite (last record should
+  win, as a correction of an earlier one in the same batch) gets a silently wrong
+  value unless its pipeline subclass overrides the hook, which is easy to forget.
+- **Proposed default:** Keep "first wins" as the documented, overridable default
+  (`IngestionPipeline.deduplicate`'s own docstring already says a subclass that knows
+  better overrides it); require every new source's pipeline to state its rule
+  explicitly in its own docstring, following the fixture temperature pipeline's
+  example.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3b; also `docs/data-dictionary/ingestion.md`)
+
+## Q199 — A checksum mismatch fails the whole run before parsing
+
+- **Question:** When the bytes `fetch` returns do not hash to the `DatasetVersion`'s
+  pinned `input_checksum`, the pipeline records one error and skips straight to
+  `record_lineage` — nothing is parsed, validated or stored, even if the mismatch is
+  something innocuous like a trailing byte-order mark the publisher added between
+  releases.
+- **Why it matters:** This is the correct behaviour for lineage integrity (an
+  observation must point at exact, pinned bytes), but it means a version recorded with
+  a slightly wrong checksum can never ingest anything until a new version is recorded
+  with the corrected checksum — there is no "re-pin and retry" path short of a new
+  `DatasetVersion`.
+- **Proposed default:** Keep failing the run outright, as implemented (a version is
+  fixed once recorded and has no change methods, `docs/data-dictionary/ingestion.md`);
+  a wrong checksum is fixed by recording a corrected version, never by editing the
+  existing one.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3b)
+
+## Q200 — Read access to ingestion runs and observations is public by default
+
+- **Question:** Every `GET` under `/api/v1/datasets`, `/ingestion-runs`,
+  `/observations` and `/raster-assets` is anonymous, including a run's full report
+  (issues, counts) and every observation's value. Should any of this be restricted, for
+  example to authenticated users only, or should run reports hide their issue text
+  from anonymous readers?
+- **Why it matters:** Run reports and observation values are not personal data, and
+  publishing the raw dataset is the whole point of the platform, but a run's issue
+  messages could in principle quote something from a future, less-careful source
+  adapter (today's issue-message cleaning already strips anything unsafe, `issue_message`
+  in `application/pipeline.py`).
+- **Proposed default:** Keep every read anonymous, as implemented (Phase 4 plan
+  intent: open data); revisit only if a future source's issue text needs hiding.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3b)
+
+## Q201 — No dedicated "curator" role; catalog administration requires full `IsAdmin`
+
+- **Question:** Every `/api/v1/admin/*` route in `ingestion` requires the platform
+  `admin` role (`catalog_policy` = `IsAdmin`); there is no narrower role (for example
+  `curator`) that could register datasets and request runs without also holding every
+  other administrator capability (user suspension, role grants).
+- **Why it matters:** Registering datasets and requesting ingestion runs is a
+  different kind of trust than administering user accounts; requiring full `admin` for
+  both means the platform cannot delegate dataset curation to someone who should not
+  also manage users.
+- **Proposed default:** Keep `IsAdmin` for Phase 4 (the identity module's role set is
+  a Phase 2 decision, `docs/data-dictionary/identity.md`); consider a `curator` role in
+  a later phase alongside a broader review of the role set, not as a Phase 4-only
+  addition.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3b)
+
+## Q202 — `Dataset.is_fixture` exists only in the reference file, not on the persisted aggregate
+
+- **Question:** `is_fixture` (marking synthetic test data such as
+  `fixture.temperature_sample`, so it is never mistaken for a real publisher's
+  dataset) is a field of the `DatasetReferenceEntry` in `data/reference/datasets.yaml`,
+  but the domain `Dataset` aggregate and the `datasets` table carry no equivalent
+  column — a client reading `GET /datasets/{code}` cannot itself tell a fixture
+  dataset apart from a real one, except by its `code` starting with `fixture.` by
+  convention.
+- **Why it matters:** Nothing stops a future export or public listing from surfacing
+  the synthetic fixture dataset indistinguishably from a real one, beyond the naming
+  convention.
+- **Proposed default:** Add `is_fixture` to the `Dataset` aggregate and the `datasets`
+  table in a later phase, so it can be filtered on and shown in the API; until then,
+  rely on the `fixture.` code prefix and this project's small number of registered
+  datasets.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 domain report, T2b)
+
+## Q203 — `QueryObservations`'s time window is half-open, unlike other date-range filters
+
+- **Question:** `QueryObservations`'s `observed_from`/`observed_to` window is
+  half-open (`[from, to)`), unlike `EventPeriodOverlapsSpecification`'s closed window
+  or `ExportFilters.occurred_from`/`occurred_to`'s inclusive-both-ends range elsewhere
+  in the codebase. Should every time-range filter in the system use the same
+  convention?
+- **Why it matters:** A client (or a future contributor) moving between an events
+  search and an observations query has to remember two different edge-case rules for
+  what "up to this instant" means.
+- **Proposed default:** Keep `[from, to)` for `QueryObservations` specifically (it
+  suits a dense, regularly-sampled time series better, avoiding a double-count at
+  exact window boundaries between consecutive pages); document the difference
+  prominently, as this page and `docs/architecture/ingestion.md` already do, rather
+  than unifying the two conventions.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3b)
+
+## Q204 — `PERSIST_BATCH_SIZE` (1000 observations per `append_many` call) is a proposed default
+
+- **Question:** Is 1000 rows the right batch size for `IngestionPipeline.persist`,
+  given every batch still shares the run's one transaction (so batching here bounds
+  one statement's size, not transaction scope, unlike the exchange import's
+  per-batch transactions)?
+- **Why it matters:** Too small adds round-trips for a large ingestion run; too large
+  risks a very large single `INSERT` statement for a source with many observations per
+  version.
+- **Proposed default:** Keep 1000 (`PERSIST_BATCH_SIZE`), as implemented; revisit with
+  real ingestion volumes once a non-fixture source exists.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 application report, T3b)
+
+## Q205 — Celsius-to-Kelvin conversion rounding (half-even, 3 decimals)
+
+- **Question:** `LocalCsvTemperatureAdapter`'s conversion (Kelvin = °C + 273.15,
+  decimal arithmetic, rounded half-even to 3 decimals) is the fixture's own choice;
+  should this rounding rule (precision and tie-breaking) be a documented, shared
+  convention for every future temperature source, rather than decided per adapter?
+- **Why it matters:** Two sources rounding the same nominal Celsius value differently
+  would make otherwise-identical readings from different publishers look different in
+  the stored series.
+- **Proposed default:** Adopt half-even rounding to 3 decimals (1 mK) as the shared
+  convention for every future `air_temperature` source, documented in
+  `docs/data-dictionary/ingestion.md`'s variable registry when the first real
+  temperature source is added; not yet formalised beyond the fixture.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5b)
+
+## Q206 — The ingestion fixtures directory has no dedicated settings field yet
+
+- **Question:** `reference_adapters(fixtures_dir, clock=...)` takes the fixtures
+  directory as a constructor argument from the composition root, rather than reading
+  it from a `Settings` field the way most other paths and directories in the platform
+  are configured.
+- **Why it matters:** Every other configurable path in the project goes through
+  `pydantic-settings` (`AGENTS.md` §4's hard rules: "configuration comes from the
+  environment through `pydantic-settings`"); a hard-coded composition-root path is a
+  narrow, low-risk exception today because there is exactly one fixture source, but it
+  would not scale to a second local-file source with a different directory.
+- **Why it matters (cont.):** would not scale cleanly if a second local-file source
+  needs its own directory.
+- **Proposed default:** Add a `Settings.ingestion_fixtures_dir` field (defaulting to
+  `data/fixtures/ingestion`) in a later phase, once a second local-file source exists
+  to justify it; not yet done.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5b)
+
+## Q207 — The 10 MiB local fixture file cap is a proposed operational default
+
+- **Question:** `FixturePathResolver` refuses files over 10 MiB before reading them.
+  Is 10 MiB the right ceiling for a local CSV source file, given the fixture itself is
+  a few hundred rows?
+- **Why it matters:** Too low would refuse a legitimate, larger real local-file source
+  later; too high risks reading an unexpectedly large file into memory on a worker
+  thread.
+- **Proposed default:** Keep 10 MiB for now; revisit once a real (non-fixture)
+  local-file source exists with its own realistic file size.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5b)
+
+## Q208 — `RasterAsset.stac_id` uniqueness is scoped per dataset version, not globally
+
+- **Question:** `(dataset_version_id, stac_id)` is the unique constraint
+  (`uq_raster_assets_dataset_version_id`), so the same STAC item id can recur across
+  different versions of the same dataset (and across different datasets entirely).
+  Should `stac_id` instead be required to be globally unique, matching how STAC
+  catalogs elsewhere typically expect an item id to be unique within a whole
+  collection?
+- **Why it matters:** A STAC client aggregating items across Yakhnama's whole raster
+  catalog (rather than one dataset version at a time) could see two different items
+  sharing an id if two different datasets, or two versions of the same dataset,
+  happen to reuse a publisher's scene id.
+- **Proposed default:** Keep per-version uniqueness, as implemented (a re-release of
+  the same scene under the same STAC id across versions is a real, expected case for a
+  raster catalog that tracks dataset versions); document the scope clearly wherever
+  `stac_id` is surfaced, as `docs/data-dictionary/ingestion.md` and
+  `docs/architecture/ingestion.md` already do.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 persistence report, T4)
+
+## Q209 — `observations`'s hypertable readiness is checked by table structure only
+
+- **Question:** The `observations` table is built so that
+  `create_hypertable('observations', 'observed_at', migrate_data => true)` could run
+  without changing a column, the primary key or any query (time-first primary key, no
+  foreign keys) — but nothing in this phase actually runs TimescaleDB, creates a
+  hypertable, or tests that the conversion behaves as expected on real data volumes.
+- **Why it matters:** "Hypertable-ready" is a structural claim proven by table design
+  review, not an operational claim proven by actually converting the table; a real
+  conversion could still surface an unexpected TimescaleDB constraint or performance
+  characteristic that table structure alone does not reveal.
+- **Proposed default:** Treat the table as ready-by-design; verify the actual
+  conversion (and its effect on the existing indexes and query plans) in a dedicated
+  operational task before TimescaleDB is actually adopted in production, not assumed
+  from this design alone.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 persistence report, T4)
+
+## Q210 — `ix_events_source_ids_gin` was added without `CONCURRENTLY`
+
+- **Question:** Migration `0015` builds the GIN index on `events.source_ids` inside
+  the normal single migration transaction, not with `CREATE INDEX CONCURRENTLY`
+  (which Alembic would need run outside a transaction). The migration's own docstring
+  argues this is safe because `events` is still small at this stage.
+- **Why it matters:** The same migration pattern, copied later once `events` has grown
+  much larger, would briefly lock the table; this is worth flagging now so a future
+  index addition on `events` chooses `CONCURRENTLY` deliberately rather than by habit
+  from copying this migration.
+- **Proposed default:** Accept the non-concurrent build for this migration
+  specifically (the table is small); require `CONCURRENTLY` for any future index
+  added to `events` once real data volume exists.
+- **Blocking:** no
+- **Status:** resolved (2026-09-23) in Phase 4 T4/T7 (Q-T7-b): the index exists and
+  serves `is_source_cited_by_public_event` (see Q178); this entry records the
+  build-method trade-off for future index additions, which stays open.
+
+## Q211 — An unrecognised quality code maps to `suspect`, not to a rejected row
+
+- **Question:** `LocalCsvTemperatureAdapter`'s quality mapping treats any code outside
+  `good`/`suspect`/`missing`/`estimated` as `suspect`, with a warning, rather than
+  rejecting the row outright. Should every future pipeline follow this same
+  fail-open-with-a-warning default, or should an unrecognised code instead reject the
+  row (fail closed) until a curator maps it explicitly?
+- **Why it matters:** Fail-open keeps more of a source's data usable when its quality
+  vocabulary has an undocumented or new code, at the cost of silently downgrading
+  trust in a value that might actually have been `good`; fail-closed is safer but
+  could reject a large share of a source's rows on day one if its documentation is
+  incomplete.
+- **Proposed default:** Keep fail-open-with-a-warning as the shared default for every
+  future pipeline (mirroring `deduplicate`'s "first wins unless the source says
+  otherwise" stance, Q198); a pipeline that knows its source's full vocabulary can
+  reject unknown codes explicitly instead.
+- **Blocking:** no
+- **Status:** open (raised from the Phase 4 adapter report, T5b)

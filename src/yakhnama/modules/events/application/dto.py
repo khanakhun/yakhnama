@@ -99,6 +99,24 @@ class EventSummary(BaseModel):
         )
 
 
+class CreatedEvent(BaseModel):
+    """What the caller learns about an event it has just created.
+
+    Implements: DTO.
+
+    Attributes:
+        id: The new event.
+        version: Its version, 1 at creation.
+        created_at: When it was created, UTC.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: EntityId
+    version: int = Field(ge=1)
+    created_at: AwareDatetime
+
+
 class ReportLinkView(BaseModel):
     """A report an event rests on, without the moderator who linked it.
 

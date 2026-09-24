@@ -80,8 +80,8 @@ owned by `events`) are proposed and recorded as they are decided, in `docs/adr/`
 | `hazards` | Hazard type | A node in the IRDR-aligned taxonomy with a stable code, retired but never reused or deleted. Hazard-specific attributes use a Strategy + Registry (discriminated unions). |
 | `verification` | Verification case | The state-machine record attached to a report, event or claim; only a human moves it to `verified`. Modelled as an explicit State transition table. |
 | `identity` | Authorisation | Authorisation rules are a composable, Specification-style Policy. |
-| `ingestion` | External data intake | Ingestion pipelines use a Template Method. |
-| `exchange` | Import/export formats | One Importer/Exporter per format (GeoJSON, CSV, GeoParquet — fixed by the project specification; the `exchange` module arrives in Phase 4), via Strategy + Registry. |
+| `ingestion` | External data intake | Ingestion pipelines use a Template Method; see "Phase 4 state" below for what exists. |
+| `exchange` | Import/export formats | One Importer/Exporter per format (GeoJSON, CSV, GeoParquet, JSON), via Strategy + Registry; see "Phase 4 state" below for what exists. |
 
 `shared_kernel` and `platform` are not bounded contexts; they are the framework-free
 building blocks and the cross-cutting infrastructure every module depends on (see the
@@ -339,6 +339,44 @@ section records what actually exists after Phase 3;
   no control characters, lone surrogates or bidirectional overrides) every
   Phase 3 free-text field (descriptions, citations, reasons, notes) is built on.
 
+## Phase 4 state
+
+Phase 4 (`docs/plans/phase-4.md`) added the `exchange` (exports, imports, the
+historical backfill contract) and `ingestion` (the dataset catalog, a hypertable-ready
+observation time series, a STAC-aligned raster asset catalog, and the Template Method
+ingestion pipeline) modules. This section records what actually exists after Phase 4;
+[`exchange.md`](exchange.md) and [`ingestion.md`](ingestion.md) are the detailed
+companions, [`api.md`](api.md#phase-4-additions) for the route table.
+
+### Module map (Phase 4 addition)
+
+| Module | Owns | Key rule | Status |
+|--------|------|----------|--------|
+| `exchange` | `ExportJob`, `ImportJob`, the backfill row contract | An import with any blocking row error writes nothing at all; export visibility follows the same rules as the read API (`docs/data-dictionary/exchange.md`). | domain + application + persistence + API + adapters |
+| `ingestion` | `Dataset`, `DatasetVersion`, `IngestionRun`, `Observation`, `RasterAsset` | A dataset cannot exist without a licence; an ingestion run is never rewritten, a retry is a new run (`docs/data-dictionary/ingestion.md`). | domain + application + persistence + API + adapters |
+
+The module-map row for both is updated from the earlier "Import/export formats" and
+"External data intake" placeholders in the top-of-page table above, which now point
+here for what actually exists.
+
+### Platform pieces added in Phase 4
+
+- **Three new task handlers** bound in the composition root and executed by the same
+  `poetry run poe worker` process introduced in Phase 3: `exchange.run_export`
+  (`RunExportHandler`, streams a dataset's rows through the owning module's facade into
+  a format adapter and object storage), `exchange.run_import` (`RunImportHandler`,
+  validates an uploaded file row by row and, unless it is a dry run or blocked, writes
+  events and claims in batches), and `ingestion.run` (runs one `IngestionPipeline`
+  against one dataset version through its registered `SourceAdapter`). No new worker
+  process or scheduler was added; these three tasks join the Phase 3 ones in the same
+  `TaskHandlerRegistry`.
+- **`pyarrow`** — the new dependency `GeoParquetExporter` (`modules/exchange`) is built
+  on, for GeoParquet 1.1 export.
+- **The `ix_events_source_ids_gin` index** (migration `0015`) — a GIN index on
+  `events.source_ids`, added in this phase to serve
+  `is_source_cited_by_public_event`'s JSONB containment check (Q178, resolved in Phase
+  4 task T7); `events`' own table was otherwise unchanged.
+
 ## Further reading
 
 - Architecture decisions: [`../adr/`](../adr/README.md) (MADR format).
@@ -349,7 +387,8 @@ section records what actually exists after Phase 3;
 - The Phase 3 recording flow, reporter privacy rules and task schedules:
   [`recording.md`](recording.md).
 - The impact-claim best-figure aggregation policy: [`best-figure.md`](best-figure.md).
-- Open questions raised while building Phases 1–3:
+- The Phase 4 export/import flow and the dataset-catalog/pipeline flow:
+  [`exchange.md`](exchange.md), [`ingestion.md`](ingestion.md).
+- Open questions raised while building Phases 1–4:
   [`../open-questions.md`](../open-questions.md).
-- External data source adapters: `data-sources.md`, added in Phase 4 alongside the
-  `add-source-adapter` skill.
+- External data source adapters, implemented and candidate: [`data-sources.md`](data-sources.md).

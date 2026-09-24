@@ -26,7 +26,7 @@ from typing import Final
 
 import pydantic
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -36,6 +36,10 @@ from yakhnama.modules.events.api.router import (
     moderation_router as events_moderation_router,
 )
 from yakhnama.modules.events.api.router import router as events_router
+from yakhnama.modules.exchange.api.router import (
+    moderation_router as exchange_moderation_router,
+)
+from yakhnama.modules.exchange.api.router import router as exchange_router
 from yakhnama.modules.geography.api.router import router as geography_router
 from yakhnama.modules.hazards.api.router import router as hazards_router
 from yakhnama.modules.identity.api.router import (
@@ -49,6 +53,10 @@ from yakhnama.modules.impacts.api.claims_router import (
     router as impact_claims_router,
 )
 from yakhnama.modules.impacts.api.router import router as impacts_router
+from yakhnama.modules.ingestion.api.router import (
+    admin_router as ingestion_admin_router,
+)
+from yakhnama.modules.ingestion.api.router import router as ingestion_router
 from yakhnama.modules.media.api.router import (
     moderation_router as media_moderation_router,
 )
@@ -155,6 +163,29 @@ HTTP_ERROR_SLUGS: Final[Mapping[int, str]] = MappingProxyType(
         HTTPStatus.METHOD_NOT_ALLOWED: "method-not-allowed",
         HTTPStatus.CONTENT_TOO_LARGE: "payload-too-large",
     }
+)
+# Every router, in registration order; ``create_app`` includes each once.
+API_ROUTERS: Final[tuple[APIRouter, ...]] = (
+    health.router,
+    hazards_router,
+    impacts_router,
+    geography_router,
+    identity_router,
+    moderation_router,
+    provenance_router,
+    reports_router,
+    media_router,
+    events_router,
+    impact_claims_router,
+    provenance_moderation_router,
+    media_moderation_router,
+    events_moderation_router,
+    impact_claims_moderation_router,
+    verification_moderation_router,
+    exchange_router,
+    exchange_moderation_router,
+    ingestion_router,
+    ingestion_admin_router,
 )
 INTERNAL_ERROR: Final = (HTTPStatus.INTERNAL_SERVER_ERROR, "internal-error")
 INVALID_DATA_DETAIL: Final = "The data is invalid; see 'errors'."
@@ -515,20 +546,6 @@ def create_app(
     app.exception_handler(RequestValidationError)(handle_request_validation_error)
     app.exception_handler(StarletteHTTPException)(handle_http_exception)
     app.exception_handler(Exception)(build_internal_error_handler(resolved_settings))
-    app.include_router(health.router)
-    app.include_router(hazards_router)
-    app.include_router(impacts_router)
-    app.include_router(geography_router)
-    app.include_router(identity_router)
-    app.include_router(moderation_router)
-    app.include_router(provenance_router)
-    app.include_router(reports_router)
-    app.include_router(media_router)
-    app.include_router(events_router)
-    app.include_router(impact_claims_router)
-    app.include_router(provenance_moderation_router)
-    app.include_router(media_moderation_router)
-    app.include_router(events_moderation_router)
-    app.include_router(impact_claims_moderation_router)
-    app.include_router(verification_moderation_router)
+    for api_router in API_ROUTERS:
+        app.include_router(api_router)
     return app

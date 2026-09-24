@@ -5,6 +5,11 @@
 - the header's ``alg`` is in ``oidc_allowed_algorithms`` (so ``none`` and every
   ``HS*`` algorithm are refused before any key is looked up) and equals the
   algorithm bound to the signing key;
+- the header's ``typ``, when present, is one of ``oidc_accepted_token_types``
+  (``JWT`` and ``at+jwt`` by default), compared case-insensitively and with an
+  optional ``application/`` prefix (RFC 7515 §4.1.9), so a token of another type
+  that the provider signs with the same keys, such as an ID token typed ``ID``, is
+  refused;
 - the header names a ``kid`` the ``JwksClient`` knows, after at most one refetch;
 - the signature verifies;
 - ``iss`` equals the configured issuer and ``aud`` contains the configured audience;
@@ -42,6 +47,7 @@ from yakhnama.platform.auth.principal import (
     Principal,
     RoleName,
 )
+from yakhnama.platform.settings import DEFAULT_ACCEPTED_TOKEN_TYPES
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import AuthenticationError
 
@@ -57,10 +63,28 @@ EXPIRED: Final = "expired"
 NOT_YET_VALID: Final = "not_yet_valid"
 ISSUED_IN_FUTURE: Final = "issued_in_future"
 ALGORITHM_NOT_ALLOWED: Final = "algorithm_not_allowed"
+TYPE_NOT_ACCEPTED: Final = "token_type_not_accepted"
 MISSING_KEY_ID: Final = "missing_key_id"
 UNKNOWN_KEY_ID: Final = "unknown_key_id"
 INVALID_CLAIMS: Final = "invalid_claims"
 DEFAULT_ROLES_CLAIM: Final = "realm_access.roles"
+_MEDIA_TYPE_PREFIX: Final = "application/"
+
+
+def normalise_token_type(token_type: str) -> str:
+    """Return the comparable form of a JOSE ``typ`` value.
+
+    RFC 7515 §4.1.9: media type names compare case-insensitively and a value
+    without ``/`` means the same as with the ``application/`` prefix.
+
+    Args:
+        token_type: A ``typ`` header value or a configured accepted type.
+
+    Returns:
+        The value in lower case without the ``application/`` prefix.
+    """
+    lowered = token_type.lower()
+    return lowered.removeprefix(_MEDIA_TYPE_PREFIX)
 
 
 def claim_at(claims: Mapping[str, object], path: str) -> object:
@@ -172,6 +196,7 @@ class TokenValidator:
         leeway_seconds: int,
         clock: Clock,
         roles_claim: str = DEFAULT_ROLES_CLAIM,
+        accepted_token_types: Sequence[str] = DEFAULT_ACCEPTED_TOKEN_TYPES,
     ) -> None:
         """Create the validator.
 
@@ -184,6 +209,8 @@ class TokenValidator:
             clock: Source of the current instant for the time claims.
             roles_claim: The one dotted claim path roles are read from; no other
                 claim grants a role.
+            accepted_token_types: The ``typ`` header values accepted when the
+                header carries one; a token without ``typ`` is not refused for it.
         """
         self._jwks_client = jwks_client
         self._issuer = issuer
@@ -192,6 +219,9 @@ class TokenValidator:
         self._leeway_seconds = leeway_seconds
         self._clock = clock
         self._roles_claim = roles_claim
+        self._accepted_token_types = frozenset(
+            normalise_token_type(token_type) for token_type in accepted_token_types
+        )
 
     async def validate(self, token: str) -> Principal:
         """Verify ``token`` and return the principal it authenticates.
@@ -214,6 +244,8 @@ class TokenValidator:
             raise _rejected(type(error).__name__) from None
         if header.get("alg") not in self._algorithms:
             raise _rejected(ALGORITHM_NOT_ALLOWED)
+        if not self._is_accepted_type(header):
+            raise _rejected(TYPE_NOT_ACCEPTED)
         key_id = header.get("kid")
         if not isinstance(key_id, str) or not 0 < len(key_id) <= KEY_ID_MAX_LENGTH:
             raise _rejected(MISSING_KEY_ID)
@@ -257,6 +289,17 @@ class TokenValidator:
         if problem is not None:
             raise _rejected(problem)
         return principal
+
+    def _is_accepted_type(self, header: Mapping[str, object]) -> bool:
+        # "typ" is optional in RFC 7519; many providers omit it, so its absence is
+        # not a reason to refuse. A present value that is not a string is malformed.
+        if "typ" not in header:
+            return True
+        token_type = header["typ"]
+        return (
+            isinstance(token_type, str)
+            and normalise_token_type(token_type) in self._accepted_token_types
+        )
 
 
 def _rejected(reason: str) -> AuthenticationError:

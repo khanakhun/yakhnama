@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from pydantic import RedisDsn
 from redis.asyncio import Redis
 from starlette.requests import Request
+from structlog.testing import capture_logs
 
 from tests.fakes.auth import (
     TEST_AUDIENCE,
@@ -53,6 +54,7 @@ from yakhnama.platform.openapi_snapshot import (
 from yakhnama.platform.ratelimit.limiter import InMemoryRateLimiter
 from yakhnama.platform.ratelimit.redis_limiter import RedisRateLimiter
 from yakhnama.platform.settings import SCALAR_CDN_URL, Settings
+from yakhnama.shared_kernel.errors import AuthenticationError
 
 IDEMPOTENCY_KEY = "0192f4c1-0000-7000-8000-000000000001"
 
@@ -325,6 +327,26 @@ async def test_build_token_validator_with_issuer_owns_http_client(
     assert isinstance(validator, TokenValidator)
     assert isinstance(http_client, httpx.AsyncClient)
     assert http_client.follow_redirects is False
+    await http_client.aclose()
+
+
+async def test_build_token_validator_passes_configured_token_types(
+    settings: Settings, clock: FrozenClock
+) -> None:
+    configured = settings.model_copy(
+        update={"oidc_issuer": TEST_ISSUER, "oidc_accepted_token_types": ["at+jwt"]}
+    )
+    validator, http_client = build_token_validator(configured, clock)
+    assert validator is not None
+    assert http_client is not None
+    # PyJWT types tokens "JWT" by default; the type check runs before any key is
+    # fetched, so no request reaches the (absent) provider.
+    token = issue_token(access_token_claims(), session_key_pair())
+
+    with capture_logs() as logs, pytest.raises(AuthenticationError):
+        await validator.validate(token)
+
+    assert logs[-1]["reason"] == "token_type_not_accepted"
     await http_client.aclose()
 
 

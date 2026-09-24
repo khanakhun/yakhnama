@@ -309,6 +309,42 @@ Auth column as above. `M` marks a route under `/api/v1/moderation`, requiring
 | `GET` | `/api/v1/sources/{source_id}` | anon | `ETag`. |
 | `POST` | `/api/v1/moderation/sources` | auth (policy, M) | Registers a `government`/`news`/`satellite`/`research`/`dataset` source (citizen and organisation sources are registered by the platform itself at report submission); `Idempotency-Key` optional; `201`, `Location`, `ETag`. |
 
+## Phase 4 additions
+
+Phase 4 (`docs/plans/phase-4.md`) added the `exchange` (exports, imports, the
+historical backfill contract) and `ingestion` (the dataset catalog, observations,
+raster assets) routes below. The conventions above apply unchanged; every creating
+`POST` in `exchange` answers `202 Accepted` (the job is queued; a worker runs it) and
+accepts `Idempotency-Key`. See [`exchange.md`](exchange.md) and
+[`ingestion.md`](ingestion.md) for the full flow each route belongs to.
+
+### Route table (Phase 4)
+
+Auth column as above; `M` marks a route under `/api/v1/moderation`. `ingestion`'s
+reads are anonymous (`docs/open-questions.md`, run reports and observations public by
+default); its writes live under `/api/v1/admin` and require `IsAdmin`.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `POST` | `/api/v1/exports` | auth (policy) | `export_policy`: any authenticated user for `events`/`claims`, moderators only for `reports`; `202`; `Location`, `ETag`. |
+| `GET` | `/api/v1/exports` | auth | Every job for a moderator, else the caller's own; cursor pagination. |
+| `GET` | `/api/v1/exports/{job_id}` | auth (policy) | Owner or moderator, else `404`; `ETag`; fresh `download_url` and inline sidecar once completed. |
+| `DELETE` | `/api/v1/exports/{job_id}` | auth (policy) | Owner or moderator; `204`; `409` once started or final. |
+| `POST` | `/api/v1/moderation/imports/uploads` | auth (policy, M) | `import_policy`; presigned upload grant; `201`. |
+| `POST` | `/api/v1/moderation/imports` | auth (policy, M) | `import_policy`; `dry_run` required; `202`; `Location`, `ETag`. |
+| `GET` | `/api/v1/moderation/imports/{job_id}` | auth (policy, M) | `import_policy`; `ETag`; row-level report once produced. |
+| `GET` | `/api/v1/datasets` | anon | Cursor pagination; optional status filter. |
+| `GET` | `/api/v1/datasets/{code}` | anon | `ETag`. |
+| `GET` | `/api/v1/datasets/{code}/runs` | anon | Newest first. |
+| `GET` | `/api/v1/ingestion-runs/{run_id}` | anon | Full report. |
+| `GET` | `/api/v1/observations` | anon | Half-open `[from, to)` window; cursor pagination. |
+| `GET` | `/api/v1/raster-assets` | anon | GeoJSON/STAC negotiation; `Vary: Accept`. |
+| `POST` | `/api/v1/admin/datasets` | auth (policy) | `IsAdmin`; licence required; `201`, `Location`, `ETag`. |
+| `POST` | `/api/v1/admin/datasets/{code}/versions` | auth (policy) | `IsAdmin`; `201`. |
+| `POST` | `/api/v1/admin/datasets/{code}/status` | auth (policy) | `IsAdmin`; `If-Match` optional. |
+| `POST` | `/api/v1/admin/datasets/{code}/runs` | auth (policy) | `IsAdmin`; `202`; runs `ingestion.run`. |
+| `POST` | `/api/v1/admin/raster-assets` | auth (policy) | `IsAdmin`; `201`. |
+
 ## OpenAPI snapshot and contract tests
 
 `tests/contract/openapi.json` is the committed HTTP contract (`tests/contract/README.md`).
@@ -341,5 +377,8 @@ for self-hosting it with an integrity hash.
 - `docs/data-dictionary/identity.md` — the `identity` module's fields, roles and policies.
 - `docs/architecture/recording.md` — the Phase 3 recording flow, reporter privacy rules,
   task schedules and outbox semantics behind the routes in "Phase 3 additions".
+- `docs/architecture/exchange.md`, `docs/architecture/ingestion.md` — the Phase 4
+  export/import and dataset-catalog flows behind the routes in "Phase 4 additions".
 - `docs/open-questions.md` — Q58–Q70 record the authorisation and API defaults this page
-  documents that are not yet maintainer-confirmed; Q77 onward record the Phase 3 ones.
+  documents that are not yet maintainer-confirmed; Q77 onward record the Phase 3 ones;
+  Q180 onward the Phase 4 ones.

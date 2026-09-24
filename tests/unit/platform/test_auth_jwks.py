@@ -3,7 +3,8 @@
 The identity provider is an ``httpx.MockTransport`` handler; no network is used.
 """
 
-from collections.abc import Callable
+import json
+from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 
 import httpx
@@ -398,3 +399,101 @@ async def test_get_signing_key_backoff_past_grace_raises_unavailable(
         await client.get_signing_key(key_pair.key_id)
 
     assert provider.jwks_requests == 2
+
+
+class CountingBody:
+    """An endless chunked body that counts how many chunks were pulled.
+
+    Implements: Fake (of a hostile provider streaming an unbounded document).
+    """
+
+    def __init__(self, chunk: bytes, chunks: int) -> None:
+        """Stream ``chunks`` copies of ``chunk``."""
+        self.chunk = chunk
+        self.chunks = chunks
+        self.pulled = 0
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        """Yield the chunks one by one, counting each."""
+        for _ in range(self.chunks):
+            self.pulled += 1
+            yield self.chunk
+
+
+async def test_get_signing_key_streamed_oversized_body_stops_reading_at_cap(
+    clock: FrozenClock,
+) -> None:
+    chunk_size = 16 * 1024
+    body = CountingBody(b" " * chunk_size, chunks=1000)
+    client = _client(lambda _: httpx.Response(200, content=body), clock)
+
+    with capture_logs() as logs, pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key("any")
+
+    assert logs[0]["reason"] == "document_too_large"
+    # Aborted one chunk past the cap, never the 16 MiB the provider offered.
+    assert body.pulled == MAX_DOCUMENT_BYTES // chunk_size + 1
+
+
+async def test_get_signing_key_declared_oversized_length_reads_nothing(
+    clock: FrozenClock,
+) -> None:
+    body = CountingBody(b"{}", chunks=1)
+    client = _client(
+        lambda _: httpx.Response(
+            200,
+            headers={"Content-Length": str(MAX_DOCUMENT_BYTES + 1)},
+            content=body,
+        ),
+        clock,
+    )
+
+    with capture_logs() as logs, pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key("any")
+
+    assert logs[0]["reason"] == "document_too_large"
+    assert body.pulled == 0
+
+
+async def test_get_signing_key_streamed_body_within_configured_cap_is_parsed(
+    clock: FrozenClock,
+) -> None:
+    key_pair = session_key_pair()
+    document = json.dumps(jwks_document([key_pair])).encode()
+    body = CountingBody(document, chunks=1)
+    client = HttpJwksClient(
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, content=body))
+        ),
+        clock=clock,
+        issuer=TEST_ISSUER,
+        jwks_url=JWKS_URL,
+        cache_ttl=TTL,
+        max_document_bytes=len(document),
+    )
+
+    key = await client.get_signing_key(key_pair.key_id)
+
+    assert key is not None
+
+
+async def test_get_signing_key_body_one_byte_over_configured_cap_raises(
+    clock: FrozenClock,
+) -> None:
+    key_pair = session_key_pair()
+    document = json.dumps(jwks_document([key_pair])).encode()
+    client = HttpJwksClient(
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, content=CountingBody(document, 1))
+            )
+        ),
+        clock=clock,
+        issuer=TEST_ISSUER,
+        jwks_url=JWKS_URL,
+        cache_ttl=TTL,
+        max_document_bytes=len(document) - 1,
+    )
+
+    with pytest.raises(IdentityProviderUnavailableError):
+        await client.get_signing_key(key_pair.key_id)

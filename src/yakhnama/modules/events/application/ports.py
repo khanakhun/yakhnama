@@ -302,3 +302,30 @@ class EventQueryService(Protocol):
             The detail view, or ``None`` if no event has that id.
         """
         ...
+
+
+class EventCitationQueryService(Protocol):
+    """Read port telling whether a publicly visible event cites a source.
+
+    Separate from ``EventQueryService`` because its one consumer, the provenance
+    read side (through the composition root), needs nothing else; "publicly
+    visible" is the events module's own rule, published and verified, the same one
+    ``is_publicly_visible`` applies to a detail view.
+
+    Implements: Query Service.
+    """
+
+    async def is_source_cited_by_public_event(self, source_id: EntityId) -> bool:
+        """Tell whether a published and verified event lists ``source_id``.
+
+        Only the event's own ``source_ids`` count; a source reached only through a
+        linked report's or an impact claim's own source is not an event citation.
+
+        Args:
+            source_id: The source.
+
+        Returns:
+            ``True`` if at least one published event whose verification case is
+            ``verified`` cites it.
+        """
+        ...

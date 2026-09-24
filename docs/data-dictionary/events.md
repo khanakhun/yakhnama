@@ -173,6 +173,16 @@ add mapper-derived and projection detail beyond the domain model:
 `merged_into` references `events.id` (`ON DELETE RESTRICT`; events are never
 deleted). `hazard_code` and `status` are indexed for filtering.
 
+**`ix_events_source_ids_gin` (Phase 4, migration `0015`).** A GIN index on the
+`source_ids` JSONB column, added without `CONCURRENTLY` (the table is still small at
+this stage, moderator-created records only, so the brief lock is harmless and the
+migration keeps a single transaction). It serves the containment query
+(`source_ids @> '[...]'`) behind `EventCitationQueryService.is_source_cited_by_public_event`
+(`docs/open-questions.md` Q178), which the `provenance` read service uses to decide
+whether a citizen or organisation source may be shown to a public reader. `0012_events`
+created `source_ids` without this index; `0015` is the only change this table received
+in Phase 4.
+
 ## Open questions
 
 - **Event status set.** `draft | published | retracted | merged`, with `retracted` and

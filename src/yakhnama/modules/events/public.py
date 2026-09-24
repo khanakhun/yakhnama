@@ -12,6 +12,7 @@ from yakhnama.modules.events.application.authorisation import moderation_policy
 from yakhnama.modules.events.application.commands import (
     AddAffectedPlace,
     CreateEventFromReports,
+    CreateHistoricalEvent,
     LinkReportToEvent,
     MergeEvents,
     PublishEvent,
@@ -23,6 +24,7 @@ from yakhnama.modules.events.application.commands import (
     UnlinkReportFromEvent,
 )
 from yakhnama.modules.events.application.dto import (
+    CreatedEvent,
     EventDetail,
     EventRelationView,
     EventSummary,
@@ -33,6 +35,7 @@ from yakhnama.modules.events.application.dto import (
 from yakhnama.modules.events.application.handlers import (
     AddAffectedPlaceHandler,
     CreateEventFromReportsHandler,
+    CreateHistoricalEventHandler,
     EventHandlerDependencies,
     LinkReportToEventHandler,
     MergeEventsHandler,
@@ -45,6 +48,7 @@ from yakhnama.modules.events.application.handlers import (
     UnlinkReportFromEventHandler,
 )
 from yakhnama.modules.events.application.ports import (
+    EventCitationQueryService,
     EventQueryService,
     EventRelationRepository,
     EventRepository,
@@ -79,6 +83,10 @@ __all__ = [
     "AffectedPlace",
     "CreateEventFromReports",
     "CreateEventFromReportsHandler",
+    "CreateHistoricalEvent",
+    "CreateHistoricalEventHandler",
+    "CreatedEvent",
+    "EventCitationQueryService",
     "EventDetail",
     "EventGeometry",
     "EventHandlerDependencies",

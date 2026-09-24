@@ -8,7 +8,9 @@ the command is built.
 Patterns: Command.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Final, Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from yakhnama.modules.events.domain.factories import MAX_REPORTS_ON_CREATION
 from yakhnama.modules.events.domain.value_objects import (
@@ -24,9 +26,16 @@ from yakhnama.modules.events.domain.value_objects import (
 from yakhnama.modules.events.domain.value_objects import (
     EventSummary as SummaryText,
 )
+from yakhnama.modules.geography.public import PlaceCode
 from yakhnama.modules.hazards.public import HazardAttributesUnion, HazardTypeRef
 from yakhnama.modules.identity.public import Actor
 from yakhnama.shared_kernel.ids import EntityId
+
+MAX_SOURCES_ON_HISTORICAL_CREATION: Final = 100
+"""Technical cap, not a domain fact: keeps the ``EventCreated`` payload bounded."""
+
+MAX_PLACES_ON_HISTORICAL_CREATION: Final = 100
+"""Technical cap, not a domain fact: bounds the events recorded at creation."""
 
 
 class CreateEventFromReports(BaseModel):
@@ -55,6 +64,59 @@ class CreateEventFromReports(BaseModel):
     title: EventTitle
     summary: SummaryText | None = None
     attributes: HazardAttributesUnion | None = None
+
+
+class CreateHistoricalEvent(BaseModel):
+    """Create a draft event from a curated historical record, without reports.
+
+    Used by the historical backfill (the ``exchange`` import), where an event is
+    known from a dataset or an archive rather than from community reports. The
+    period, geometry and places come from the record itself instead of being
+    derived from reports.
+
+    Implements: Command.
+
+    Attributes:
+        actor: The moderator creating the event.
+        title: Short name, 3 to 200 characters of safe text.
+        hazard_type: The hazard type the event is classified as; must be active.
+        period: When it happened, each bound with its precision.
+        geometry: Where it happened, if mapped; the centroid is derived from it.
+        place_codes: Gazetteer places the event concerns, distinct; each must
+            exist and is added as an ``impacted`` place (**proposed**, as in the
+            backfill contract).
+        summary: Curator's summary, if any.
+        source_ids: 1 to ``MAX_SOURCES_ON_HISTORICAL_CREATION`` distinct sources
+            the event cites; each becomes referenced.
+        attributes: Hazard-specific attributes, already validated; their
+            ``hazard_type`` must match.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    title: EventTitle
+    hazard_type: HazardTypeRef
+    period: EventPeriod
+    geometry: EventGeometry | None = None
+    place_codes: tuple[PlaceCode, ...] = Field(
+        default=(), max_length=MAX_PLACES_ON_HISTORICAL_CREATION
+    )
+    summary: SummaryText | None = None
+    source_ids: tuple[EntityId, ...] = Field(
+        min_length=1, max_length=MAX_SOURCES_ON_HISTORICAL_CREATION
+    )
+    attributes: HazardAttributesUnion | None = None
+
+    @model_validator(mode="after")
+    def _require_distinct(self) -> Self:
+        if len(set(self.place_codes)) != len(self.place_codes):
+            message = "place codes must be distinct"
+            raise ValueError(message)
+        if len(set(self.source_ids)) != len(self.source_ids):
+            message = "source ids must be distinct"
+            raise ValueError(message)
+        return self
 
 
 class LinkReportToEvent(BaseModel):

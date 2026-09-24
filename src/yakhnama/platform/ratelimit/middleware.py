@@ -6,7 +6,12 @@ anonymous callers get their own limits from settings. A request over the limit g
 429 ``rate-limited`` with ``Retry-After``; every counted response carries
 ``X-RateLimit-Limit`` and ``X-RateLimit-Remaining``.
 
-The client IP is hashed before it is used as a key so the limiter's store (Redis in
+The anonymous key is the client's network rather than its exact address where the
+two differ: an IPv6 client is keyed by its /64 prefix, because one subscriber or host
+usually holds a whole /64 and could otherwise rotate through it to reset its bucket;
+an IPv4 client (including an IPv4-mapped IPv6 address) is keyed by its full address.
+A peer address that does not parse (a Unix socket, a test client name) is keyed as
+given. The key is hashed before it is used so the limiter's store (Redis in
 production) never holds a raw address, and it is never logged. The IP is the ASGI
 peer address: behind a reverse proxy, run uvicorn with ``--proxy-headers`` and
 ``--forwarded-allow-ips`` set to the proxy, or every client shares the proxy's
@@ -21,6 +26,7 @@ Patterns: Decorator (ASGI middleware around the application).
 """
 
 import hashlib
+import ipaddress
 from http import HTTPStatus
 from typing import Final
 
@@ -39,6 +45,31 @@ RETRY_AFTER_HEADER: Final = "Retry-After"
 UNKNOWN_CLIENT: Final = "unknown"
 # 128 bits of the digest: collisions between real clients are negligible.
 _IP_DIGEST_HEX_LENGTH: Final = 32
+# RFC 4291 §2.5.4 and RFC 7421: the /64 is the smallest block routinely delegated
+# to one link, so it is the unit an abuser controls.
+IPV6_KEY_PREFIX_LENGTH: Final = 64
+
+
+def client_network(host: str) -> str:
+    """Return the part of a client address one anonymous bucket is keyed on.
+
+    Args:
+        host: The ASGI peer host.
+
+    Returns:
+        ``"<prefix>/64"`` for an IPv6 address, the IPv4 address itself (also when
+        it arrives IPv4-mapped), or ``host`` unchanged if it is not an address.
+    """
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        network = ipaddress.IPv6Network((address, IPV6_KEY_PREFIX_LENGTH), strict=False)
+        return str(network)
+    return str(address)
 
 
 def client_key(scope: Scope) -> str:
@@ -48,14 +79,16 @@ def client_key(scope: Scope) -> str:
         scope: An HTTP ASGI scope, after principal resolution.
 
     Returns:
-        ``principal:<scope key>`` for a valid token, else ``ip:<digest>``.
+        ``principal:<scope key>`` for a valid token, else ``ip:<digest>`` of
+        ``client_network`` of the peer address.
     """
     principal = get_principal_resolution(scope).principal
     if principal is not None:
         return f"principal:{principal.scope_key()}"
     client = scope.get("client")
-    host = client[0] if client else UNKNOWN_CLIENT
-    digest = hashlib.sha256(str(host).encode()).hexdigest()[:_IP_DIGEST_HEX_LENGTH]
+    host = str(client[0]) if client else UNKNOWN_CLIENT
+    network = client_network(host)
+    digest = hashlib.sha256(network.encode()).hexdigest()[:_IP_DIGEST_HEX_LENGTH]
     return f"ip:{digest}"
 
 

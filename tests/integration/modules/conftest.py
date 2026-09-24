@@ -28,6 +28,9 @@ from tests.fakes.clock import SteppingClock
 from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.modules.audit.infrastructure.uow import SqlAlchemyAuditUnitOfWork
 from yakhnama.modules.events.infrastructure.uow import SqlAlchemyEventsUnitOfWork
+from yakhnama.modules.exchange.infrastructure.uow import (
+    SqlAlchemyExchangeUnitOfWork,
+)
 from yakhnama.modules.geography.infrastructure.uow import (
     SqlAlchemyGeographyUnitOfWork,
 )
@@ -36,6 +39,9 @@ from yakhnama.modules.impacts.infrastructure.claims_uow import (
     SqlAlchemyImpactClaimsUnitOfWork,
 )
 from yakhnama.modules.impacts.infrastructure.uow import SqlAlchemyImpactsUnitOfWork
+from yakhnama.modules.ingestion.infrastructure.uow import (
+    SqlAlchemyIngestionUnitOfWork,
+)
 from yakhnama.modules.media.infrastructure.uow import SqlAlchemyMediaUnitOfWork
 from yakhnama.modules.provenance.infrastructure.uow import (
     SqlAlchemyProvenanceUnitOfWork,
@@ -53,6 +59,13 @@ REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[3]
 ALEMBIC_INI: Final = REPOSITORY_ROOT / "alembic.ini"
 VERSION_TABLE: Final = "alembic_version"
 MODULE_TABLES: Final = (
+    "export_jobs",
+    "import_jobs",
+    "observations",
+    "raster_assets",
+    "ingestion_runs",
+    "dataset_versions",
+    "datasets",
     "damage_records",
     "impact_claims",
     "infrastructure_assets",
@@ -282,6 +295,30 @@ def impact_claims_uow_factory(
     """Return the SQLAlchemy impact claims unit-of-work factory."""
     return SqlAlchemyUnitOfWorkFactory(
         SqlAlchemyImpactClaimsUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def ingestion_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyIngestionUnitOfWork]:
+    """Return the SQLAlchemy ingestion unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyIngestionUnitOfWork,
+        session_factory=session_factory,
+        outbox_writer=outbox_writer,
+    )
+
+
+@pytest.fixture
+def exchange_uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], outbox_writer: OutboxWriter
+) -> SqlAlchemyUnitOfWorkFactory[SqlAlchemyExchangeUnitOfWork]:
+    """Return the SQLAlchemy exchange unit-of-work factory."""
+    return SqlAlchemyUnitOfWorkFactory(
+        SqlAlchemyExchangeUnitOfWork,
         session_factory=session_factory,
         outbox_writer=outbox_writer,
     )

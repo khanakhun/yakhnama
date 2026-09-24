@@ -185,3 +185,54 @@ were written by hand because there is no release yet.
 - `docs/open-questions.md`: Q77–Q173, covering every per-module proposed default from the
   seven Phase 3 data dictionaries and `docs/architecture/best-figure.md`, plus the
   cross-cutting defaults and gaps recorded by the Phase 3 implementation reports.
+
+### Phase 4
+
+- `exchange` domain, application, persistence, adapters and API: `ExportJob`
+  (`queued → running → completed/failed`, cancellable while queued) and `ImportJob`
+  (`queued → running → completed/failed`, `dry_run`, a row-level `ValidationReport`,
+  batched atomic writes with `ImportWrites` lineage), the historical backfill row
+  contract (`ImportedEventDraft`, up to five impact-claim slots per row, schema
+  version `1.0`), the flat export column layout shared by CSV and GeoParquet
+  (`flat_layout.py`), `JsonExporter`/`GeoJsonExporter`/`CsvExporter` (RFC 4180, an
+  OWASP spreadsheet-formula guard)/`GeoParquetExporter` (GeoParquet 1.1 metadata via
+  `pyarrow`), `CsvImporter`/`GeoJsonImporter`, an `S3ArtifactStore`; `POST`/`GET`/`DELETE
+  /exports[/{id}]` and `POST`/`GET /moderation/imports[/{id}]` plus the presigned
+  upload-grant route.
+- `ingestion` domain, application, persistence, adapters and API: the dataset catalog
+  (`Dataset` → `DatasetVersion` → `IngestionRun`, licence required to register), the
+  Template Method `IngestionPipeline` (fetch → parse → validate → normalise →
+  deduplicate → persist → record_lineage, a `ValidationCollector` that never lets a
+  data problem crash a run), the narrow, time-first `Observation` table designed to
+  become a TimescaleDB hypertable without an API change (no foreign keys, by design),
+  the STAC-aligned `RasterAsset` catalog (STAC 1.1.0 with the EO extension), the
+  `local_csv_temperature` reference adapter reading a synthetic fixture (no live
+  network calls); `GET /datasets[/{code}][/runs]`, `GET /ingestion-runs/{id}`,
+  `GET /observations`, `GET /raster-assets` (GeoJSON/STAC negotiation), and the
+  `/api/v1/admin` catalog-management routes.
+- Platform: `exchange.run_export`, `exchange.run_import` and `ingestion.run` task
+  handlers bound into the Phase 3 `TaskHandlerRegistry`, run by the existing
+  `poe worker` process (no new worker or scheduler process); `pyarrow` added as a
+  dependency for GeoParquet export.
+- Migrations `0015_ingestion_catalog` (`datasets`, `dataset_versions`,
+  `ingestion_runs`, plus `ix_events_source_ids_gin`), `0016_observations_and_rasters`
+  (`observations`, `raster_assets`) and `0017_exchange_jobs` (`export_jobs`,
+  `import_jobs`).
+- Platform leftovers carried over from Phase 2/3 and closed in this phase (task T7):
+  a JWKS streaming size cap, access-token `typ` checking, IPv6 `/64` anonymous
+  rate-limit keys, and the `SourceCitationChecker` adapter
+  (`is_source_cited_by_public_event`) letting public event pages cite their citizen
+  and organisation sources (`docs/open-questions.md` Q174–Q178).
+- `docs/architecture/exchange.md` (extended): exports, imports, the export column
+  layout, the CSV formula guard, GeoParquet metadata and the Phase 4 route table.
+- `docs/architecture/ingestion.md` (new): the catalog model, the pipeline's seven
+  hooks, the observation table's hypertable-readiness design, STAC alignment, the
+  reference fixture adapter and how to add a real source.
+- `docs/architecture/api.md`: the Phase 4 route table (`exchange`, `ingestion`).
+- `docs/data-dictionary/exchange.md`, `docs/data-dictionary/ingestion.md`: Persistence
+  sections for `export_jobs`/`import_jobs` and `datasets`/`dataset_versions`/
+  `ingestion_runs`/`observations`/`raster_assets`; `docs/data-dictionary/events.md`:
+  the `ix_events_source_ids_gin` index.
+- `docs/open-questions.md`: Q180–Q211, covering the `exchange`/`ingestion` job
+  lifecycle, security-relevant upload and parse limits, and the ingestion pipeline's
+  proposed operational defaults.

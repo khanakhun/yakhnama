@@ -18,7 +18,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: GIS",
   "Typing :: Typed",
 ]
-dependencies = ["fastapi (>=0.141.1,<0.142.0)", "uvicorn[standard] (>=0.53.0,<0.54.0)", "pydantic (>=2.13.5,<3.0.0)", "pydantic-settings (>=2.15.0,<3.0.0)", "geojson-pydantic (>=2.2.0,<3.0.0)", "sqlalchemy[asyncio] (>=2.0.54,<3.0.0)", "asyncpg (>=0.31.0,<0.32.0)", "geoalchemy2 (>=0.20.0,<0.21.0)", "alembic (>=1.20.0,<2.0.0)", "shapely (>=2.1.2,<3.0.0)", "structlog (>=26.1.0,<27.0.0)", "httpx (>=0.28.1,<0.29.0)", "opentelemetry-api (>=1.44.0,<2.0.0)", "opentelemetry-sdk (>=1.44.0,<2.0.0)", "opentelemetry-instrumentation-fastapi (>=0.65b0,<0.66)", "prometheus-client (>=0.26.0,<0.27.0)", "pyyaml (>=6.0.3,<7.0.0)", "opentelemetry-instrumentation-sqlalchemy (>=0.65b0,<0.66)", "pyjwt[crypto] (>=2.14.0,<3.0.0)", "redis (>=8.1.0,<9.0.0)", "scalar-fastapi (>=1.9.0,<2.0.0)", "aiobotocore (>=3.9.1,<4.0.0)", "pillow (>=12.3.0,<13.0.0)", "filetype (>=1.2.0,<2.0.0)", "taskiq (>=0.12.6,<0.13.0)", "taskiq-redis (>=1.2.3,<2.0.0)"]
+dependencies = ["fastapi (>=0.141.1,<0.142.0)", "uvicorn[standard] (>=0.53.0,<0.54.0)", "pydantic (>=2.13.5,<3.0.0)", "pydantic-settings (>=2.15.0,<3.0.0)", "geojson-pydantic (>=2.2.0,<3.0.0)", "sqlalchemy[asyncio] (>=2.0.54,<3.0.0)", "asyncpg (>=0.31.0,<0.32.0)", "geoalchemy2 (>=0.20.0,<0.21.0)", "alembic (>=1.20.0,<2.0.0)", "shapely (>=2.1.2,<3.0.0)", "structlog (>=26.1.0,<27.0.0)", "httpx (>=0.28.1,<0.29.0)", "opentelemetry-api (>=1.44.0,<2.0.0)", "opentelemetry-sdk (>=1.44.0,<2.0.0)", "opentelemetry-instrumentation-fastapi (>=0.65b0,<0.66)", "prometheus-client (>=0.26.0,<0.27.0)", "pyyaml (>=6.0.3,<7.0.0)", "opentelemetry-instrumentation-sqlalchemy (>=0.65b0,<0.66)", "pyjwt[crypto] (>=2.14.0,<3.0.0)", "redis (>=8.1.0,<9.0.0)", "scalar-fastapi (>=1.9.0,<2.0.0)", "aiobotocore (>=3.9.1,<4.0.0)", "pillow (>=12.3.0,<13.0.0)", "filetype (>=1.2.0,<2.0.0)", "taskiq (>=0.12.6,<0.13.0)", "taskiq-redis (>=1.2.3,<2.0.0)", "pyarrow (>=25.0.1,<26.0.0)"]
 
 [project.urls]
 Homepage = "https://github.com/khanakhun/yakhnama"
@@ -40,6 +40,7 @@ pip-audit = "^2.10.1"
 types-pyyaml = "^6.0.12.20260906"
 types-shapely = "^2.1.0.20260728"
 types-aiobotocore = {extras = ["s3"], version = "^3.9.1"}
+pyarrow-stubs = "^20.0.0.20260819"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^9.1.1"
@@ -161,6 +162,8 @@ modules = [
   "yakhnama.modules.media",
   "yakhnama.modules.events",
   "yakhnama.modules.verification",
+  "yakhnama.modules.exchange",
+  "yakhnama.modules.ingestion",
 ]
 ignore_imports = [
   "yakhnama.modules.** -> yakhnama.modules.geography.public",
@@ -173,6 +176,8 @@ ignore_imports = [
   "yakhnama.modules.** -> yakhnama.modules.media.public",
   "yakhnama.modules.** -> yakhnama.modules.events.public",
   "yakhnama.modules.** -> yakhnama.modules.verification.public",
+  "yakhnama.modules.** -> yakhnama.modules.exchange.public",
+  "yakhnama.modules.** -> yakhnama.modules.ingestion.public",
 ]
 # The facades are empty until modules have content, so unmatched ignores are expected.
 unmatched_ignore_imports_alerting = "none"
@@ -191,6 +196,8 @@ containers = [
   "yakhnama.modules.media",
   "yakhnama.modules.events",
   "yakhnama.modules.verification",
+  "yakhnama.modules.exchange",
+  "yakhnama.modules.ingestion",
 ]
 layers = [
   "api | infrastructure",
@@ -212,6 +219,8 @@ source_modules = [
   "yakhnama.modules.media.domain",
   "yakhnama.modules.events.domain",
   "yakhnama.modules.verification.domain",
+  "yakhnama.modules.exchange.domain",
+  "yakhnama.modules.ingestion.domain",
 ]
 forbidden_modules = [
   "yakhnama.platform",
@@ -242,6 +251,8 @@ source_modules = [
   "yakhnama.modules.media.application",
   "yakhnama.modules.events.application",
   "yakhnama.modules.verification.application",
+  "yakhnama.modules.exchange.application",
+  "yakhnama.modules.ingestion.application",
 ]
 forbidden_modules = [
   "yakhnama.platform",
@@ -271,6 +282,8 @@ source_modules = [
   "yakhnama.modules.media.api",
   "yakhnama.modules.events.api",
   "yakhnama.modules.verification.api",
+  "yakhnama.modules.exchange.api",
+  "yakhnama.modules.ingestion.api",
 ]
 forbidden_modules = ["sqlalchemy", "geoalchemy2", "alembic", "asyncpg", "boto3", "botocore", "shapely"]
 
@@ -309,6 +322,12 @@ forbidden_modules = [
   "yakhnama.modules.verification.domain",
   "yakhnama.modules.verification.application",
   "yakhnama.modules.verification.infrastructure",
+  "yakhnama.modules.exchange.domain",
+  "yakhnama.modules.exchange.application",
+  "yakhnama.modules.exchange.infrastructure",
+  "yakhnama.modules.ingestion.domain",
+  "yakhnama.modules.ingestion.application",
+  "yakhnama.modules.ingestion.infrastructure",
 ]
 # Facades re-export domain and application types, so only direct imports count.
 allow_indirect_imports = true
