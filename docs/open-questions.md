@@ -2125,3 +2125,24 @@ entry.
   reject unknown codes explicitly instead.
 - **Blocking:** no
 - **Status:** open (raised from the Phase 4 adapter report, T5b)
+
+## Q212 — Production registration of the `yakhnama-web` client
+
+- **Question:** Which redirect URIs, post-logout redirect URIs and web origins does the
+  web portal's OIDC client `yakhnama-web` get in production, and on which identity
+  provider? The realm export registers it only for two local origins: the Next.js dev
+  server on `http://localhost:3000` and the end-to-end test server on
+  `http://localhost:3100` (callback `<origin>/auth/callback`, post-logout `<origin>/*`,
+  web origin `<origin>`).
+- **Why it matters:** The authorization code flow only redirects to URIs registered
+  exactly on the client; the portal cannot sign anyone in on a real domain until they
+  exist, and a too-broad pattern (a wildcard host or path) would let an attacker steer
+  authorization codes to a URL they control. The portal's hosting must also run a Node
+  server for its backend-for-frontend (web portal plan Q-W3).
+- **Proposed default:** Register the exact `https` callback and origin of the chosen
+  portal domain on the production provider (Q5), keep PKCE `S256` required and direct
+  access grants off, never reuse the `localhost` entries, and add
+  `YAKHNAMA_CORS_ALLOW_ORIGINS` for that origin only if the browser ever calls the API
+  directly.
+- **Blocking:** no (blocks only a production deployment of the portal)
+- **Status:** open (raised by the web portal's Phase 0, task T8)

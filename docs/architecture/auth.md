@@ -11,7 +11,8 @@ backend validates it, and the realm contents behind
 !!! warning "Development only"
     Everything on this page — the `yakhnama-dev-cli` client, its direct access grants
     (resource-owner password flow), and the two demo users and their passwords — exists
-    only in the local development realm. Direct access grants and demo accounts are never
+    only in the local development realm, as do the `localhost` redirect URIs of the
+    `yakhnama-web` client. Direct access grants and demo accounts are never
     enabled in a production identity provider. Production provider choice is tracked in
     `docs/open-questions.md`.
 
@@ -54,6 +55,7 @@ Defined in `docker/keycloak/yakhnama-realm.json` and imported automatically by
 |--------|------|---------|
 | `yakhnama-api` | confidential, bearer-only | Identifies the backend as the audience (`aud`) of access tokens. Never used to authenticate; it has no login flow. |
 | `yakhnama-dev-cli` | public, direct access grants enabled | **Development only.** Lets a developer or test exchange a demo username and password for a token from the command line. Carries a protocol mapper that adds `yakhnama-api` to the token's `aud` claim, and a realm-roles mapper that copies the user's realm roles into `realm_access.roles`. |
+| `yakhnama-web` | public, standard flow (authorization code) only, PKCE `S256` required | **Development registration** of the web portal (`yakhnama-web`, a Next.js app). Its server-side backend-for-frontend (BFF) signs users in with the authorization code flow and PKCE and holds no client secret. Registered for two local origins: `http://localhost:3000` (the `next dev` server) and `http://localhost:3100` (the production server the portal's end-to-end tests start), each with redirect URI `<origin>/auth/callback`, post-logout redirect `<origin>/*` and web origin `<origin>`; direct access grants, implicit flow, service accounts, device and CIBA grants are off. Carries the same two mappers as `yakhnama-dev-cli`, so its access tokens are accepted by the backend unchanged. Production redirect URIs wait for the hosting decision (`docs/open-questions.md` Q212). See "The web portal's sign-in flow" below. |
 
 ### Roles
 
@@ -84,6 +86,18 @@ stores email or other personal contact data (`AGENTS.md` §5, plan Q4) — Keycl
 built-in profile schema does not allow removing the `email` attribute entirely, so it stays
 present but unrequired and empty.
 
+### Adding a client to an existing development realm
+
+Editing `yakhnama-realm.json` changes only *new* imports: a realm already stored in the
+`keycloak-data` volume is left as it is (see above). After pulling a realm change such as
+the `yakhnama-web` client, either re-import by removing the volume (this also drops every
+user, session and key created since, and rotates the signing key), or add the client to
+the running realm by hand through the admin console (`http://127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}/admin/`,
+user `KEYCLOAK_ADMIN_USER`) or the admin REST API
+(`POST /admin/realms/yakhnama/clients` with the client's object from the realm file).
+Keycloak stores a client's `description` in a 255-character column; a longer one fails
+both the import and the admin API with a database error, so keep it short.
+
 ## Obtaining a token
 
 With the stack running (`poetry run poe up`), read the Keycloak port from `.env`
@@ -103,6 +117,56 @@ The response is a standard OIDC token response (`access_token`, `refresh_token`,
 
 The JWKS the backend validates against is at
 `http://127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}/realms/yakhnama/protocol/openid-connect/certs`.
+
+## The web portal's sign-in flow
+
+The web portal never shows a token to the browser. Its Next.js server acts as a
+backend-for-frontend: it runs the OIDC authorization code flow with PKCE (`S256`) as the
+public client `yakhnama-web`, keeps the tokens in an encrypted, `httpOnly` session cookie,
+and calls the backend server-side with the access token as a bearer token. From the
+backend's point of view nothing is new: it validates the token exactly as it validates a
+`yakhnama-dev-cli` token (`aud` contains `yakhnama-api`, roles in `realm_access.roles`).
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Portal as Portal server (BFF, yakhnama-web)
+    participant Keycloak as Keycloak (realm yakhnama)
+    participant Backend as yakhnama backend
+
+    Browser->>Portal: GET /auth/sign-in
+    Portal->>Portal: create state, nonce, code_verifier;<br/>code_challenge = BASE64URL(SHA-256(code_verifier))
+    Portal-->>Browser: 302 to Keycloak /protocol/openid-connect/auth<br/>client_id=yakhnama-web, response_type=code,<br/>code_challenge_method=S256, redirect_uri=.../auth/callback
+    Browser->>Keycloak: login form (username, password)
+    Keycloak-->>Browser: 302 to <portal origin>/auth/callback?code=...&state=...
+    Browser->>Portal: GET /auth/callback?code=...&state=...
+    Portal->>Keycloak: POST /protocol/openid-connect/token<br/>grant_type=authorization_code, code, code_verifier (no client secret)
+    Keycloak-->>Portal: access_token, refresh_token, id_token
+    Portal-->>Browser: 302 to the portal, encrypted httpOnly session cookie
+    Browser->>Portal: page or /bff/api/v1/... request (cookie only)
+    Portal->>Backend: GET /api/v1/... Authorization: Bearer <access_token>
+    Backend-->>Portal: 200, or 401 Problem Details
+    Portal-->>Browser: rendered page or proxied response
+```
+
+Keycloak refuses an authorization request for `yakhnama-web` without a `S256` code
+challenge, a redirect URI other than the registered ones, and the password grant. Sign-out
+uses RP-initiated logout (`/protocol/openid-connect/logout` with `id_token_hint` and a
+`post_logout_redirect_uri` under the portal's origin); front-channel logout is off
+because the portal has no front-channel logout endpoint.
+
+The portal origin is `http://localhost:3000` for `pnpm dev` and `http://localhost:3100` for
+the end-to-end suite's own production server (`next start`), so that the tests never
+collide with a running dev server. Keycloak stores several post-logout redirect URIs in
+one client attribute separated by `##`, which is why the realm file lists
+`http://localhost:3000/*##http://localhost:3100/*`.
+
+Because the portal calls the backend from its server, CORS does not apply to it and
+`YAKHNAMA_CORS_ALLOW_ORIGINS` can stay empty; set it to `["http://localhost:3000"]` only to
+allow direct browser calls from the dev server's origin (the end-to-end server never
+needs it). The portal's server must reach Keycloak on the same host and port as
+`YAKHNAMA_OIDC_ISSUER` (next section), or its tokens carry a different `iss` and the
+backend rejects them.
 
 ## The exact-issuer pitfall
 

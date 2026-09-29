@@ -236,3 +236,16 @@ were written by hand because there is no release yet.
 - `docs/open-questions.md`: Q180–Q211, covering the `exchange`/`ingestion` job
   lifecycle, security-relevant upload and parse limits, and the ingestion pipeline's
   proposed operational defaults.
+
+### Web portal client
+
+- Keycloak realm export: the `yakhnama-web` public client (authorization code flow with
+  PKCE `S256` required, no client secret, direct access grants off) for the web portal's
+  backend-for-frontend, registered for `http://localhost:3000` (dev server) and
+  `http://localhost:3100` (end-to-end test server) only, with the same
+  audience and realm-roles mappers as `yakhnama-dev-cli`.
+- `.env.example`: when `YAKHNAMA_CORS_ALLOW_ORIGINS` matters for the portal, and the
+  issuer port for a remapped `KEYCLOAK_HOST_PORT`.
+- `docs/architecture/auth.md`: the `yakhnama-web` client, the portal's sign-in sequence,
+  and how to add a client to an already imported development realm.
+- `docs/open-questions.md`: Q212, the production registration of `yakhnama-web`.
