@@ -195,6 +195,14 @@ Keycloak access tokens, and every new account gets the default `citizen` role
 | `smtpServer` | `mailpit:1025`, no authentication, from `no-reply@yakhnama.local` | Development only: every mail goes to Mailpit (below). |
 | Identity providers | `google`, `facebook` | Disabled unless configured (below). `trustEmail: true`: both hand out only addresses they have verified, so a brokered account does not verify again. |
 
+With brute-force detection on, Keycloak 26 also refuses a login while another login of the
+same account is still in flight: the second one fails with `user_temporarily_disabled`
+(the form says "Invalid username or password") even with the right password, and no
+failure is counted. Keycloak's login form disables its button on submit, so a person
+double-tapping is not affected. Anything that signs one account in from parallel workers
+must serialise those sign-ins; the portal's end-to-end helper holds a per-user lock for
+this.
+
 Once registration is on, the realm lists `create` in `prompt_values_supported`:
 `prompt=create` on the authorization request opens the registration page directly.
 `kc_idp_hint=<alias>` skips the login page and goes straight to that provider; an unknown or
