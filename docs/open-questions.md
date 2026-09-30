@@ -702,8 +702,9 @@ questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
 - **Question:** The development realm's user-profile component (`docker/keycloak/yakhnama-realm.json`) is customised to drop the default `firstName`/`lastName` requirements and make `email` optional (Keycloak does not allow removing the `email` attribute entirely). Should this override be kept as the realm evolves?
 - **Why it matters:** The override exists only so demo users need no personal data, matching the backend's rule of storing none (`AGENTS.md` §5); if the realm is later extended or replaced, this constraint has to travel with it.
 - **Proposed default:** Keep it, and carry the same constraint (no required name or email) into whatever production identity provider is chosen (Q5).
+- **Update (2026-09-30):** With self-registration open, `email` is now required for the `user` role (Keycloak needs an address to verify and to reset a password with), while names stay dropped. The address lives only in Keycloak; the backend still stores none. The demo users carry placeholder `@example.invalid` addresses.
 - **Blocking:** no
-- **Status:** open (raised from the T4 report; see also `docs/architecture/auth.md`, "The `yakhnama` realm")
+- **Status:** open (raised from the T4 report; see also `docs/architecture/auth.md`, "The `yakhnama` realm" and "Sign-up and social sign-in")
 
 ## Q72 — Audience value for the API (`aud` claim)
 
@@ -1551,8 +1552,9 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Question:** Account-creation limits?
 - **Why it matters:** Any valid token from the provider creates a user on first sight; self-registration at the provider would let anyone create accounts at will.
 - **Proposed default:** Deferred to Phase 4: rate-limit first-sight mirroring per provider subject range, or require an invitation for non-citizen roles.
+- **What applies now (2026-09-30):** The maintainer opened self-registration on purpose (residents must not be blocked from reporting because sign-up was hard), so "anyone can create an account" is now the intended behaviour, not a gap. Every new account gets only `citizen`; every other role is still granted by an administrator. The development realm limits abuse with: email verification before the first sign-in of a username/password account (`verifyEmail`), one account per address (`duplicateEmailsAllowed: false`), temporary brute-force lockout (5 failures, 60 s growing to 15 minutes, reset after 12 hours), a password policy (8 to 128 characters, not the username or address), and Google and Facebook accounts, which carry the provider's own sign-up checks. Nothing yet limits how many accounts one person or bot registers with throwaway addresses: Keycloak's registration flow has no CAPTCHA enabled and no per-IP limit, and first-sight mirroring still accepts any valid token. See `docs/architecture/auth.md`, "Sign-up and social sign-in".
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** deferred to Phase 4; before production, decide on registration bot protection (Keycloak's reCAPTCHA or a proxy rate limit on `/realms/yakhnama/login-actions/registration`) and on the report-submission limits per new account
 
 ## Q177 — IPv6 rate-limit keys
 
@@ -2146,3 +2148,79 @@ entry.
   directly.
 - **Blocking:** no (blocks only a production deployment of the portal)
 - **Status:** open (raised by the web portal's Phase 0, task T8)
+
+## Q213 — Production SMTP provider for Keycloak's mail
+
+- **Question:** Which SMTP relay sends Keycloak's address-verification and password-reset
+  mail in production, from which domain and address?
+- **Why it matters:** Self-registration requires a verified address (Q176), so an account
+  cannot be finished without mail. Mail from a domain without SPF, DKIM and DMARC lands in
+  spam or is dropped, and people who are not confident with technology will not look
+  there. Development uses Mailpit, which delivers nothing.
+- **Proposed default:** A transactional relay with a free tier and a data-processing
+  agreement (for example Amazon SES or Brevo), sending from `no-reply@` on the project's
+  own domain with SPF, DKIM and DMARC, TLS and authentication on; the password kept in
+  Keycloak's vault, never in the realm file.
+- **Blocking:** no (blocks production sign-up only)
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q214 — Ownership of the Google and Facebook sign-in apps, and Meta's app review
+
+- **Question:** Who owns the Google Cloud project and the Meta app behind "Continue with
+  Google" and "Continue with Facebook", and who completes Google's brand verification and
+  Meta's Business Verification and App Review?
+- **Why it matters:** Both providers tie the app, its consent screen and its secret to an
+  account; if a volunteer's personal account owns them, the project loses sign-in when that
+  person leaves. Meta may refuse live mode for people without a role on the app until
+  Business Verification and App Review for the `email` permission are done, which needs a
+  legal entity, a privacy policy URL and data-deletion instructions.
+- **Proposed default:** A project-owned Google Workspace or Cloud organisation and a Meta
+  Business portfolio in the name of the organisation that runs Yakhnama, with at least two
+  administrators each; separate development and production apps; secrets only in the
+  deployment's secret store.
+- **Blocking:** no (blocks turning the providers on in production)
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q215 — Google and Facebook learn who uses Yakhnama
+
+- **Question:** Is it acceptable that signing in with Google or Facebook tells that company
+  that the person uses Yakhnama, and when?
+- **Why it matters:** Reporting a disaster can be sensitive (a damaged home, a dispute over
+  land, criticism of a response). The provider sees every sign-in; Yakhnama receives the
+  person's address and name from the provider (Keycloak keeps the address and drops the
+  name; the backend keeps neither). Email-and-password accounts tell no third party.
+- **Proposed default:** Keep both providers for accessibility (maintainer decision), say so
+  in one plain sentence on the portal's sign-in page and in the privacy policy, always offer
+  the email-and-password route next to them, and never request more than `openid`, `email`
+  and `profile` (Google) or `public_profile` and `email` (Facebook).
+- **Blocking:** no
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q216 — Keycloak's login pages have no Urdu
+
+- **Question:** How do Urdu (and the regional Arabic-script languages) reach Keycloak's
+  login, registration, password-reset and verification pages and mails?
+- **Why it matters:** Keycloak 26.2 ships login-theme messages for 34 languages, including
+  Arabic and Persian, but not Urdu; the realm also has internationalisation off. Someone who
+  chose Urdu on the portal lands on an English registration form at exactly the step where
+  the maintainer wants the fewest obstacles.
+- **Proposed default:** A small custom login theme (`yakhnama`) that extends the built-in
+  one and adds `messages_ur.properties` for the login and email themes, reviewed by a native
+  speaker; switch on internationalisation with `en` and `ur`, so the portal's `ui_locales`
+  takes effect. Until then the portal's own sign-in page carries the explanations in Urdu.
+- **Blocking:** no
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q217 — Sign-up with a phone number
+
+- **Question:** Should people be able to create an account with a mobile number and a
+  one-time code instead of an email address?
+- **Why it matters:** Many residents have a phone but rarely use email; a code by SMS may be
+  the easiest sign-up for them. Keycloak 26 has no built-in SMS authenticator: it needs a
+  community extension or a custom one, an SMS gateway with costs per message and fraud
+  controls (SMS pumping), and phone numbers are personal data the project would then hold.
+- **Proposed default:** Not now. Revisit after measuring how many people start sign-up and
+  do not finish it, and together with assisted reporting (the portal's open questions),
+  which may serve the same people without new personal data.
+- **Blocking:** no
+- **Status:** open (raised by self-registration, 2026-09-30)

@@ -249,3 +249,22 @@ were written by hand because there is no release yet.
 - `docs/architecture/auth.md`: the `yakhnama-web` client, the portal's sign-in sequence,
   and how to add a client to an already imported development realm.
 - `docs/open-questions.md`: Q212, the production registration of `yakhnama-web`.
+
+### Self-registration and social sign-in
+
+- Keycloak realm export: open self-registration with email verification, password reset,
+  sign-in by username or address, one account per address, a password policy (8 to 128
+  characters, not the username or address) and temporary brute-force lockout; `email`
+  required for self-registered users (the demo users get `@example.invalid` placeholders);
+  SMTP to a local Mailpit; `google` and `facebook` identity providers that trust the
+  provider's verified address and stay disabled unless `KC_GOOGLE_*` / `KC_FACEBOOK_*` are
+  set when the realm is imported. New accounts get only `citizen`.
+- `docker-compose.yml`: Mailpit (`axllent/mailpit` v1.31.3, pinned by digest; web UI and
+  API on `127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}`), and the social sign-in variables
+  passed to Keycloak; `.env.example` documents them, empty by default.
+- `docs/architecture/auth.md`: "Sign-up and social sign-in" (what the realm allows, the
+  first-broker-login behaviour, Mailpit, how to create the Google and Meta apps and switch
+  them on, production notes); first-sight mirroring never copies a display name.
+- `docs/open-questions.md`: Q176 and Q71 updated; Q213 (production SMTP), Q214 (app
+  ownership and Meta review), Q215 (what Google and Facebook learn), Q216 (no Urdu on
+  Keycloak's pages), Q217 (phone-number sign-up).

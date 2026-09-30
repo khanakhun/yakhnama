@@ -132,7 +132,7 @@ cd yakhnama
 poetry install
 cp .env.example .env
 
-poetry run poe up          # PostgreSQL 16 + PostGIS 3.5, MinIO, Keycloak 26, Redis 7
+poetry run poe up          # PostgreSQL 16 + PostGIS 3.5, MinIO, Keycloak 26, Mailpit, Redis 7
                             # (also creates the MinIO buckets via `minio-init`)
 poetry run poe migrate     # apply Alembic migrations (from Phase 1)
 poetry run poe seed        # load the versioned reference data idempotently (from Phase 1)
@@ -208,6 +208,12 @@ validation rules and the production-provider caveat, and `docs/architecture/api.
 the `/api/v1` conventions every endpoint follows (errors, pagination, idempotency,
 `ETag`/`If-Match`, rate limiting).
 
+The realm also allows self-registration with a verified email address. In development
+Keycloak sends that mail to Mailpit, whose inbox is at
+`http://127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}`. Google and Facebook sign-in stay off
+until you create their OAuth apps; `docs/architecture/auth.md`, "Sign-up and social
+sign-in", has the steps.
+
 ## Development workflow
 
 All commands run through Poetry and Poe so they behave the same locally and in CI. Every
@@ -228,7 +234,7 @@ task below is defined in `pyproject.toml` under `[tool.poe.tasks]`.
 | `poetry run poe contract` | Verify the committed OpenAPI snapshot still matches the app |
 | `poetry run poe worker` | Run a Taskiq worker for background tasks (from Phase 3; needs `YAKHNAMA_TASK_QUEUE_BACKEND=redis`) |
 | `poetry run poe scheduler` | Run the Taskiq scheduler for periodic tasks (from Phase 3; run exactly one per deployment) |
-| `poetry run poe up` / `down` | Start or stop PostGIS, MinIO, Keycloak, Redis |
+| `poetry run poe up` / `down` | Start or stop PostGIS, MinIO, Keycloak, Mailpit, Redis |
 | `poetry run poe docs` | Serve this documentation site locally (`mkdocs serve`) |
 | `poetry run poe check` | Everything CI runs, in order — green here means green in CI |
 

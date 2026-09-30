@@ -79,12 +79,15 @@ that are **not secrets** (they unlock nothing but a local, disposable container)
 | `demo-citizen` | `demo-citizen-dev-only` | `citizen` |
 | `demo-moderator` | `demo-moderator-dev-only` | `citizen`, `moderator` |
 
-Both have `emailVerified: true` but **no email address**. The realm's user profile is
-customised (the `components` section of the realm export) to drop the default `firstName`
-and `lastName` requirements and to make `email` optional, because the backend never
-stores email or other personal contact data (`AGENTS.md` §5, plan Q4) — Keycloak's
-built-in profile schema does not allow removing the `email` attribute entirely, so it stays
-present but unrequired and empty.
+Both have a placeholder address on the reserved `.invalid` domain
+(`demo-citizen@example.invalid`, `demo-moderator@example.invalid`) with
+`emailVerified: true`, so the realm's "email required" rule (see "Sign-up and social
+sign-in") never stops them at sign-in and no mail is ever sent for them. The realm's user
+profile is customised (the `components` section of the realm export) to drop the default
+`firstName` and `lastName` attributes: Keycloak keeps only a username and an email address
+for every account, and ignores any name a social provider sends. The address stays in
+Keycloak: the backend never stores email or other personal contact data (`AGENTS.md` §5,
+plan Q4) and ignores the `email` claim Keycloak puts in access tokens.
 
 ### Adding a client to an existing development realm
 
@@ -167,6 +170,136 @@ allow direct browser calls from the dev server's origin (the end-to-end server n
 needs it). The portal's server must reach Keycloak on the same host and port as
 `YAKHNAMA_OIDC_ISSUER` (next section), or its tokens carry a different `iss` and the
 backend rejects them.
+
+## Sign-up and social sign-in
+
+Anyone can create an account (maintainer decision of 2026-09-30). Reading the record needs
+no account, but sending a report does, and many residents of Gilgit-Baltistan, especially
+older people, are not comfortable with technology and are on slow connections: sign-up
+must be one click where possible. The architecture does not change (ADR 0005). Keycloak
+handles registration and brokers Google and Facebook; the backend still sees nothing but
+Keycloak access tokens, and every new account gets the default `citizen` role
+(`default-roles-yakhnama`).
+
+### What the realm allows
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `registrationAllowed` | `true` | Self-registration with a username, an email address and a password. |
+| `verifyEmail` | `true` | A new username/password account confirms its address before its first sign-in completes (the `VERIFY_EMAIL` required action). |
+| User profile, `email` | required for the `user` role | Every self-registered account has an address to verify and to reset a password with. Accounts an administrator creates may still have none. |
+| `resetPasswordAllowed` | `true` | "Forgot password?" on the login page; the link goes by email. |
+| `loginWithEmailAllowed`, `duplicateEmailsAllowed` | `true`, `false` | Sign in with the username or the address; one account per address. |
+| `passwordPolicy` | `length(8) and maxLength(128) and notUsername and notEmail` | NIST SP 800-63B style: a minimum length and no composition rules, easier for people who rarely type passwords. |
+| Brute-force detection | on, temporary lockout | 5 failures lock the account for 60 s, growing by 60 s per further failure up to 15 minutes; the count resets after 12 hours. Never permanent, so nobody can lock a resident out for good. |
+| `smtpServer` | `mailpit:1025`, no authentication, from `no-reply@yakhnama.local` | Development only: every mail goes to Mailpit (below). |
+| Identity providers | `google`, `facebook` | Disabled unless configured (below). `trustEmail: true`: both hand out only addresses they have verified, so a brokered account does not verify again. |
+
+Once registration is on, the realm lists `create` in `prompt_values_supported`:
+`prompt=create` on the authorization request opens the registration page directly.
+`kc_idp_hint=<alias>` skips the login page and goes straight to that provider; an unknown or
+disabled alias falls back to the normal login page. The web portal uses both for its
+"Create an account" and "Continue with Google/Facebook" buttons (its ADR 0011).
+
+**First sign-in through a provider** uses Keycloak's built-in `first broker login` flow.
+Its "Review profile" step is left at Keycloak's default, `missing`: it is skipped whenever
+the provider supplies everything the user profile requires (a username and a verified
+address, which Google always does) and appears only when something is missing, such as a
+Facebook account registered with a phone number and no address. Setting it to `off` would
+not spare that person a form: Keycloak's `VERIFY_PROFILE` required action would ask for the
+missing address instead. When the address already belongs to an account, Keycloak asks the
+person to confirm the link and to prove they own that account (a link sent to the address,
+or its password). It never links silently: linking by email alone ("automatically set
+existing user") would let someone who pre-registered a victim's address with a password of
+their own take over the victim's later social sign-in (account pre-hijacking).
+
+A brokered account's Keycloak username is the provider's email address. The web portal
+shows it only to that person, in its own header; the backend never copies it (see
+"First-sight mirroring").
+
+### Mail in development: Mailpit
+
+`poe up` starts Mailpit with the rest of the stack; `docker compose up -d mailpit` starts it
+alone. Keycloak sends to `mailpit:1025` inside the compose network, so nothing leaves the
+machine. Read the mail at `http://127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}`, or through its
+API (`GET /api/v1/search?query=to:"someone@example.test"`, then `GET /api/v1/message/<ID>`),
+which the portal's end-to-end test uses to follow a verification link.
+
+### Turning Google and Facebook on
+
+Neither provider works until an OAuth client exists for it, and its secret is never
+committed to either repository. The realm export reads the six `KC_GOOGLE_*` and
+`KC_FACEBOOK_*` variables through Keycloak's import placeholders (for example
+`"${KC_GOOGLE_CLIENT_ID:}"`), and `docker-compose.yml` passes them from your local `.env`
+to the `keycloak` service.
+
+Register Keycloak's broker endpoint for the alias as the redirect URI at the provider, on
+the host and port the browser uses to reach Keycloak:
+
+- Google: `http://127.0.0.1:18080/realms/yakhnama/broker/google/endpoint`
+- Facebook: `http://127.0.0.1:18080/realms/yakhnama/broker/facebook/endpoint`
+
+`18080` is the maintainer's `KEYCLOAK_HOST_PORT`; use your own. `127.0.0.1` and `localhost`
+are different hosts to both providers: register the one your issuer uses.
+
+**Google** (Google Cloud console, <https://console.cloud.google.com/>):
+
+1. Create or pick a project, for example "Yakhnama development".
+2. Open *Google Auth Platform* (*APIs & Services → OAuth consent screen*), choose *Get
+   started*: app name "Yakhnama", a support address, audience *External*, a contact
+   address.
+3. Under *Data access*, keep only the non-sensitive scopes `openid`,
+   `.../auth/userinfo.email` and `.../auth/userinfo.profile`; they need no scope
+   verification.
+4. Under *Clients*, *Create client*: type *Web application*, name "Keycloak yakhnama
+   (development)", *Authorised redirect URIs*: the Google URI above. Google accepts plain
+   `http` only for loopback hosts. No JavaScript origins are needed.
+5. Copy the client ID and the secret into your local `.env` as `KC_GOOGLE_CLIENT_ID` and
+   `KC_GOOGLE_CLIENT_SECRET`, and set `KC_GOOGLE_ENABLED=true`.
+6. While the publishing status is *Testing*, only the accounts listed under *Audience →
+   Test users* can sign in. *Publish app* opens it to everyone; with only the basic scopes,
+   Google asks for brand verification only if the consent screen shows a logo.
+
+**Facebook** (Meta for Developers, <https://developers.facebook.com/apps/>):
+
+1. *Create app*, use case *Authenticate and request data from users with Facebook Login*,
+   app name "Yakhnama".
+2. *Use cases → Facebook Login → Customise*: add the `email` permission (`public_profile`
+   is always included). Under *Settings*, add the Facebook URI above to *Valid OAuth
+   Redirect URIs*. Meta enforces HTTPS for redirect URIs but lets `localhost` through
+   while the app is in development mode; if it refuses the `127.0.0.1` URI, reach Keycloak
+   through `localhost` (issuer included) or an HTTPS tunnel for the test.
+3. *App settings → Basic*: copy the *App ID* and *App secret* into your local `.env` as
+   `KC_FACEBOOK_CLIENT_ID` and `KC_FACEBOOK_CLIENT_SECRET`, and set
+   `KC_FACEBOOK_ENABLED=true`. The same page asks for a privacy policy URL, data deletion
+   instructions, a category and an icon before the app can go live.
+4. In development mode only people with a role on the app (administrators, developers,
+   testers) can sign in. Going live may need Business Verification and App Review for the
+   `email` permission (Q214).
+
+**Then apply it.** The variables take effect only when Keycloak imports the realm, which it
+skips once the realm is stored in the `keycloak-data` volume. On an existing realm, open the
+admin console (`http://127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}/admin/`, realm `yakhnama`,
+*Identity providers → google* or *facebook*), paste the client ID and secret, switch
+*Enabled* on and save; or `PUT /admin/realms/yakhnama/identity-provider/instances/<alias>`
+with the provider's object from the realm file, values filled in. On a fresh volume,
+`poe up` imports them from `.env`. Finally, tell the web portal to show the buttons:
+`AUTH_SOCIAL_PROVIDERS=google,facebook` in its `.env.local`, listing only the providers
+enabled here.
+
+### Production
+
+- Register the production broker URIs
+  (`https://<keycloak host>/realms/yakhnama/broker/<alias>/endpoint`) in apps owned by the
+  project, not by a person (Q214).
+- Keep the client secrets and the SMTP password out of the realm file: use Keycloak's vault
+  (`"clientSecret": "${vault.google_client_secret}"`) or set them through the admin API
+  from the deployment's secret store.
+- Replace Mailpit with a real SMTP relay: TLS, authentication, and SPF, DKIM and DMARC on
+  the sending domain (Q213).
+- Keycloak's login, registration and mail pages have no Urdu (Q216); Google and Facebook
+  learn who uses Yakhnama (Q215); account-creation limits are Q176; phone-number sign-up is
+  Q217.
 
 ## The exact-issuer pitfall
 
@@ -265,7 +398,9 @@ rejected, since a realm can carry roles unrelated to this application.
 
 The first time a request from a given `(issuer, subject)` pair passes authentication,
 `EnsureUserFromPrincipalHandler` mirrors it into a `User` row (`identity.user_mirrored`),
-copying the mapped realm roles and the display name at that moment. Every later request
+copying the mapped realm roles at that moment. It never copies a display name from the
+token (`preferred_username` is often an email address, see "Sign-up and social sign-in");
+the person chooses one later through the identity module's rename. Every later request
 from the same subject reuses the existing `User` and does **not** re-copy realm roles: a
 role added or removed at the identity provider after first sight has no effect on the
 mirrored user until an admin changes it inside Yakhnama. This is a deliberate Phase 2

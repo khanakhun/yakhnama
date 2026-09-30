@@ -78,6 +78,17 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-dev-only}
       KC_HEALTH_ENABLED: "true"
+      # Social sign-in (docs/architecture/auth.md, "Sign-up and social sign-in"). The realm
+      # export reads these through Keycloak's import placeholders, so they only apply when
+      # the realm is first imported; an existing realm is changed through the admin console
+      # or API. Empty (the default) leaves both providers disabled. The client secrets come
+      # from your local, git-ignored .env and never from a committed file.
+      KC_GOOGLE_ENABLED: ${KC_GOOGLE_ENABLED:-false}
+      KC_GOOGLE_CLIENT_ID: ${KC_GOOGLE_CLIENT_ID:-}
+      KC_GOOGLE_CLIENT_SECRET: ${KC_GOOGLE_CLIENT_SECRET:-}
+      KC_FACEBOOK_ENABLED: ${KC_FACEBOOK_ENABLED:-false}
+      KC_FACEBOOK_CLIENT_ID: ${KC_FACEBOOK_CLIENT_ID:-}
+      KC_FACEBOOK_CLIENT_SECRET: ${KC_FACEBOOK_CLIENT_SECRET:-}
     ports:
       - "127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}:8080"
     volumes:
@@ -96,6 +107,25 @@ services:
       timeout: 5s
       retries: 12
       start_period: 60s
+
+  # Catches every mail Keycloak sends in development (address verification, password
+  # reset) so nothing reaches a real inbox. Keycloak reaches it as mailpit:1025 on the
+  # compose network (the realm's smtpServer); only the web UI and its API are published,
+  # at http://127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}. Development only.
+  mailpit:
+    image: axllent/mailpit:v1.31.3@sha256:ed9b00c609e77e99c79b93f1178255ebc271868920f2c69a8d166bd5634ed10d
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_DISABLE_RDNS: "true"
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   redis:
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499

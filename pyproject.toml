@@ -471,7 +471,7 @@ help = "Verify the committed OpenAPI snapshot matches the app"
 cmd = "pytest tests/contract"
 
 [tool.poe.tasks.up]
-help = "Start PostGIS, MinIO, Keycloak and Redis, then create the MinIO buckets"
+help = "Start PostGIS, MinIO, Keycloak, Mailpit and Redis, then create the MinIO buckets"
 sequence = [
   { cmd = "docker compose up -d --wait --wait-timeout 240" },
   { cmd = "docker compose run --rm minio-init" },
