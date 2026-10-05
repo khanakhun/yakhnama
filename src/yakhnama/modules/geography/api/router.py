@@ -234,14 +234,35 @@ async def get_place(
     return detail
 
 
+_DISTRICT_EDGES_HEADERS: Final[dict[str, Any]] = {
+    ETAG_HEADER: {
+        "description": (
+            "Strong tag naming the current snapshot; absent while no boundaries "
+            "are loaded."
+        ),
+        "schema": {"type": "string"},
+    },
+    CACHE_CONTROL_HEADER: {
+        "description": (
+            f"`{DISTRICT_EDGES_CACHE_CONTROL}` for a snapshot, "
+            f"`{EMPTY_DISTRICT_EDGES_CACHE_CONTROL}` while none is loaded; "
+            "`no-store` when the request carried a bearer token."
+        ),
+        "schema": {"type": "string"},
+    },
+}
+
+
 @router.get(
     "/boundaries/district-edges",
     response_model=DistrictEdgeFeatureCollection,
     response_class=GeoJsonResponse,
     responses={
+        status.HTTP_200_OK: {"headers": _DISTRICT_EDGES_HEADERS},
         status.HTTP_304_NOT_MODIFIED: {
-            "description": "The representation named by If-None-Match is current"
-        }
+            "description": "The representation named by If-None-Match is current",
+            "headers": _DISTRICT_EDGES_HEADERS,
+        },
     },
 )
 async def get_district_edges(
@@ -261,20 +282,33 @@ async def get_district_edges(
     Returns:
         The ``FeatureCollection``, or an empty ``304``.
     """
-    snapshot = await services.district_edge_query_service.get_current()
+    query_service = services.district_edge_query_service
+    if if_none_match is not None:
+        # Revalidation is the common request; it is answered from the snapshot id
+        # alone, without reading a single edge.
+        current_id = await query_service.get_current_id()
+        if current_id is not None:
+            headers = _district_edges_headers(current_id)
+            if if_none_match_matches(if_none_match, headers[ETAG_HEADER]):
+                return Response(
+                    status_code=status.HTTP_304_NOT_MODIFIED, headers=headers
+                )
+    snapshot = await query_service.get_current()
     if snapshot is None:
         return GeoJsonResponse(
             DistrictEdgeFeatureCollection.empty().model_dump(mode="json"),
             headers={CACHE_CONTROL_HEADER: EMPTY_DISTRICT_EDGES_CACHE_CONTROL},
         )
-    headers = {
-        ETAG_HEADER: make_etag(1, snapshot.edge_set_id),
-        CACHE_CONTROL_HEADER: DISTRICT_EDGES_CACHE_CONTROL,
-    }
-    if if_none_match_matches(if_none_match, headers[ETAG_HEADER]):
-        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    headers = _district_edges_headers(snapshot.edge_set_id)
     return Response(
         content=snapshot.collection.model_dump_json(),
         media_type=GEOJSON_MEDIA_TYPE,
         headers=headers,
     )
+
+
+def _district_edges_headers(edge_set_id: EntityId) -> dict[str, str]:
+    return {
+        ETAG_HEADER: make_etag(1, edge_set_id),
+        CACHE_CONTROL_HEADER: DISTRICT_EDGES_CACHE_CONTROL,
+    }

@@ -184,6 +184,17 @@ class DistrictEdgeQueryService(Protocol):
     Implements: Query Service.
     """
 
+    async def get_current_id(self) -> EntityId | None:
+        """Return the newest committed snapshot's id, without loading its edges.
+
+        Enough to answer a conditional request whose ``If-None-Match`` names the
+        current snapshot.
+
+        Returns:
+            The id, or ``None`` if none is stored.
+        """
+        ...
+
     async def get_current(self) -> DistrictEdgeSnapshot | None:
         """Return the newest committed snapshot as its public collection.
 
@@ -226,7 +237,8 @@ class SharedEdgeCalculator(Protocol):
         """Return the simplified shared edges of every pair of adjacent districts.
 
         No returned line lies on the outer edge of the region (the union of every
-        district of ``boundary_set``).
+        district of ``boundary_set``). The computation is CPU-bound and blocking;
+        the use case calls it in a worker thread.
 
         Args:
             boundary_set: The region's districts.

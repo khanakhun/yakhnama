@@ -6,6 +6,7 @@ calculator, so these tests cover matching, footprints, snapshots and the report,
 not geometry.
 """
 
+import threading
 from datetime import timedelta
 
 import pytest
@@ -49,7 +50,10 @@ from yakhnama.modules.geography.domain.boundaries import (
     SharedEdge,
 )
 from yakhnama.modules.geography.domain.entities import Place
-from yakhnama.modules.geography.domain.errors import BoundarySourceError
+from yakhnama.modules.geography.domain.errors import (
+    BoundaryCoverageInvalidError,
+    BoundarySourceError,
+)
 from yakhnama.modules.geography.domain.events import (
     PlaceCentroidChanged,
     PlaceGeometryChanged,
@@ -110,15 +114,48 @@ def _handler(
     loader: StaticBoundaryLoader | None = None,
     clock: FrozenClock | None = None,
 ) -> LoadDistrictBoundariesHandler:
+    return _handler_with(
+        uow,
+        StaticSharedEdgeCalculator(
+            SharedEdgeComputation(edges=edges, is_coverage_valid=True, dropped_parts=1)
+        ),
+        policy=policy,
+        loader=loader,
+        clock=clock,
+    )
+
+
+def _handler_with(
+    uow: InMemoryGeographyUnitOfWork,
+    calculator: StaticSharedEdgeCalculator,
+    *,
+    policy: AuthorisationPolicy | None = None,
+    loader: StaticBoundaryLoader | None = None,
+    clock: FrozenClock | None = None,
+) -> LoadDistrictBoundariesHandler:
     return LoadDistrictBoundariesHandler(
         uow_factory=InMemoryUnitOfWorkFactory(uow),
         policy=policy or reference_data_policy(),
         loader=loader or StaticBoundaryLoader(_boundary_set()),
-        calculator=StaticSharedEdgeCalculator(
-            SharedEdgeComputation(edges=edges, is_coverage_valid=True, dropped_parts=1)
-        ),
+        calculator=calculator,
         clock=clock or FrozenClock(NOW),
         ids=SequentialIdGenerator(seed=41),
+    )
+
+
+def _invalid_coverage_handler(
+    uow: InMemoryGeographyUnitOfWork, districts: tuple[str, ...]
+) -> LoadDistrictBoundariesHandler:
+    return _handler_with(
+        uow,
+        StaticSharedEdgeCalculator(
+            SharedEdgeComputation(
+                edges=(EDGE_AB, EDGE_BC),
+                is_coverage_valid=False,
+                invalid_coverage_districts=districts,
+                dropped_parts=0,
+            )
+        ),
     )
 
 
@@ -271,6 +308,71 @@ async def test_load_with_failing_loader_raises_and_opens_no_transaction() -> Non
 
     assert uow.commit_count == 0
     assert uow.rollback_count == 0
+
+
+def test_shared_edge_computation_valid_with_invalid_districts_is_rejected() -> None:
+    with pytest.raises(ValueError, match="no invalid districts"):
+        SharedEdgeComputation(
+            edges=(),
+            is_coverage_valid=True,
+            invalid_coverage_districts=("XX101",),
+            dropped_parts=0,
+        )
+
+
+async def test_load_with_invalid_coverage_refuses_to_publish() -> None:
+    uow = InMemoryGeographyUnitOfWork(_gazetteer())
+    handler = _invalid_coverage_handler(uow, ("XX101", "XX102"))
+
+    with pytest.raises(BoundaryCoverageInvalidError) as raised:
+        await handler(_command())
+
+    assert raised.value.details == {
+        "reason": "invalid_coverage",
+        "districts": ["XX101", "XX102"],
+    }
+    assert uow.commit_count == 0
+    assert uow.district_edge_sets.committed == []
+    assert all(place.geometry is None for place in uow.places.committed.values())
+
+
+async def test_load_with_invalid_coverage_publishes_when_allowed() -> None:
+    uow = InMemoryGeographyUnitOfWork(_gazetteer())
+    handler = _invalid_coverage_handler(uow, ("XX101", "XX102"))
+
+    report = await handler(
+        LoadDistrictBoundaries(
+            source=_source(), actor=ADMIN, is_invalid_coverage_allowed=True
+        )
+    )
+
+    assert report.is_coverage_valid is False
+    assert report.invalid_coverage_districts == ("XX101", "XX102")
+    assert len(uow.district_edge_sets.committed) == 1
+
+
+async def test_load_computes_edges_off_the_event_loop() -> None:
+    uow = InMemoryGeographyUnitOfWork(_gazetteer())
+    calculator = StaticSharedEdgeCalculator(
+        SharedEdgeComputation(edges=(EDGE_AB,), is_coverage_valid=True, dropped_parts=0)
+    )
+    handler = _handler_with(uow, calculator)
+
+    await handler(_command())
+
+    assert len(calculator.thread_ids) == 1
+    assert calculator.thread_ids[0] != threading.get_ident()
+
+
+async def test_load_dry_run_with_invalid_coverage_reports_it() -> None:
+    uow = InMemoryGeographyUnitOfWork(_gazetteer())
+    handler = _invalid_coverage_handler(uow, ("XX102",))
+
+    report = await handler(_command(dry_run=True))
+
+    assert report.is_coverage_valid is False
+    assert report.invalid_coverage_districts == ("XX102",)
+    assert uow.committed is False
 
 
 # --------------------------------------------------------------------------- #

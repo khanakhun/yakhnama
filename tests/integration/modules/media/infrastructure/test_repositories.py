@@ -273,3 +273,30 @@ async def test_media_assets_table_location_without_exif_violates_check(
                 text("UPDATE media_assets SET exif = NULL WHERE id = :id"),
                 {"id": asset.id},
             )
+
+
+async def test_find_requested_before_lists_only_old_requested_assets_oldest_first(
+    media_uow_factory: MediaFactory,
+    clock: SteppingClock,
+    ids: SequentialIdGenerator,
+) -> None:
+    oldest = MediaAssetTestFactory.build(created_at=CREATED)
+    older = MediaAssetTestFactory.build(created_at=CREATED + timedelta(minutes=1))
+    recent = MediaAssetTestFactory.build(created_at=CREATED + timedelta(hours=2))
+    completed = _completed(MediaAssetTestFactory.build(created_at=CREATED), clock, ids)
+    async with media_uow_factory() as uow:
+        for asset in (recent, older, oldest):
+            await uow.media_assets.add(asset)
+        await uow.media_assets.add(completed)
+        await uow.commit()
+
+    async with media_uow_factory() as uow:
+        stale = await uow.media_assets.find_requested_before(
+            CREATED + timedelta(hours=1), 10
+        )
+        first = await uow.media_assets.find_requested_before(
+            CREATED + timedelta(hours=1), 1
+        )
+
+    assert [asset.id for asset in stale] == [oldest.id, older.id]
+    assert [asset.id for asset in first] == [oldest.id]

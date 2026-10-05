@@ -79,6 +79,12 @@ class MediaAssetRow(Base):
             "sha256",
             postgresql_where=sql_text("upload_status = 'completed'"),
         ),
+        # Serves the stale-upload sweep, which reads only requested assets.
+        Index(
+            "ix_media_assets_created_at_requested",
+            "created_at",
+            postgresql_where=sql_text("upload_status = 'requested'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)

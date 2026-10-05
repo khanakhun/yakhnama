@@ -16,7 +16,9 @@ relies on (``adm1_pcode``, ``adm2_pcode``, ``adm2_name``) is read here and nowhe
 else, so a change in the dataset's schema surfaces as one ``BoundarySourceError``.
 Errors carry codes, digests and counts only, never file content.
 
-The download is the only network call in the module. It runs when an operator loads
+Every file operation, the parsing (JSON, Shapely, Pydantic) and the hashing run in
+worker threads (``asyncio.to_thread``), so the event loop never waits on them. The
+download is the only network call in the module. It runs when an operator loads
 boundaries (``poetry run poe load-boundaries``), never in the API process and never
 in tests, which pass an ``httpx.MockTransport`` or a pre-filled cache.
 
@@ -136,7 +138,7 @@ class CodAbBoundaryLoader:
                 or the archive's content is not the expected GeoJSON.
         """
         path = cached_archive_path(self._cache_dir, source)
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             await self._download(source, path)
         actual = await asyncio.to_thread(sha256_of, path)
         if actual != source.sha256:
@@ -144,25 +146,27 @@ class CodAbBoundaryLoader:
             raise _error(
                 message, "checksum_mismatch", expected=source.sha256, actual=actual
             )
-        retrieved_at = datetime.fromtimestamp(path.stat().st_mtime, UTC)
-        document = await asyncio.to_thread(_read_member, path, source.archive_member)
-        districts = _region_districts(document, source.region_code)
-        try:
-            return DistrictBoundarySet(
-                attribution=source.attribution(retrieved_at),
-                sha256=actual,
-                region_code=source.region_code,
-                districts=districts,
-            )
-        except pydantic.ValidationError as error:
-            message = "the region's districts do not form a valid boundary set"
-            raise _error(
-                message, "invalid_districts", error_count=error.error_count()
-            ) from None
+        return await asyncio.to_thread(_read_boundary_set, path, source, actual)
 
     async def _download(self, source: DistrictBoundarySource, path: Path) -> None:
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self._cache_dir.mkdir, parents=True, exist_ok=True)
         partial = path.with_suffix(".part")
+        try:
+            digest = await self._stream_to(source, partial)
+        except BoundarySourceError:
+            await asyncio.to_thread(partial.unlink, missing_ok=True)
+            raise
+        if digest != source.sha256:
+            await asyncio.to_thread(partial.unlink, missing_ok=True)
+            message = "the downloaded boundary archive does not have the pinned SHA-256"
+            raise _error(
+                message, "checksum_mismatch", expected=source.sha256, actual=digest
+            )
+        await asyncio.to_thread(partial.replace, path)
+
+    async def _stream_to(self, source: DistrictBoundarySource, partial: Path) -> str:
+        # Every file operation runs in a worker thread: the loader may run in a
+        # process that serves other requests, and a slow disk must not stall it.
         digest = hashlib.sha256()
         size = 0
         try:
@@ -182,7 +186,8 @@ class CodAbBoundaryLoader:
                     raise _error(
                         message, "download_failed", status=response.status_code
                     )
-                with partial.open("wb") as stream:
+                stream = await asyncio.to_thread(partial.open, "wb")
+                try:
                     async for chunk in response.aiter_bytes(_CHUNK_BYTES):
                         size += len(chunk)
                         if size > MAX_ARCHIVE_BYTES:
@@ -191,26 +196,37 @@ class CodAbBoundaryLoader:
                                 message, "too_large", max_bytes=MAX_ARCHIVE_BYTES
                             )
                         digest.update(chunk)
-                        stream.write(chunk)
+                        await asyncio.to_thread(stream.write, chunk)
+                finally:
+                    await asyncio.to_thread(stream.close)
         except httpx.HTTPError as error:
-            partial.unlink(missing_ok=True)
             message = "the boundary download failed"
             raise _error(
                 message, "download_failed", error_type=type(error).__name__
             ) from None
-        except BoundarySourceError:
-            partial.unlink(missing_ok=True)
-            raise
-        if digest.hexdigest() != source.sha256:
-            partial.unlink(missing_ok=True)
-            message = "the downloaded boundary archive does not have the pinned SHA-256"
-            raise _error(
-                message,
-                "checksum_mismatch",
-                expected=source.sha256,
-                actual=digest.hexdigest(),
-            )
-        partial.replace(path)
+        return digest.hexdigest()
+
+
+def _read_boundary_set(
+    path: Path, source: DistrictBoundarySource, sha256: str
+) -> DistrictBoundarySet:
+    # Blocking (zip, JSON, Shapely and Pydantic over a ~10 MB member); the loader
+    # runs it in a worker thread.
+    retrieved_at = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    document = _read_member(path, source.archive_member)
+    districts = _region_districts(document, source.region_code)
+    try:
+        return DistrictBoundarySet(
+            attribution=source.attribution(retrieved_at),
+            sha256=sha256,
+            region_code=source.region_code,
+            districts=districts,
+        )
+    except pydantic.ValidationError as error:
+        message = "the region's districts do not form a valid boundary set"
+        raise _error(
+            message, "invalid_districts", error_count=error.error_count()
+        ) from None
 
 
 def _read_member(path: Path, member: str) -> Any:  # noqa: ANN401  # reason: parsed JSON of an external file, narrowed by _region_districts

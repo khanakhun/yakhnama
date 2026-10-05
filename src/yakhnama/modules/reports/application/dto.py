@@ -427,16 +427,36 @@ class GuestReportReceipt(BaseModel):
 
 
 class GuestSubmissionWindow(BaseModel):
-    """How many guest submissions were opened since an instant, and the oldest.
+    """How many guest submissions did something since an instant, and the oldest.
+
+    Counts either the submissions opened or the reports submitted in the window,
+    for one of the two hourly caps (``GuestCap``).
 
     Implements: DTO.
 
     Attributes:
-        count: Submissions opened since the instant.
-        oldest_opened_at: When the oldest of them was opened, or ``None``.
+        count: Submissions counted since the instant.
+        oldest_at: When the oldest of them was opened (or submitted), or
+            ``None``; the cap frees a place one hour after it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     count: int = Field(ge=0)
-    oldest_opened_at: AwareDatetime | None = None
+    oldest_at: AwareDatetime | None = None
+
+
+class GuestPurgeOutcome(BaseModel):
+    """What one purge of guest records forgot.
+
+    Implements: DTO.
+
+    Attributes:
+        challenges: Spent challenges deleted.
+        submissions: Unfiled guest submissions deleted.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    challenges: int = Field(ge=0)
+    submissions: int = Field(ge=0)

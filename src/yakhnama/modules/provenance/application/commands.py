@@ -102,12 +102,16 @@ class RegisterPlatformSource(BaseModel):
         source_type: ``citizen`` or ``organisation``.
         details: Title, citation and the optional descriptive fields; written by
             the platform, never copied from what a guest typed.
+        source_id: The id the caller reserved for the source, or ``None`` for a
+            fresh one. With an id the command is idempotent: registering it again
+            returns the platform source that already has it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     source_type: SourceType
     details: SourceDetails
+    source_id: EntityId | None = None
 
     @model_validator(mode="after")
     def _only_self_registered_types(self) -> Self:
@@ -115,3 +119,21 @@ class RegisterPlatformSource(BaseModel):
             message = "the platform registers only citizen or organisation sources"
             raise ValueError(message)
         return self
+
+
+class MarkPlatformSourceReferenced(BaseModel):
+    """Freeze a platform-owned source because a fact now cites it.
+
+    Internal, like ``RegisterPlatformSource``: sent once the citing guest report
+    or guest upload is committed, so a source is never frozen for a fact that
+    was not stored (ADR 0020).
+
+    Implements: Command.
+
+    Attributes:
+        source_id: The platform source.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source_id: EntityId

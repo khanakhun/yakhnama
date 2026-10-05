@@ -5,7 +5,7 @@ lives with the composition root, because reading files is I/O) and hands it to t
 module's load use case: hazard types, then impact metrics, then places, then (when
 the composition root wires the ``DatasetSeedStep``) the ingestion dataset catalog,
 with or without its synthetic fixture entries, and last (when it wires the
-``DemoAccountsSeedStep``, outside production only) the development demo accounts,
+``DemoAccountsSeedStep``, in development and test only) the development demo accounts,
 their roles and the demo organisation. Each module
 loads in its own unit of work, so the seed is not one atomic transaction; every load
 is idempotent, so re-running after a partial failure completes the work without
@@ -283,7 +283,7 @@ class SeedReferenceDataHandler:
             datasets: The dataset catalog step; ``None`` leaves the catalog out
                 (``build_seed_handler`` always wires it).
             accounts: The demo accounts step; ``None`` leaves them out
-                (``build_seed_handler`` wires it outside production only).
+                (``build_seed_handler`` wires it in development and test only).
         """
         self._reader = reader
         self._policy = policy

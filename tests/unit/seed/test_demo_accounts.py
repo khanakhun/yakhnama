@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+import pytest
+
 from tests.fakes.clock import FrozenClock
 from tests.fakes.geography import InMemoryGeographyUnitOfWork
 from tests.fakes.hazards import InMemoryHazardsUnitOfWork
@@ -123,6 +125,25 @@ async def test_build_demo_accounts_step_only_outside_production_with_an_issuer(
     assert missing is None
     assert step is not None
     assert {account.identity.issuer for account in step.accounts} == {ISSUER}
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [("development", True), ("test", True), ("production", False), ("staging", False)],
+)
+async def test_build_demo_accounts_step_only_in_development_and_test(
+    settings: Settings, environment: str, *, expected: bool
+) -> None:
+    # model_copy skips validation, so an environment the settings do not know yet
+    # (a future "staging") shows that the rule is an allow-list.
+    container = build_container(
+        settings.model_copy(update={"oidc_issuer": ISSUER, "environment": environment})
+    )
+
+    step = build_demo_accounts_step(container)
+    await container.aclose()
+
+    assert (step is not None) is expected
 
 
 def test_dev_realm_demo_users_match_the_seed_subjects_and_roles() -> None:

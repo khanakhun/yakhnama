@@ -22,6 +22,7 @@ Patterns: Repository (adapter side).
 """
 
 from collections.abc import Iterable
+from typing import Final
 
 from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -232,6 +233,13 @@ class SqlAlchemyPlaceRepository:
         )
 
 
+# The current snapshot is the newest; the id breaks a tie on the timestamp.
+_NEWEST_FIRST: Final = (
+    DistrictEdgeSetRow.created_at.desc(),
+    DistrictEdgeSetRow.id.desc(),
+)
+
+
 class SqlAlchemyDistrictEdgeSetRepository:
     """PostGIS-backed implementation of ``DistrictEdgeSetRepository``.
 
@@ -273,6 +281,17 @@ class SqlAlchemyDistrictEdgeSetRepository:
                 if row in self._session:
                     self._session.expunge(row)
 
+    async def get_current_id(self) -> EntityId | None:
+        """Return the newest snapshot's id without loading its edges.
+
+        Returns:
+            The id ``get_current`` would return, or ``None``.
+        """
+        found: EntityId | None = await self._session.scalar(
+            select(DistrictEdgeSetRow.id).order_by(*_NEWEST_FIRST).limit(1)
+        )
+        return found
+
     async def get_current(self) -> DistrictEdgeSet | None:
         """Return the newest snapshot, including one staged in this transaction.
 
@@ -282,11 +301,7 @@ class SqlAlchemyDistrictEdgeSetRepository:
         """
         set_row = (
             await self._session.execute(
-                select(DistrictEdgeSetRow)
-                .order_by(
-                    DistrictEdgeSetRow.created_at.desc(), DistrictEdgeSetRow.id.desc()
-                )
-                .limit(1)
+                select(DistrictEdgeSetRow).order_by(*_NEWEST_FIRST).limit(1)
             )
         ).scalar_one_or_none()
         if set_row is None:

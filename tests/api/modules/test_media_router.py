@@ -31,7 +31,7 @@ from yakhnama.modules.media.public import (
     ScanStatus,
 )
 
-JPEG = {"mime_type": "image/jpeg"}
+JPEG = {"mime_type": "image/jpeg", "byte_size": 2048}
 
 
 async def _scan_clean(api: ApiHarness, asset_id: str) -> None:
@@ -62,7 +62,8 @@ async def test_request_upload_returns_201_grant_with_location() -> None:
     assert response.headers["location"] == f"{MEDIA}/{body['asset_id']}"
     assert body["upload_url"].startswith("https://storage.example.test/")
     assert body["max_bytes"] > 0
-    assert len(api.storage.presigned_puts) == 1
+    assert {"name": "Content-Length", "value": "2048"} in body["headers"]
+    assert api.storage.presigned_sizes == [(2048, None)]
 
 
 async def test_request_upload_anonymous_returns_401() -> None:
@@ -75,7 +76,17 @@ async def test_request_upload_anonymous_returns_401() -> None:
     assert api.storage.presigned_puts == []
 
 
-@pytest.mark.parametrize("body", [{"mime_type": "text/html"}, {}, JPEG | {"x": 1}])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"mime_type": "text/html", "byte_size": 2048},
+        {},
+        JPEG | {"x": 1},
+        {"mime_type": "image/jpeg"},
+        JPEG | {"byte_size": 0},
+        JPEG | {"byte_size": 50 * 1024 * 1024 + 1},
+    ],
+)
 async def test_request_upload_with_invalid_body_returns_422(
     body: dict[str, object],
 ) -> None:

@@ -8,6 +8,7 @@ compiles; it pages by keyset on ``code`` because it has no relevance ranking.
 Patterns: Fake.
 """
 
+import threading
 from collections.abc import Iterable
 
 from tests.fakes.uow import InMemoryUnitOfWork
@@ -316,6 +317,10 @@ class InMemoryDistrictEdgeQueryService:
     """``DistrictEdgeQueryService`` reading a fake repository's committed snapshots.
 
     Implements: Fake (of Query Service).
+
+    Attributes:
+        snapshot_loads: How many times a whole snapshot was loaded, so a test can
+            tell that a ``304`` was answered from the id alone.
     """
 
     def __init__(self, repository: InMemoryDistrictEdgeSetRepository) -> None:
@@ -325,6 +330,16 @@ class InMemoryDistrictEdgeQueryService:
             repository: The repository whose committed snapshots are served.
         """
         self._repository = repository
+        self.snapshot_loads = 0
+
+    async def get_current_id(self) -> EntityId | None:
+        """Return the newest committed snapshot's id without loading it.
+
+        Returns:
+            The id, or ``None``.
+        """
+        edge_set = self._repository.newest(self._repository.committed)
+        return None if edge_set is None else edge_set.id
 
     async def get_current(self) -> DistrictEdgeSnapshot | None:
         """Return the newest committed snapshot as its public collection.
@@ -332,6 +347,7 @@ class InMemoryDistrictEdgeQueryService:
         Returns:
             The snapshot's id and collection, or ``None``.
         """
+        self.snapshot_loads += 1
         edge_set = self._repository.newest(self._repository.committed)
         if edge_set is None:
             return None
@@ -393,6 +409,8 @@ class StaticSharedEdgeCalculator:
 
     Attributes:
         calls: The boundary sets it was given, in order.
+        thread_ids: The thread each call ran in, so a test can tell that the use
+            case kept the computation off the event loop.
     """
 
     def __init__(self, computation: SharedEdgeComputation) -> None:
@@ -403,6 +421,7 @@ class StaticSharedEdgeCalculator:
         """
         self._computation = computation
         self.calls: list[DistrictBoundarySet] = []
+        self.thread_ids: list[int] = []
 
     def compute(self, boundary_set: DistrictBoundarySet) -> SharedEdgeComputation:
         """Record the call and return the prepared computation.
@@ -414,4 +433,5 @@ class StaticSharedEdgeCalculator:
             The prepared computation.
         """
         self.calls.append(boundary_set)
+        self.thread_ids.append(threading.get_ident())
         return self._computation

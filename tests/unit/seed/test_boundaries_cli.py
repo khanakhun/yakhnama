@@ -21,7 +21,10 @@ from yakhnama.modules.geography.domain.boundaries import (
     DistrictMatch,
     NameDifference,
 )
-from yakhnama.modules.geography.public import LoadDistrictBoundaries
+from yakhnama.modules.geography.public import (
+    BoundaryCoverageInvalidError,
+    LoadDistrictBoundaries,
+)
 from yakhnama.platform.container import Container
 from yakhnama.platform.settings import Settings
 from yakhnama.seed.boundaries.cli import (
@@ -84,7 +87,11 @@ def _match(*, has_mismatches: bool) -> DistrictMatch:
 
 
 def _report(
-    *, is_dry_run: bool = False, has_mismatches: bool = False, payload_bytes: int = 100
+    *,
+    is_dry_run: bool = False,
+    has_mismatches: bool = False,
+    payload_bytes: int = 100,
+    invalid_coverage_districts: tuple[str, ...] = (),
 ) -> BoundaryLoadReport:
     return BoundaryLoadReport(
         dry_run=is_dry_run,
@@ -93,7 +100,8 @@ def _report(
         region_code="XX1",
         districts_in_source=2,
         match=_match(has_mismatches=has_mismatches),
-        is_coverage_valid=True,
+        is_coverage_valid=not invalid_coverage_districts,
+        invalid_coverage_districts=invalid_coverage_districts,
         dropped_parts=0,
         edges=1,
         edges_with_unlinked_district=0,
@@ -169,6 +177,12 @@ def test_parse_arguments_with_flags_returns_dry_run_and_file(tmp_path: Path) -> 
     assert result == BoundaryArguments(is_dry_run=True, source_file=tmp_path / "x.yaml")
 
 
+def test_parse_arguments_with_allow_invalid_coverage_sets_it() -> None:
+    result = parse_arguments(["--allow-invalid-coverage"])
+
+    assert result == BoundaryArguments(is_invalid_coverage_allowed=True)
+
+
 def test_build_parser_program_name_is_module_invocation() -> None:
     assert build_parser().prog == PROGRAM_NAME
 
@@ -216,6 +230,41 @@ def test_log_report_logs_one_warning_per_mismatch_and_over_budget() -> None:
         "boundary_payload_over_budget",
         "boundaries_loaded",
     ]
+
+
+def test_log_report_with_invalid_coverage_warns_per_district() -> None:
+    report = _report(invalid_coverage_districts=("XX101", "XX102"))
+
+    with capture_logs() as logs:
+        log_report(report)
+
+    warnings = [
+        entry["source_code"]
+        for entry in logs
+        if entry["event"] == "boundary_coverage_invalid"
+    ]
+    assert warnings == ["XX101", "XX102"]
+    assert logs[-1]["is_coverage_valid"] is False
+
+
+async def test_run_load_with_invalid_coverage_returns_one_and_names_the_flag() -> None:
+    error = BoundaryCoverageInvalidError.for_districts(("XX101",))
+    command = LoadDistrictBoundaries(
+        source=boundary_source([("XX101", None)]),
+        actor=build_system_actor(CONFIGURED_ACTOR),
+    )
+
+    with capture_logs() as logs:
+        exit_code = await run_load(FakeBoundaryHandler(error=error), command)
+
+    assert exit_code == EXIT_FAILURE
+    assert logs[-1]["event"] == "boundaries_failed"
+    assert logs[-1]["error_code"] == "validation_error"
+    assert logs[-1]["details"] == {
+        "reason": "invalid_coverage",
+        "districts": ["XX101"],
+    }
+    assert "--allow-invalid-coverage" in logs[-1]["hint"]
 
 
 async def test_run_load_error_returns_one_and_logs_failure() -> None:
@@ -276,6 +325,20 @@ def test_main_runs_load_and_returns_zero(configured: Settings) -> None:
 
     assert exit_code == EXIT_SUCCESS
     assert builder.handler.commands[0].dry_run is True
+    assert builder.handler.commands[0].is_invalid_coverage_allowed is False
+
+
+def test_main_with_allow_invalid_coverage_passes_it_to_the_command(
+    configured: Settings,
+) -> None:
+    builder = FakeHandlerBuilder()
+
+    exit_code = main(
+        ["--allow-invalid-coverage"], settings=configured, build_handler=builder
+    )
+
+    assert exit_code == EXIT_SUCCESS
+    assert builder.handler.commands[0].is_invalid_coverage_allowed is True
 
 
 def test_main_handler_error_returns_one(configured: Settings) -> None:

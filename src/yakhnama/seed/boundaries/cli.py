@@ -8,16 +8,24 @@ downloads the pinned archive into ``boundary_cache_dir`` the first time, verifie
 its SHA-256 on every run, links the districts through the committed table, stores
 the linked places' footprints and publishes the shared edges (ADR 0021).
 
+If the districts do not form a valid coverage (overlapping polygons, or gaps
+between them narrower than the outline clearance), the load publishes nothing and
+exits with ``1``; ``--allow-invalid-coverage`` publishes anyway, after the operator
+has looked at the districts named. A ``--dry-run`` reports an invalid coverage
+without refusing, since it publishes nothing.
+
 The outcome is logged, never printed (``AGENTS.md`` §4): one ``boundary_mismatch``
-warning per district the table, the file and the gazetteer disagree on, a
+warning per district the table, the file and the gazetteer disagree on, one
+``boundary_coverage_invalid`` warning per district that breaks the coverage, a
 ``boundary_centroid_kept`` warning per place whose centroid came from another
 source and was left alone, a ``boundary_payload_over_budget`` warning when the
 public payload exceeds ``PAYLOAD_BUDGET_BYTES``, then one ``boundaries_loaded`` line
-with the counts, or one ``boundaries_failed`` line with the error code and details.
+with the counts, or one ``boundaries_failed`` line with the error code and details
+(and a ``hint`` naming the flag when the coverage was refused).
 
 Exit codes: ``0`` on success (mismatches are reported, not failures), ``1`` on a
 ``YakhnamaError`` (a refused actor, an invalid source file, a failed download or
-checksum), ``2`` on invalid arguments.
+checksum, an invalid coverage), ``2`` on invalid arguments.
 
 Patterns: Composition Root.
 """
@@ -32,6 +40,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 
 from yakhnama.modules.geography.public import (
+    BoundaryCoverageInvalidError,
     BoundaryLoadReport,
     DistrictBoundarySource,
     LoadDistrictBoundaries,
@@ -58,6 +67,11 @@ PAYLOAD_BUDGET_BYTES: Final = 150_000
 """Size the public edge payload should stay under for slow connections (Phase 2
 plan, task B2); exceeding it is a warning, not a failure."""
 
+INVALID_COVERAGE_HINT: Final = (
+    "check the districts named in details (overlaps or slivers in the source), "
+    "then rerun with --dry-run to inspect or --allow-invalid-coverage to publish"
+)
+
 type BoundaryHandler = Callable[[LoadDistrictBoundaries], Awaitable[BoundaryLoadReport]]
 """The load use case, usually ``LoadDistrictBoundariesHandler``."""
 
@@ -74,19 +88,22 @@ class BoundaryArguments(BaseModel):
         is_dry_run: Compute and report everything but roll every change back.
         source_file: Boundary source file to read instead of
             ``settings.boundary_source_file``.
+        is_invalid_coverage_allowed: Publish even if the districts do not form a
+            valid coverage.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     is_dry_run: bool = False
     source_file: Path | None = None
+    is_invalid_coverage_allowed: bool = False
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Return the argument parser of ``python -m yakhnama.seed.boundaries``.
 
     Returns:
-        A parser for ``[--dry-run] [--source-file PATH]``.
+        A parser for ``[--dry-run] [--source-file PATH] [--allow-invalid-coverage]``.
     """
     parser = argparse.ArgumentParser(
         prog=PROGRAM_NAME,
@@ -106,6 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="the boundary source YAML file (default: settings)",
     )
+    parser.add_argument(
+        "--allow-invalid-coverage",
+        action="store_true",
+        help=(
+            "publish even if the district polygons overlap or leave slivers "
+            "between them (refused by default)"
+        ),
+    )
     return parser
 
 
@@ -124,7 +149,9 @@ def parse_arguments(argv: Sequence[str] | None = None) -> BoundaryArguments:
     namespace = build_parser().parse_args(argv)
     # Namespace attributes are untyped; they are validated into the model at once.
     return BoundaryArguments(
-        is_dry_run=namespace.dry_run, source_file=namespace.source_file
+        is_dry_run=namespace.dry_run,
+        source_file=namespace.source_file,
+        is_invalid_coverage_allowed=namespace.allow_invalid_coverage,
     )
 
 
@@ -180,6 +207,8 @@ def log_report(report: BoundaryLoadReport) -> None:
             place_code=match.place_code_of(difference.source_code),
             place_name=difference.source_name,
         )
+    for code in report.invalid_coverage_districts:
+        logger.warning("boundary_coverage_invalid", source_code=code)
     for code in report.centroid_kept:
         logger.warning("boundary_centroid_kept", place_code=code)
     if report.payload_bytes > PAYLOAD_BUDGET_BYTES:
@@ -198,6 +227,7 @@ def log_report(report: BoundaryLoadReport) -> None:
         districts_linked=len(match.linked),
         has_mismatches=match.has_mismatches,
         is_coverage_valid=report.is_coverage_valid,
+        invalid_coverage_districts=len(report.invalid_coverage_districts),
         edges=report.edges,
         edges_with_unlinked_district=report.edges_with_unlinked_district,
         dropped_parts=report.dropped_parts,
@@ -216,12 +246,18 @@ def log_report(report: BoundaryLoadReport) -> None:
 def _log_failure(error: YakhnamaError, *, is_dry_run: bool) -> None:
     # One line, no exc_info: a YakhnamaError's message and details are written to
     # be safe to show; a traceback would carry locals and chained causes.
+    hint = (
+        {"hint": INVALID_COVERAGE_HINT}
+        if isinstance(error, BoundaryCoverageInvalidError)
+        else {}
+    )
     structlog.get_logger(__name__).error(
         "boundaries_failed",
         error_code=error.code,
         message=error.message,
         details=dict(error.details),
         dry_run=is_dry_run,
+        **hint,
     )
 
 
@@ -265,6 +301,7 @@ async def load(
     settings: Settings,
     *,
     is_dry_run: bool,
+    is_invalid_coverage_allowed: bool = False,
     build_handler: BoundaryHandlerBuilder = build_district_boundary_handler,
 ) -> int:
     """Read the source, build the container, run the load once and dispose it.
@@ -272,6 +309,7 @@ async def load(
     Args:
         settings: The settings to build the container from.
         is_dry_run: Roll every change back.
+        is_invalid_coverage_allowed: Publish even from an invalid coverage.
         build_handler: Wires the load use case; tests pass a fake.
 
     Returns:
@@ -288,7 +326,12 @@ async def load(
         actor = build_system_actor(resolve_actor_id(settings, container))
         return await run_load(
             build_handler(container),
-            LoadDistrictBoundaries(source=source, actor=actor, dry_run=is_dry_run),
+            LoadDistrictBoundaries(
+                source=source,
+                actor=actor,
+                dry_run=is_dry_run,
+                is_invalid_coverage_allowed=is_invalid_coverage_allowed,
+            ),
         )
     finally:
         await container.aclose()
@@ -323,6 +366,7 @@ def main(
         load(
             resolved_settings,
             is_dry_run=arguments.is_dry_run,
+            is_invalid_coverage_allowed=arguments.is_invalid_coverage_allowed,
             build_handler=build_handler,
         )
     )

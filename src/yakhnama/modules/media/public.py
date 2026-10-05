@@ -21,6 +21,7 @@ from yakhnama.modules.media.application.commands import (
     RecordScanResult,
     RequestGuestUpload,
     RequestUpload,
+    SweepStaleUploads,
 )
 from yakhnama.modules.media.application.dto import (
     HttpHeader,
@@ -40,6 +41,7 @@ from yakhnama.modules.media.application.handlers import (
     RecordScanResultHandler,
     RequestGuestUploadHandler,
     RequestUploadHandler,
+    SweepStaleUploadsHandler,
 )
 from yakhnama.modules.media.application.ports import (
     SCAN_TASK,
@@ -131,6 +133,8 @@ __all__ = [
     "SensitivityFlag",
     "StoragePort",
     "StoredObject",
+    "SweepStaleUploads",
+    "SweepStaleUploadsHandler",
     "UploadGrant",
     "UploadStatus",
     "moderation_policy",

@@ -7,6 +7,8 @@ deployment-specific value is committed (``AGENTS.md`` §4, hard rules).
 Patterns: Settings (pydantic-settings ``BaseSettings``, proposed in ADR 0011).
 """
 
+import base64
+import binascii
 import functools
 from collections.abc import Callable
 from pathlib import Path
@@ -59,8 +61,17 @@ DEVELOPMENT_GUEST_CHALLENGE_SECRET: Final = (
     "guest-challenge-secret-dev-only-not-for-production"  # noqa: S105  # reason: public dev value
 )
 GUEST_CHALLENGE_SECRET_MIN_LENGTH: Final = 32
-# Proposed floor for production: below 12 bits a proof costs a bot almost nothing.
-PRODUCTION_MIN_GUEST_DIFFICULTY_BITS: Final = 12
+# Production wants the secret as URL-safe base64 of at least 32 random bytes, with at
+# least 16 distinct byte values (32 random bytes have about 30); a typed phrase or a
+# repeated pattern fails.
+GUEST_CHALLENGE_SECRET_MIN_BYTES: Final = 32
+GUEST_CHALLENGE_SECRET_MIN_DISTINCT_BYTES: Final = 16
+# Proposed floor for production (ADR 0020, Q222): 18 bits is about 262 000 hashes,
+# five to nine seconds on a Moto G4; tests and local runs may go lower.
+PRODUCTION_MIN_GUEST_DIFFICULTY_BITS: Final = 18
+# The ceiling of the adaptive difficulty: 22 bits is 85 to 140 seconds on average on
+# a Moto G4 (30 000 to 50 000 SHA-256 per second in a WebCrypto worker).
+GUEST_DIFFICULTY_BITS_CEILING: Final = 22
 # S3 bucket naming rules: 3-63 lower-case letters, digits, dots and hyphens.
 BUCKET_NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
 
@@ -263,17 +274,36 @@ class Settings(BaseSettings):
         clamav_port: clamd's TCP port.
         clamav_timeout_seconds: Upper bound for one whole scan.
         guest_challenge_secret: The key that signs guest proof-of-work challenges
-            (ADR 0020); a ``SecretStr``, at least 32 characters. Changing it
-            invalidates the challenges in flight.
-        guest_pow_difficulty_bits: Leading zero bits a guest's proof of work
-            needs (1-32; at least 12 in production). Each bit doubles the
-            expected work; 16 is a few seconds on a low-end phone.
+            (ADR 0020); a ``SecretStr``, at least 32 characters. In production it
+            must be URL-safe base64 of at least 32 random bytes and differ from
+            every other configured secret. Changing it invalidates the challenges
+            in flight.
+        guest_pow_difficulty_bits: Base leading zero bits of a guest's proof of
+            work (1-22; at least 18 in production). Each bit doubles the expected
+            work; 18 is five to nine seconds on a low-end phone.
+        guest_pow_difficulty_max_bits: Ceiling of the adaptive difficulty (at
+            least the base, at most 22).
+        guest_pow_difficulty_step: Submissions opened in the last hour per extra
+            bit of difficulty.
         guest_challenge_ttl_seconds: How long a challenge may be solved and
             redeemed.
-        guest_capability_ttl_minutes: How long a guest submission's capability
-            works.
+        guest_capability_ttl_seconds: How long a guest submission's capability
+            works (replaces ``guest_capability_ttl_minutes``).
         guest_submissions_per_hour: Most guest submissions opened in any rolling
             hour, by all guests together.
+        guest_reports_per_hour: Most guest reports submitted in any rolling hour,
+            by all guests together; what protects the moderators' queue.
+        guest_receipt_grace_seconds: How long after the capability expired a
+            retry of the submitted report still gets its receipt; also how long
+            an unfiled submission is kept after it expired.
+        guest_upload_presign_ttl_seconds: Lifetime of a guest's photo upload URL.
+        guest_purge_interval_seconds: How often the scheduler enqueues
+            ``reports.purge_guest_records``.
+        media_upload_sweep_after_seconds: Age after which an upload that never
+            completed is failed and its upload object deleted; longer than every
+            upload URL's lifetime and every guest capability.
+        media_upload_sweep_interval_seconds: How often the scheduler enqueues
+            ``media.sweep_stale_uploads``.
     """
 
     model_config = SettingsConfigDict(
@@ -417,10 +447,30 @@ class Settings(BaseSettings):
         min_length=GUEST_CHALLENGE_SECRET_MIN_LENGTH,
         max_length=256,
     )
-    guest_pow_difficulty_bits: int = Field(default=16, ge=1, le=32)
+    guest_pow_difficulty_bits: int = Field(
+        default=PRODUCTION_MIN_GUEST_DIFFICULTY_BITS,
+        ge=1,
+        le=GUEST_DIFFICULTY_BITS_CEILING,
+    )
+    guest_pow_difficulty_max_bits: int = Field(
+        default=GUEST_DIFFICULTY_BITS_CEILING, ge=1, le=GUEST_DIFFICULTY_BITS_CEILING
+    )
+    guest_pow_difficulty_step: int = Field(default=200, ge=1, le=100_000)
     guest_challenge_ttl_seconds: int = Field(default=600, ge=60, le=3600)
-    guest_capability_ttl_minutes: int = Field(default=30, ge=5, le=240)
-    guest_submissions_per_hour: int = Field(default=200, ge=1, le=100_000)
+    guest_capability_ttl_seconds: int = Field(default=1800, ge=300, le=14_400)
+    guest_submissions_per_hour: int = Field(default=2000, ge=1, le=1_000_000)
+    guest_reports_per_hour: int = Field(default=200, ge=1, le=100_000)
+    guest_receipt_grace_seconds: int = Field(default=86_400, ge=0, le=604_800)
+    # Proposed: five minutes covers one photo of a few MiB on a slow link (S3
+    # checks the expiry when the upload starts) and keeps a leaked URL short-lived.
+    guest_upload_presign_ttl_seconds: int = Field(default=300, ge=60, le=3600)
+    guest_purge_interval_seconds: int = Field(default=900, ge=60, le=86_400)
+
+    # Abandoned uploads (ADR 0009, ADR 0020). Proposed: two hours is longer than the
+    # longest upload URL (one hour at most) and the default guest capability, so
+    # only truly abandoned grants go.
+    media_upload_sweep_after_seconds: int = Field(default=7200, ge=600, le=604_800)
+    media_upload_sweep_interval_seconds: int = Field(default=900, ge=60, le=86_400)
 
     @field_validator("database_url", mode="after")
     @classmethod
@@ -492,6 +542,28 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_consistent_guest_limits(self) -> Self:
+        if self.guest_pow_difficulty_bits > self.guest_pow_difficulty_max_bits:
+            message = (
+                "guest_pow_difficulty_bits must not exceed "
+                "guest_pow_difficulty_max_bits"
+            )
+            raise ValueError(message)
+        # A sweep before a URL or a capability lapsed would fail uploads an honest
+        # client may still complete.
+        if self.media_upload_sweep_after_seconds <= max(
+            self.storage_presign_ttl_seconds,
+            self.guest_upload_presign_ttl_seconds,
+            self.guest_capability_ttl_seconds,
+        ):
+            message = (
+                "media_upload_sweep_after_seconds must exceed every upload URL "
+                "lifetime and guest_capability_ttl_seconds"
+            )
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
     def _require_lease_to_cover_one_subscriber(self) -> Self:
         # A lease shorter than one subscriber call would expire during every slow
         # call, so a second relay would deliver the same message concurrently.
@@ -544,6 +616,38 @@ def _has_test_client_host(settings: Settings) -> bool:
     return bool(
         TEST_CLIENT_HOSTS.intersection(host.lower() for host in settings.trusted_hosts)
     )
+
+
+def _decoded_base64url(value: str) -> bytes | None:
+    # Padding is optional in configuration; anything outside the URL-safe alphabet
+    # is not base64url.
+    try:
+        return base64.b64decode(
+            value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
+        )
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _is_weak_guest_challenge_secret(settings: Settings) -> bool:
+    decoded = _decoded_base64url(settings.guest_challenge_secret.get_secret_value())
+    return (
+        decoded is None
+        or len(decoded) < GUEST_CHALLENGE_SECRET_MIN_BYTES
+        or len(set(decoded)) < GUEST_CHALLENGE_SECRET_MIN_DISTINCT_BYTES
+    )
+
+
+def _reuses_another_secret(settings: Settings) -> bool:
+    # A key shared with another system means one leak breaks both.
+    secret = settings.guest_challenge_secret.get_secret_value()
+    others = {settings.storage_secret_access_key.get_secret_value()}
+    others.update(
+        password
+        for host in settings.database_url.hosts()
+        if (password := host.get("password"))
+    )
+    return secret in others
 
 
 # (is the rule broken?, message naming the field). A table rather than a chain of
@@ -628,10 +732,18 @@ PRODUCTION_RULES: Final[tuple[tuple[Callable[[Settings], bool], str], ...]] = (
         "guest_challenge_secret must not be the development default",
     ),
     (
+        _is_weak_guest_challenge_secret,
+        "guest_challenge_secret must be URL-safe base64 of at least 32 random bytes",
+    ),
+    (
+        _reuses_another_secret,
+        "guest_challenge_secret must differ from every other configured secret",
+    ),
+    (
         lambda settings: (
             settings.guest_pow_difficulty_bits < PRODUCTION_MIN_GUEST_DIFFICULTY_BITS
         ),
-        "guest_pow_difficulty_bits must be at least 12",
+        "guest_pow_difficulty_bits must be at least 18",
     ),
 )
 

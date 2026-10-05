@@ -18,9 +18,11 @@ from yakhnama.modules.reports.domain.errors import (
     GuestSubmissionLimitError,
 )
 from yakhnama.modules.reports.domain.guest_submissions import (
+    DIFFICULTY_BITS_CEILING,
     GUEST_IMAGE_TYPES,
     GUEST_MEDIA_MAX,
     REFERENCE_ALPHABET,
+    GuestCap,
     GuestChallenge,
     GuestSubmission,
     GuestSubmissionLimits,
@@ -34,6 +36,7 @@ NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
 IDS = SequentialIdGenerator(seed=901)
 SUBMISSION_ID = IDS.new_id()
 REPORT_ID = IDS.new_id()
+SOURCE_ID = IDS.new_id()
 CAPABILITY = "c" * 43
 FINGERPRINT = "f" * 64
 LIMITS = GuestSubmissionLimits()
@@ -136,9 +139,58 @@ def test_guest_challenge_invalid_fields_are_refused(fields: dict[str, object]) -
         GuestChallenge.model_validate({**fields, "expires_at": NOW})
 
 
-def test_guest_submission_limits_non_positive_lifetime_is_refused() -> None:
-    with pytest.raises(ValidationError, match="must be positive"):
-        GuestSubmissionLimits(capability_ttl=timedelta(0))
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"capability_ttl": timedelta(0)},
+        {"challenge_ttl": timedelta(seconds=-1)},
+        {"receipt_grace": timedelta(seconds=-1)},
+        {"difficulty_bits": 20, "difficulty_max_bits": 19},
+        {"difficulty_max_bits": DIFFICULTY_BITS_CEILING + 1},
+    ],
+)
+def test_guest_submission_limits_inconsistent_values_are_refused(
+    fields: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        GuestSubmissionLimits.model_validate(fields)
+
+
+@pytest.mark.parametrize(
+    ("opened_last_hour", "expected"),
+    [(0, 18), (199, 18), (200, 19), (799, 21), (800, 22), (10_000, 22), (-5, 18)],
+)
+def test_difficulty_for_adds_one_bit_per_step_up_to_the_maximum(
+    opened_last_hour: int, expected: int
+) -> None:
+    limits = GuestSubmissionLimits(
+        difficulty_bits=18, difficulty_max_bits=22, difficulty_step=200
+    )
+
+    difficulty = limits.difficulty_for(opened_last_hour)
+
+    assert difficulty == expected
+
+
+@given(
+    st.integers(min_value=0, max_value=10**7), st.integers(min_value=0, max_value=50)
+)
+def test_difficulty_for_never_falls_as_more_submissions_open(
+    opened_last_hour: int, more: int
+) -> None:
+    limits = GuestSubmissionLimits(difficulty_bits=8, difficulty_step=7)
+
+    before = limits.difficulty_for(opened_last_hour)
+    after = limits.difficulty_for(opened_last_hour + more)
+
+    assert limits.difficulty_bits <= before <= after <= limits.difficulty_max_bits
+
+
+def test_cap_of_names_each_hourly_limit() -> None:
+    limits = GuestSubmissionLimits(opened_per_hour=900, reports_per_hour=90)
+
+    assert limits.cap_of(GuestCap.OPENED) == 900
+    assert limits.cap_of(GuestCap.REPORTS) == 90
 
 
 def test_guest_image_types_equal_the_media_publishable_types() -> None:
@@ -200,33 +252,97 @@ def test_attach_media_same_asset_twice_changes_nothing() -> None:
     assert again == submission
 
 
-def test_record_report_closes_the_submission() -> None:
+def reserved(clock: FrozenClock | None = None) -> GuestSubmission:
+    """Return a submission opened and reserved at ``NOW``."""
+    clock = clock or FrozenClock(NOW)
+    return opened(clock).reserve_report(FINGERPRINT, SOURCE_ID, clock=clock).state
+
+
+def test_reserve_report_records_fingerprint_source_and_submission_time() -> None:
+    clock = FrozenClock(NOW + timedelta(minutes=3))
+
+    submission = opened().reserve_report(FINGERPRINT, SOURCE_ID, clock=clock).state
+
+    assert submission.is_open is False
+    assert submission.is_filed is False
+    assert submission.content_fingerprint == FINGERPRINT
+    assert submission.source_id == SOURCE_ID
+    assert submission.submitted_at == NOW + timedelta(minutes=3)
+    assert submission.version == 2
+
+
+def test_record_report_files_the_reserved_report() -> None:
     clock = FrozenClock(NOW)
 
-    closed = (
-        opened(clock)
-        .record_report(REPORT_ID, "YK-ABCD-2345", FINGERPRINT, clock=clock)
-        .state
-    )
+    filed = reserved(clock).record_report(REPORT_ID, "YK-ABCD-2345", clock=clock).state
 
-    assert closed.is_open is False
-    assert closed.report_id == REPORT_ID
-    assert closed.reference == "YK-ABCD-2345"
-    assert closed.submitted_at == NOW
+    assert filed.is_filed is True
+    assert filed.report_id == REPORT_ID
+    assert filed.reference == "YK-ABCD-2345"
+    assert filed.submitted_at == NOW
 
 
-def test_closed_submission_refuses_media_and_a_second_report() -> None:
+def test_record_report_without_reservation_or_twice_is_refused() -> None:
     clock = FrozenClock(NOW)
-    closed = (
-        opened(clock)
-        .record_report(REPORT_ID, "YK-ABCD-2345", FINGERPRINT, clock=clock)
-        .state
-    )
+    filed = reserved(clock).record_report(REPORT_ID, "YK-ABCD-2345", clock=clock).state
 
     with pytest.raises(GuestSubmissionClosedError):
-        closed.attach_media(IDS.new_id(), clock=clock)
+        opened(clock).record_report(REPORT_ID, "YK-ABCD-2345", clock=clock)
     with pytest.raises(GuestSubmissionClosedError):
-        closed.record_report(REPORT_ID, "YK-ABCD-2346", FINGERPRINT, clock=clock)
+        filed.record_report(REPORT_ID, "YK-ABCD-2346", clock=clock)
+
+
+def test_reserved_submission_refuses_media_and_a_second_reservation() -> None:
+    clock = FrozenClock(NOW)
+    submission = reserved(clock)
+
+    with pytest.raises(GuestSubmissionClosedError):
+        submission.attach_media(IDS.new_id(), clock=clock)
+    with pytest.raises(GuestSubmissionClosedError):
+        submission.reserve_report(FINGERPRINT, SOURCE_ID, clock=clock)
+
+
+def test_is_retry_of_matches_only_the_reserved_fingerprint() -> None:
+    submission = reserved()
+
+    assert submission.is_retry_of(FINGERPRINT) is True
+    assert submission.is_retry_of("e" * 64) is False
+    assert opened().is_retry_of(FINGERPRINT) is False
+
+
+def test_is_within_receipt_grace_until_expiry_plus_grace() -> None:
+    submission = reserved()
+    grace = timedelta(hours=24)
+    end = submission.expires_at + grace
+
+    assert submission.is_within_receipt_grace(end - timedelta(seconds=1), grace)
+    assert not submission.is_within_receipt_grace(end, grace)
+
+
+def test_detach_media_gives_the_slot_back_while_open() -> None:
+    clock = FrozenClock(NOW)
+    asset_id = IDS.new_id()
+    submission = opened(clock).attach_media(asset_id, clock=clock).state
+
+    detached = submission.detach_media(asset_id, clock=clock).state
+
+    assert detached.media_ids == ()
+    assert detached.version == submission.version + 1
+
+
+def test_detach_media_of_unknown_asset_or_reserved_submission_changes_nothing() -> None:
+    clock = FrozenClock(NOW)
+    asset_id = IDS.new_id()
+    with_photo = opened(clock).attach_media(asset_id, clock=clock).state
+    reserved_with_photo = with_photo.reserve_report(
+        FINGERPRINT, SOURCE_ID, clock=clock
+    ).state
+
+    unknown = with_photo.detach_media(IDS.new_id(), clock=clock).state
+    closed = reserved_with_photo.detach_media(asset_id, clock=clock).state
+
+    assert unknown == with_photo
+    assert closed == reserved_with_photo
 
 
 @pytest.mark.parametrize(
@@ -235,6 +351,9 @@ def test_closed_submission_refuses_media_and_a_second_report() -> None:
         {"report_id": REPORT_ID},
         {"reference": "YK-ABCD-2345"},
         {"reference": "YK-ABCD-0000"},
+        {"content_fingerprint": FINGERPRINT},
+        {"source_id": SOURCE_ID, "content_fingerprint": FINGERPRINT},
+        {"report_id": REPORT_ID, "reference": "YK-ABCD-2345"},
         {"media_ids": (SUBMISSION_ID, SUBMISSION_ID)},
         {"expires_at": NOW},
         {"updated_at": NOW - timedelta(seconds=1)},

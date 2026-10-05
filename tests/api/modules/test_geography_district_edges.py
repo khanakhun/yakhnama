@@ -18,7 +18,11 @@ from tests.factories.boundaries import (
 )
 from tests.factories.geography import PlaceTestFactory
 from tests.fakes.api import ApiHarness, auth_headers, build_test_app
-from tests.fakes.geography import StaticBoundaryLoader, StaticSharedEdgeCalculator
+from tests.fakes.geography import (
+    InMemoryDistrictEdgeQueryService,
+    StaticBoundaryLoader,
+    StaticSharedEdgeCalculator,
+)
 from tests.fakes.identity import actor_with
 from tests.fakes.ids import SequentialIdGenerator
 from tests.fakes.uow import InMemoryUnitOfWorkFactory
@@ -89,6 +93,17 @@ async def test_district_edges_without_boundaries_returns_empty_collection() -> N
     assert "etag" not in response.headers
 
 
+async def test_district_edges_without_boundaries_ignores_if_none_match() -> None:
+    api = build_test_app()
+
+    async with api.client() as client:
+        response = await client.get(PATH, headers={"If-None-Match": "*"})
+
+    assert response.status_code == 200
+    assert response.json()["features"] == []
+    assert "etag" not in response.headers
+
+
 async def test_district_edges_returns_lines_with_attribution_and_cache_headers() -> (
     None
 ):
@@ -143,6 +158,29 @@ async def test_district_edges_with_current_etag_returns_304_without_body() -> No
         assert response.headers["cache-control"] == "public, max-age=86400"
 
 
+def _edge_query_service(api: ApiHarness) -> InMemoryDistrictEdgeQueryService:
+    service = api.app.state.container.district_edge_query_service
+    assert isinstance(service, InMemoryDistrictEdgeQueryService)
+    return service
+
+
+async def test_district_edges_with_current_etag_does_not_load_the_edges() -> None:
+    api = _with_edges()
+    service = _edge_query_service(api)
+
+    async with api.client() as client:
+        cached = await client.get(
+            PATH, headers={"If-None-Match": make_etag(1, EDGE_SET_ID)}
+        )
+        loads_after_304 = service.snapshot_loads
+        fresh = await client.get(PATH)
+
+    assert cached.status_code == 304
+    assert loads_after_304 == 0
+    assert fresh.status_code == 200
+    assert service.snapshot_loads == 1
+
+
 async def test_district_edges_with_stale_etag_returns_200() -> None:
     api = _with_edges()
 
@@ -185,6 +223,11 @@ def test_district_edges_openapi_types_the_geojson_body() -> None:
         "$ref": "#/components/schemas/DistrictEdgeFeatureCollection"
     }
     assert "304" in operation["responses"]
+    for code in ("200", "304"):
+        assert set(operation["responses"][code]["headers"]) == {
+            "ETag",
+            "Cache-Control",
+        }
     assert "security" not in operation
     schemas = document["components"]["schemas"]
     assert set(schemas["DistrictEdgeFeatureCollection"]["required"]) == {

@@ -7,8 +7,9 @@ The S3 calls themselves run against a real MinIO in
 import struct
 import warnings
 import zlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from PIL import ExifTags, Image, PngImagePlugin
@@ -267,6 +268,49 @@ async def test_s3_storage_presign_put_only_for_upload_keys(key: str) -> None:
 
     with pytest.raises(StorageError, match="only for upload keys"):
         await storage.presign_put(key, MimeType.JPEG, 1024)
+
+
+async def test_s3_storage_presign_put_signs_type_and_exact_length() -> None:
+    storage = _storage()
+
+    grant = await storage.presign_put(
+        "media/upload/1234", MimeType.PNG, 4321, ttl=timedelta(seconds=120)
+    )
+
+    query = parse_qs(urlsplit(grant.url).query)
+    assert query["X-Amz-SignedHeaders"] == ["content-length;content-type;host"]
+    assert query["X-Amz-Expires"] == ["120"]
+    assert grant.expires_at == NOW + timedelta(seconds=120)
+    assert [(header.name, header.value) for header in grant.headers] == [
+        ("Content-Type", "image/png"),
+        ("Content-Length", "4321"),
+    ]
+
+
+async def test_s3_storage_presign_put_default_lifetime_is_the_configured_one() -> None:
+    storage = _storage()
+
+    grant = await storage.presign_put("media/upload/1234", MimeType.PNG, 1)
+
+    assert grant.expires_at == NOW + timedelta(seconds=300)
+
+
+@pytest.mark.parametrize("byte_size", [0, -1, 50 * 1024 * 1024 + 1])
+async def test_s3_storage_presign_put_size_outside_the_cap_is_refused(
+    byte_size: int,
+) -> None:
+    storage = _storage()
+
+    with pytest.raises(StorageError, match="outside the accepted range"):
+        await storage.presign_put("media/upload/1234", MimeType.PNG, byte_size)
+
+
+@pytest.mark.parametrize("key", ["media/original/1234", "media/public/1234"])
+async def test_s3_storage_delete_upload_only_for_upload_keys(key: str) -> None:
+    storage = _storage()
+
+    with pytest.raises(StorageError, match="only upload keys"):
+        await storage.delete_upload(key)
 
 
 @pytest.mark.parametrize(

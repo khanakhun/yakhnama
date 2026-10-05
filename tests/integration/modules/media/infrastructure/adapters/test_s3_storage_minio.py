@@ -145,8 +145,54 @@ async def test_s3_presign_put_expiry_is_now_plus_ttl_and_url_is_the_upload_key(
     assert grant.expires_at == STORAGE_NOW + timedelta(seconds=PRESIGN_TTL_SECONDS)
     assert f"/{buckets.private}/{UPLOAD}" in grant.url
     assert [(header.name, header.value) for header in grant.headers] == [
-        ("Content-Type", "image/png")
+        ("Content-Type", "image/png"),
+        ("Content-Length", "1024"),
     ]
+
+
+@pytest.mark.parametrize("actual_length", [1023, 1025, 4096])
+async def test_s3_presigned_put_with_another_length_is_refused(
+    storage: S3StoragePort, actual_length: int
+) -> None:
+    grant = await storage.presign_put(UPLOAD, MimeType.JPEG, 1024)
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        # httpx sets Content-Length from the body, exactly as a browser does.
+        response = await client.put(
+            grant.url,
+            content=b"\xff" * actual_length,
+            headers={"Content-Type": "image/jpeg"},
+        )
+
+    assert response.status_code == httpx.codes.FORBIDDEN
+    assert await storage.head(UPLOAD) is None
+
+
+async def test_s3_presigned_put_with_the_announced_length_is_stored(
+    storage: S3StoragePort,
+) -> None:
+    grant = await storage.presign_put(UPLOAD, MimeType.JPEG, 1024)
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.put(
+            grant.url, content=b"\xff" * 1024, headers={"Content-Type": "image/jpeg"}
+        )
+
+    stored = await storage.head(UPLOAD)
+    assert response.status_code == httpx.codes.OK
+    assert stored is not None
+    assert stored.byte_size == 1024
+
+
+async def test_s3_delete_upload_removes_the_object_and_tolerates_absence(
+    storage: S3StoragePort,
+) -> None:
+    await put_through_presigned_url(storage, b"\xff" * 16, MimeType.JPEG)
+
+    await storage.delete_upload(UPLOAD)
+    await storage.delete_upload(UPLOAD)
+
+    assert await storage.head(UPLOAD) is None
 
 
 async def test_s3_presigned_put_with_another_content_type_is_refused(
@@ -172,8 +218,11 @@ async def test_s3_head_missing_object_returns_none(storage: S3StoragePort) -> No
 async def test_s3_oversize_upload_is_described_without_hashing_or_sealing(
     minio_server: MinioServer, buckets: Buckets
 ) -> None:
+    # No URL is signed for more than the cap any more; the object is written
+    # directly, as a misbehaving S3 clone that ignored the signed length would.
     storage = build_storage(minio_server, buckets, max_object_bytes=1024)
-    await put_through_presigned_url(storage, b"\x00" * 2048, MimeType.PDF)
+    async with admin_client(minio_server) as client:
+        await client.put_object(Bucket=buckets.private, Key=UPLOAD, Body=b"\x00" * 2048)
 
     stored = await storage.seal_upload(UPLOAD, ORIGINAL)
 

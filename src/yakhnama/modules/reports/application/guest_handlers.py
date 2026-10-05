@@ -2,36 +2,50 @@
 
 The guest drives five steps, each its own handler:
 
-1. ``IssueGuestChallengeHandler`` signs a proof-of-work challenge; nothing is stored.
+1. ``IssueGuestChallengeHandler`` signs a proof-of-work challenge whose difficulty
+   rises with the submissions opened in the last hour; nothing is stored.
 2. ``OpenGuestSubmissionHandler`` checks the signature, the expiry and the answer,
-   checks the global hourly cap, spends the challenge and opens a submission with a
+   checks both hourly caps, spends the challenge and opens a submission with a
    fresh capability, in one unit of work, so a challenge opens at most one
    submission even when two requests race.
-3. ``RequestGuestMediaUploadHandler`` grants up to ``GUEST_MEDIA_MAX`` photo
-   uploads, owned by the submission, through the media module.
-4. ``CompleteGuestMediaUploadHandler`` completes one of them.
-5. ``SubmitGuestReportHandler`` registers a platform-owned source, then stores the
-   report (channel ``guest``, reporter = the submission) and closes the submission
-   in one unit of work, and enqueues triage as for every report. A retry of the
-   same content returns the same receipt; different content is refused.
+3. ``RequestGuestMediaUploadHandler`` first **reserves a photo slot** for a new
+   asset id (a version-checked save, retried when parallel uploads of the same
+   guest collide), then has the media module create exactly that asset and
+   presign its upload. A fourth slot is refused before any asset or source
+   exists; a failed grant gives its slot back.
+4. ``CompleteGuestMediaUploadHandler`` completes a granted photo, also after the
+   report was submitted, until the capability expires.
+5. ``SubmitGuestReportHandler`` first **reserves the report**: under the reports
+   cap's lock it records the content fingerprint and the id the report's source
+   will have (a version-checked save, so of two concurrent requests exactly one
+   reserves). Only then is the platform source registered (idempotently, under
+   the reserved id), and the report stored and the submission filed in one unit
+   of work; the source is marked referenced after that commit, and triage is
+   enqueued as for every report. A retry of the same content, or a request that
+   lost a race, reloads and returns the same receipt, also up to
+   ``GuestSubmissionLimits.receipt_grace`` after the capability expired.
 
-Steps 3 to 5 first check the capability (``_authorise``): an unknown submission, a
-missing or wrong capability are one and the same error, so submission ids cannot be
-probed; an expired capability has its own error, so the client can tell the guest
-to start again.
+Steps 3 to 5 first check the capability: an unknown submission, a missing or wrong
+capability are one and the same error, so submission ids cannot be probed; an
+expired capability has its own error, so the client can tell the guest to start
+again.
 
-The cross-module calls (media, provenance) run outside the reports unit of work,
-like ``SubmitReportHandler``'s; an interruption between them leaves an unused asset
-or source that nothing cites, which is harmless.
+The two hourly caps (``GuestCap``) are counted under a transaction-scoped database
+lock per cap (``GuestSubmissionRepository.lock_cap``), so concurrent requests cannot
+overshoot them together. ``PurgeGuestRecordsHandler`` (a periodic system task)
+forgets spent challenges and unfiled submissions past their retention.
 
 Patterns: Command Handler, Unit of Work, Dependency Injection.
 """
 
-from datetime import timedelta
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 from typing import Final
 
 from yakhnama.modules.media.public import UploadGrant
 from yakhnama.modules.provenance.public import (
+    MarkPlatformSourceReferenced,
+    PlatformSourceReferenceMarker,
     PlatformSourceRegistrar,
     RegisterPlatformSource,
     SourceDetails,
@@ -41,14 +55,17 @@ from yakhnama.modules.reports.application.commands import (
     CompleteGuestMediaUpload,
     IssueGuestChallenge,
     OpenGuestSubmission,
+    PurgeGuestRecords,
     RequestGuestMediaUpload,
     SubmitGuestReport,
 )
 from yakhnama.modules.reports.application.dto import (
     GuestChallengeGrant,
     GuestMediaAsset,
+    GuestPurgeOutcome,
     GuestReportReceipt,
     GuestSubmissionGrant,
+    GuestSubmissionWindow,
 )
 from yakhnama.modules.reports.application.handlers import (
     enqueue_triage,
@@ -62,11 +79,13 @@ from yakhnama.modules.reports.application.ports import (
     ReportsUnitOfWork,
     ReportsUnitOfWorkFactory,
 )
+from yakhnama.modules.reports.domain.entities import Report
 from yakhnama.modules.reports.domain.errors import (
     GuestCapabilityExpiredError,
     GuestCapabilityInvalidError,
     GuestChallengeExpiredError,
     GuestChallengeInvalidError,
+    GuestChallengeSpentError,
     GuestMediaLimitError,
     GuestMediaNotFoundError,
     GuestProofInvalidError,
@@ -77,6 +96,7 @@ from yakhnama.modules.reports.domain.factories import ReportFactory
 from yakhnama.modules.reports.domain.guest_submissions import (
     GUEST_MEDIA_MAX,
     PROOF_OF_WORK_ALGORITHM,
+    GuestCap,
     GuestChallenge,
     GuestSubmission,
     GuestSubmissionLimits,
@@ -98,10 +118,30 @@ GUEST_SOURCE_TITLE: Final = "Guest community report"
 GUEST_SOURCE_CITATION: Final = "Yakhnama guest community report"
 
 CAP_WINDOW: Final = timedelta(hours=1)
-"""The rolling window of ``GuestSubmissionLimits.submissions_per_hour``."""
+"""The rolling window of both hourly caps (``GuestCap``)."""
+
+CHALLENGE_PURGE_GRACE: Final = timedelta(minutes=5)
+"""How long a spent challenge is kept after it expired, by the database's clock.
+
+A redemption that began just before the expiry may still be running; the margin
+keeps its record until it has certainly finished.
+"""
+
+SAVE_RETRIES: Final = GUEST_MEDIA_MAX
+"""Extra attempts of a version-checked change that lost a race.
+
+Enough for every photo of one guest uploading in parallel; each attempt reloads.
+"""
 
 REFERENCE_ATTEMPTS: Final = 5
 """Fresh references drawn before giving up; one collision is already rare."""
+
+# Conflicts the domain decided; a retry would decide the same, so they propagate.
+_DECIDED_CONFLICTS: Final = (
+    GuestMediaLimitError,
+    GuestSubmissionClosedError,
+    GuestChallengeSpentError,
+)
 
 
 def content_fingerprint(content: ReportContent) -> str:
@@ -131,10 +171,11 @@ class GuestHandlerDependencies:
         media: Requests and completes guest uploads (media module).
         media_checker: Confirms a report's media belong to its submission.
         source_registrar: Registers the platform-owned report source.
+        source_marker: Freezes that source once the report is stored.
         task_queue: Schedules triage of the guest report.
-        limits: Difficulty, lifetimes and the hourly cap, from settings.
+        limits: Difficulty, lifetimes and the hourly caps, from settings.
         clock: Source of every timestamp.
-        ids: Source of submission, report and event ids.
+        ids: Source of submission, asset, source, report and event ids.
     """
 
     def __init__(  # noqa: PLR0913  # reason: one keyword per injected port, all required
@@ -146,6 +187,7 @@ class GuestHandlerDependencies:
         media: GuestMediaGateway,
         media_checker: MediaOwnershipChecker,
         source_registrar: PlatformSourceRegistrar,
+        source_marker: PlatformSourceReferenceMarker,
         task_queue: TaskQueue,
         limits: GuestSubmissionLimits,
         clock: Clock,
@@ -160,10 +202,11 @@ class GuestHandlerDependencies:
             media: Requests and completes guest uploads.
             media_checker: Confirms a report's media belong to its submission.
             source_registrar: Registers the platform-owned report source.
+            source_marker: Freezes that source once the report is stored.
             task_queue: Schedules triage of the guest report.
-            limits: Difficulty, lifetimes and the hourly cap.
+            limits: Difficulty, lifetimes and the hourly caps.
             clock: Source of every timestamp.
-            ids: Source of submission, report and event ids.
+            ids: Source of submission, asset, source, report and event ids.
         """
         self.uow_factory = uow_factory
         self.signer = signer
@@ -171,17 +214,41 @@ class GuestHandlerDependencies:
         self.media = media
         self.media_checker = media_checker
         self.source_registrar = source_registrar
+        self.source_marker = source_marker
         self.task_queue = task_queue
         self.limits = limits
         self.clock = clock
         self.ids = ids
 
 
-async def _authorise(
-    uow: ReportsUnitOfWork,
+async def _run_step[ResultT](
     dependencies: GuestHandlerDependencies,
-    submission_id: EntityId,
-    capability: str | None,
+    step: Callable[[ReportsUnitOfWork], Awaitable[ResultT]],
+) -> ResultT:
+    async with dependencies.uow_factory() as uow:
+        result = await step(uow)
+        await uow.commit()
+    return result
+
+
+async def _run_with_retries[ResultT](
+    dependencies: GuestHandlerDependencies,
+    step: Callable[[ReportsUnitOfWork], Awaitable[ResultT]],
+) -> ResultT:
+    # A version conflict means another request changed the submission between
+    # this step's read and its write; the step reloads and decides again.
+    for _ in range(SAVE_RETRIES):
+        try:
+            return await _run_step(dependencies, step)
+        except _DECIDED_CONFLICTS:
+            raise
+        except ConflictError:
+            continue
+    return await _run_step(dependencies, step)
+
+
+async def _load_with_capability(
+    uow: ReportsUnitOfWork, submission_id: EntityId, capability: str | None
 ) -> GuestSubmission:
     submission = await uow.guest_submissions.get(submission_id)
     if (
@@ -190,18 +257,47 @@ async def _authorise(
         or not submission.is_capability(capability)
     ):
         raise GuestCapabilityInvalidError.create()
-    if submission.is_expired(dependencies.clock.now()):
-        raise GuestCapabilityExpiredError.for_submission(submission.id)
     return submission
 
 
-def _require_open(submission: GuestSubmission) -> None:
-    if not submission.is_open:
-        raise GuestSubmissionClosedError.for_submission(submission.id)
+def _require_unexpired(submission: GuestSubmission, now: datetime) -> None:
+    if submission.is_expired(now):
+        raise GuestCapabilityExpiredError.for_submission(submission.id)
+
+
+async def _authorise(
+    uow: ReportsUnitOfWork,
+    dependencies: GuestHandlerDependencies,
+    submission_id: EntityId,
+    capability: str | None,
+) -> GuestSubmission:
+    submission = await _load_with_capability(uow, submission_id, capability)
+    _require_unexpired(submission, dependencies.clock.now())
+    return submission
+
+
+async def _require_below_cap(
+    uow: ReportsUnitOfWork,
+    dependencies: GuestHandlerDependencies,
+    cap: GuestCap,
+    now: datetime,
+) -> None:
+    since = now - CAP_WINDOW
+    repository = uow.guest_submissions
+    window: GuestSubmissionWindow = await (
+        repository.count_opened_since(since)
+        if cap is GuestCap.OPENED
+        else repository.count_submitted_since(since)
+    )
+    if window.count < dependencies.limits.cap_of(cap):
+        return
+    oldest = now if window.oldest_at is None else window.oldest_at
+    wait = oldest + CAP_WINDOW - now
+    raise GuestSubmissionLimitError.retry_after(int(wait.total_seconds()) + 1)
 
 
 def _receipt(submission: GuestSubmission) -> GuestReportReceipt:
-    # Only a closed submission has a receipt; the invariant sets both together.
+    # Only a filed submission has a receipt; the invariant sets both together.
     if submission.reference is None or submission.submitted_at is None:
         raise GuestSubmissionClosedError.for_submission(submission.id)
     return GuestReportReceipt(
@@ -224,7 +320,7 @@ class IssueGuestChallengeHandler:
         self._dependencies = dependencies
 
     async def __call__(self, command: IssueGuestChallenge) -> GuestChallengeGrant:
-        """Issue a challenge at the configured difficulty.
+        """Issue a challenge at the difficulty the last hour calls for.
 
         Args:
             command: The (empty) command.
@@ -234,14 +330,15 @@ class IssueGuestChallengeHandler:
         """
         del command
         dependencies = self._dependencies
+        now = dependencies.clock.now()
+        async with dependencies.uow_factory() as uow:
+            opened = await uow.guest_submissions.count_opened_since(now - CAP_WINDOW)
         challenge = GuestChallenge(
             salt=dependencies.secrets.new_salt(),
-            difficulty_bits=dependencies.limits.difficulty_bits,
+            difficulty_bits=dependencies.limits.difficulty_for(opened.count),
             # Whole seconds: the signed token carries the expiry in Unix seconds,
             # so the grant states exactly the instant the token enforces.
-            expires_at=(
-                dependencies.clock.now() + dependencies.limits.challenge_ttl
-            ).replace(microsecond=0),
+            expires_at=(now + dependencies.limits.challenge_ttl).replace(microsecond=0),
         )
         return GuestChallengeGrant(
             challenge=dependencies.signer.sign(challenge),
@@ -269,6 +366,9 @@ class OpenGuestSubmissionHandler:
     async def __call__(self, command: OpenGuestSubmission) -> GuestSubmissionGrant:
         """Verify the proof of work, then open the submission.
 
+        The reports cap is checked here as well, without its lock: when guests
+        may not file any more reports this hour, nobody is asked to write one.
+
         Args:
             command: The signed challenge and the answer.
 
@@ -278,9 +378,10 @@ class OpenGuestSubmissionHandler:
 
         Raises:
             GuestChallengeInvalidError: If the challenge was not signed here.
-            GuestChallengeExpiredError: If the challenge has expired.
+            GuestChallengeExpiredError: If the challenge has expired, by the
+                application's or the database's clock.
             GuestProofInvalidError: If the nonce does not solve it.
-            GuestSubmissionLimitError: If the hourly cap is reached.
+            GuestSubmissionLimitError: If an hourly cap is reached.
             GuestChallengeSpentError: If the challenge opened a submission before.
         """
         dependencies = self._dependencies
@@ -294,16 +395,9 @@ class OpenGuestSubmissionHandler:
             raise GuestProofInvalidError.create()
         capability = dependencies.secrets.new_capability()
         async with dependencies.uow_factory() as uow:
-            await uow.spent_challenges.purge_expired(now)
-            window = await uow.guest_submissions.count_opened_since(now - CAP_WINDOW)
-            if window.count >= dependencies.limits.submissions_per_hour:
-                oldest = (
-                    now if window.oldest_opened_at is None else window.oldest_opened_at
-                )
-                wait = oldest + CAP_WINDOW - now
-                raise GuestSubmissionLimitError.retry_after(
-                    int(wait.total_seconds()) + 1
-                )
+            await uow.guest_submissions.lock_cap(GuestCap.OPENED)
+            await _require_below_cap(uow, dependencies, GuestCap.OPENED, now)
+            await _require_below_cap(uow, dependencies, GuestCap.REPORTS, now)
             await uow.spent_challenges.spend(challenge.salt, challenge.expires_at)
             submission = GuestSubmission.open(
                 dependencies.ids.new_id(),
@@ -322,7 +416,7 @@ class OpenGuestSubmissionHandler:
 
 
 class RequestGuestMediaUploadHandler:
-    """Grant one photo upload to an open guest submission.
+    """Reserve a photo slot of an open guest submission, then grant its upload.
 
     Implements: Command Handler.
     """
@@ -336,10 +430,10 @@ class RequestGuestMediaUploadHandler:
         self._dependencies = dependencies
 
     async def __call__(self, command: RequestGuestMediaUpload) -> UploadGrant:
-        """Check the capability and the limit, then request the upload.
+        """Reserve the slot, then have the media module create the asset.
 
         Args:
-            command: The submission, capability and image type.
+            command: The submission, capability, image type and size.
 
         Returns:
             The media module's upload grant for the new asset.
@@ -351,32 +445,53 @@ class RequestGuestMediaUploadHandler:
             GuestMediaLimitError: If the submission has its three photos.
         """
         dependencies = self._dependencies
-        async with dependencies.uow_factory() as uow:
+        asset_id = dependencies.ids.new_id()
+
+        async def reserve(uow: ReportsUnitOfWork) -> GuestSubmission:
             submission = await _authorise(
                 uow, dependencies, command.submission_id, command.capability
             )
-            _require_open(submission)
-            if len(submission.media_ids) >= GUEST_MEDIA_MAX:
-                raise GuestMediaLimitError.for_submission(
-                    submission.id, GUEST_MEDIA_MAX
-                )
-        grant = await dependencies.media.request_upload(
-            submission.id, command.mime_type
-        )
-        async with dependencies.uow_factory() as uow:
-            # Reloaded: another request may have used a slot meanwhile; the
-            # aggregate refuses a fourth photo whatever the first check saw.
-            current = await _authorise(
-                uow, dependencies, command.submission_id, command.capability
+            change = submission.attach_media(asset_id, clock=dependencies.clock)
+            reserved = change.record_into(uow)
+            await uow.guest_submissions.save(reserved)
+            return reserved
+
+        submission = await _run_with_retries(dependencies, reserve)
+        try:
+            return await dependencies.media.request_upload(
+                submission.id,
+                command.mime_type,
+                asset_id=asset_id,
+                byte_size=command.byte_size,
             )
-            change = current.attach_media(grant.asset_id, clock=dependencies.clock)
-            await uow.guest_submissions.save(change.record_into(uow))
-            await uow.commit()
-        return grant
+        except Exception:
+            # The slot names an asset that may not exist; give it back so a
+            # storage hiccup does not cost the guest a photo. If the asset was
+            # created before the failure, the stale-upload sweep fails it later.
+            await self._release(submission.id, asset_id)
+            raise
+
+    async def _release(self, submission_id: EntityId, asset_id: EntityId) -> None:
+        dependencies = self._dependencies
+
+        async def release(uow: ReportsUnitOfWork) -> None:
+            submission = await uow.guest_submissions.get(submission_id)
+            if submission is None:
+                return
+            change = submission.detach_media(asset_id, clock=dependencies.clock)
+            if change.state is not submission:
+                await uow.guest_submissions.save(change.record_into(uow))
+
+        await _run_with_retries(dependencies, release)
 
 
 class CompleteGuestMediaUploadHandler:
-    """Complete a photo upload of an open guest submission.
+    """Complete a photo upload granted to a guest submission.
+
+    A photo whose upload finishes just after the report was submitted can still
+    be completed until the capability expires, so an honest late completion is
+    not left behind. It is not added to the report: a report's photos are the ones
+    its content listed when it was submitted.
 
     Implements: Command Handler.
     """
@@ -401,7 +516,6 @@ class CompleteGuestMediaUploadHandler:
         Raises:
             GuestCapabilityInvalidError: If the capability is missing or wrong.
             GuestCapabilityExpiredError: If it has expired.
-            GuestSubmissionClosedError: If the report was already submitted.
             GuestMediaNotFoundError: If the asset was not granted to it.
         """
         dependencies = self._dependencies
@@ -409,7 +523,6 @@ class CompleteGuestMediaUploadHandler:
             submission = await _authorise(
                 uow, dependencies, command.submission_id, command.capability
             )
-        _require_open(submission)
         if command.asset_id not in submission.media_ids:
             raise GuestMediaNotFoundError.for_asset(command.asset_id)
         return await dependencies.media.complete_upload(submission.id, command.asset_id)
@@ -440,70 +553,128 @@ class SubmitGuestReportHandler:
 
         Raises:
             GuestCapabilityInvalidError: If the capability is missing or wrong.
-            GuestCapabilityExpiredError: If it has expired.
+            GuestCapabilityExpiredError: If it has expired, and this is not a
+                retry of the submitted report within the receipt grace.
             GuestSubmissionClosedError: If a different report was submitted.
+            GuestSubmissionLimitError: If the hourly reports cap is reached.
             PermissionDeniedError: If the content attaches media this submission
                 did not upload.
         """
         dependencies = self._dependencies
         fingerprint = content_fingerprint(command.content)
-        async with dependencies.uow_factory() as uow:
-            submission = await _authorise(
-                uow, dependencies, command.submission_id, command.capability
-            )
-        if not submission.is_open:
-            return self._replay(submission, fingerprint)
-        await require_own_media(
-            dependencies.media_checker, command.content, submission.id
-        )
-        source = await dependencies.source_registrar(
+
+        async def reserve(uow: ReportsUnitOfWork) -> GuestSubmission:
+            return await self._reserve(uow, command, fingerprint)
+
+        reserved = await _run_with_retries(dependencies, reserve)
+        if reserved.is_filed:
+            return await self._replay(reserved)
+        await dependencies.source_registrar(
             RegisterPlatformSource(
                 source_type=SourceType.CITIZEN,
                 details=SourceDetails(
                     title=GUEST_SOURCE_TITLE, citation=GUEST_SOURCE_CITATION
                 ),
+                source_id=reserved.source_id,
             )
         )
-        async with dependencies.uow_factory() as uow:
-            current = await _authorise(
-                uow, dependencies, command.submission_id, command.capability
-            )
-            if not current.is_open:
-                return self._replay(current, fingerprint)
-            report = (
-                ReportFactory()
-                .submitted(
-                    dependencies.ids.new_id(),
-                    ReportAttribution(
-                        reporter_id=current.id,
-                        source_id=source.id,
-                        channel=ReportChannel.GUEST,
-                    ),
-                    command.content,
-                    clock=dependencies.clock,
-                    ids=dependencies.ids,
-                )
-                .record_into(uow)
-            )
-            await uow.reports.add(report)
-            closed = current.record_report(
-                report.id,
-                await self._new_reference(uow),
-                fingerprint,
-                clock=dependencies.clock,
-            ).record_into(uow)
-            await uow.guest_submissions.save(closed)
-            await uow.commit()
-        await enqueue_triage(dependencies.task_queue, report.id)
-        return _receipt(closed)
 
-    @staticmethod
-    def _replay(submission: GuestSubmission, fingerprint: str) -> GuestReportReceipt:
-        # The same content again is a retry after a lost response; anything else
-        # is a second report, which a submission never carries.
-        if submission.content_fingerprint != fingerprint:
-            raise GuestSubmissionClosedError.for_submission(submission.id)
-        return _receipt(submission)
+        async def file(uow: ReportsUnitOfWork) -> tuple[GuestSubmission, Report | None]:
+            return await self._file(uow, reserved.id, command.content)
+
+        try:
+            filed, report = await _run_step(dependencies, file)
+        except ConflictError:
+            # Another request filed the same reservation first; its receipt is
+            # this request's receipt.
+            winner = await self._reload(reserved.id)
+            if winner is None or not winner.is_filed:
+                raise
+            filed, report = winner, None
+        if report is None:
+            return await self._replay(filed)
+        await self._mark_source(filed)
+        await enqueue_triage(dependencies.task_queue, report.id)
+        return _receipt(filed)
+
+    async def _reserve(
+        self, uow: ReportsUnitOfWork, command: SubmitGuestReport, fingerprint: str
+    ) -> GuestSubmission:
+        dependencies = self._dependencies
+        submission = await _load_with_capability(
+            uow, command.submission_id, command.capability
+        )
+        now = dependencies.clock.now()
+        if not submission.is_open:
+            # Replay wins over expiry: the same content again is a retry after a
+            # lost response, answered for a grace period after the capability
+            # expired; anything else is a second report, never accepted.
+            if not submission.is_retry_of(fingerprint):
+                raise GuestSubmissionClosedError.for_submission(submission.id)
+            if not submission.is_within_receipt_grace(
+                now, dependencies.limits.receipt_grace
+            ):
+                raise GuestCapabilityExpiredError.for_submission(submission.id)
+            return submission
+        _require_unexpired(submission, now)
+        await require_own_media(
+            dependencies.media_checker, command.content, submission.id
+        )
+        await uow.guest_submissions.lock_cap(GuestCap.REPORTS)
+        await _require_below_cap(uow, dependencies, GuestCap.REPORTS, now)
+        reserved = submission.reserve_report(
+            fingerprint, dependencies.ids.new_id(), clock=dependencies.clock
+        ).record_into(uow)
+        await uow.guest_submissions.save(reserved)
+        return reserved
+
+    async def _file(
+        self, uow: ReportsUnitOfWork, submission_id: EntityId, content: ReportContent
+    ) -> tuple[GuestSubmission, Report | None]:
+        dependencies = self._dependencies
+        current = await uow.guest_submissions.get(submission_id)
+        if current is None or current.source_id is None:
+            # Purged or never reserved: nothing this request may still file.
+            raise GuestSubmissionClosedError.for_submission(submission_id)
+        if current.is_filed:
+            return current, None
+        report = (
+            ReportFactory()
+            .submitted(
+                dependencies.ids.new_id(),
+                ReportAttribution(
+                    reporter_id=current.id,
+                    source_id=current.source_id,
+                    channel=ReportChannel.GUEST,
+                ),
+                content,
+                clock=dependencies.clock,
+                ids=dependencies.ids,
+            )
+            .record_into(uow)
+        )
+        await uow.reports.add(report)
+        filed = current.record_report(
+            report.id, await self._new_reference(uow), clock=dependencies.clock
+        ).record_into(uow)
+        await uow.guest_submissions.save(filed)
+        return filed, report
+
+    async def _reload(self, submission_id: EntityId) -> GuestSubmission | None:
+        async with self._dependencies.uow_factory() as uow:
+            return await uow.guest_submissions.get(submission_id)
+
+    async def _replay(self, filed: GuestSubmission) -> GuestReportReceipt:
+        # Marking again is idempotent and repairs a filing whose request died
+        # between its commit and the mark.
+        await self._mark_source(filed)
+        return _receipt(filed)
+
+    async def _mark_source(self, filed: GuestSubmission) -> None:
+        if filed.source_id is not None:
+            await self._dependencies.source_marker(
+                MarkPlatformSourceReferenced(source_id=filed.source_id)
+            )
 
     async def _new_reference(self, uow: ReportsUnitOfWork) -> str:
         for _ in range(REFERENCE_ATTEMPTS):
@@ -512,3 +683,42 @@ class SubmitGuestReportHandler:
                 return reference
         message = "no free guest reference could be drawn; retry"
         raise ConflictError(message, details={"reason": "reference_exhausted"})
+
+
+class PurgeGuestRecordsHandler:
+    """Forget what guest reporting no longer needs (ADR 0020, Q226).
+
+    - Spent challenges ``CHALLENGE_PURGE_GRACE`` after they expired, by the
+      database's clock: by then they could open nothing even if replayed.
+    - Submissions that never filed a report, ``receipt_grace`` after their
+      capability expired. Filed submissions are kept: the report names the
+      submission as its reporter, and the reference is the guest's only handle.
+
+    Implements: Command Handler.
+    """
+
+    def __init__(self, dependencies: GuestHandlerDependencies) -> None:
+        """Create the handler.
+
+        Args:
+            dependencies: The shared guest dependencies.
+        """
+        self._dependencies = dependencies
+
+    async def __call__(self, command: PurgeGuestRecords) -> GuestPurgeOutcome:
+        """Purge both kinds of record in one unit of work.
+
+        Args:
+            command: The (empty) command.
+
+        Returns:
+            How many challenges and submissions were forgotten.
+        """
+        del command
+        dependencies = self._dependencies
+        cutoff = dependencies.clock.now() - dependencies.limits.receipt_grace
+        async with dependencies.uow_factory() as uow:
+            challenges = await uow.spent_challenges.purge_expired(CHALLENGE_PURGE_GRACE)
+            submissions = await uow.guest_submissions.purge_unfiled(cutoff)
+            await uow.commit()
+        return GuestPurgeOutcome(challenges=challenges, submissions=submissions)

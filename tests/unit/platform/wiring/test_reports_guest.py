@@ -1,6 +1,6 @@
 """Unit tests for ``GuestMediaGatewayAdapter`` over the media handlers and fakes."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 from tests.fakes.clock import FrozenClock
@@ -11,7 +11,10 @@ from tests.fakes.media import (
     FakeStoragePort,
     InMemoryMediaUnitOfWork,
 )
-from tests.fakes.provenance import FakePlatformSourceRegistrar
+from tests.fakes.provenance import (
+    FakePlatformSourceReferenceMarker,
+    FakePlatformSourceRegistrar,
+)
 from tests.fakes.tasks import RecordingTaskQueue
 from tests.fakes.uow import InMemoryUnitOfWorkFactory
 from yakhnama.modules.media.public import (
@@ -35,11 +38,14 @@ async def test_guest_media_gateway_grants_and_completes_a_submission_photo() -> 
     sniffer = FakeMimeSniffer()
     ids = SequentialIdGenerator(seed=962)
     factory = InMemoryUnitOfWorkFactory(media)
+    registrar = FakePlatformSourceRegistrar()
     gateway = GuestMediaGatewayAdapter(
         request_upload=RequestGuestUploadHandler(
             uow_factory=factory,
             storage=storage,
-            source_registrar=FakePlatformSourceRegistrar(),
+            source_registrar=registrar,
+            source_marker=FakePlatformSourceReferenceMarker(registrar),
+            upload_ttl=timedelta(minutes=5),
             clock=CLOCK,
             ids=ids,
         ),
@@ -54,13 +60,18 @@ async def test_guest_media_gateway_grants_and_completes_a_submission_photo() -> 
         ),
     )
 
-    grant = await gateway.request_upload(SUBMISSION_ID, "image/png")
+    asset_id = ids.new_id()
+    grant = await gateway.request_upload(
+        SUBMISSION_ID, "image/png", asset_id=asset_id, byte_size=4096
+    )
     storage.objects[upload_object_key(grant.asset_id)] = StoredObject(
         sha256="a" * 64, byte_size=4096, content_type="image/png"
     )
     sniffer.types[original_object_key(grant.asset_id)] = MimeType.PNG
     completed = await gateway.complete_upload(SUBMISSION_ID, grant.asset_id)
 
+    assert grant.asset_id == asset_id
+    assert storage.presigned_sizes == [(4096, timedelta(minutes=5))]
     assert media.media_assets.committed[grant.asset_id].owner_id == SUBMISSION_ID
     assert completed.id == grant.asset_id
     assert completed.mime_type == "image/png"

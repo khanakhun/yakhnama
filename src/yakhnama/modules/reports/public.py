@@ -23,6 +23,7 @@ from yakhnama.modules.reports.application.commands import (
     CompleteGuestMediaUpload,
     IssueGuestChallenge,
     OpenGuestSubmission,
+    PurgeGuestRecords,
     RequestGuestMediaUpload,
     ReviseReport,
     RunTriage,
@@ -33,6 +34,7 @@ from yakhnama.modules.reports.application.commands import (
 from yakhnama.modules.reports.application.dto import (
     GuestChallengeGrant,
     GuestMediaAsset,
+    GuestPurgeOutcome,
     GuestReportReceipt,
     GuestSubmissionGrant,
     GuestSubmissionWindow,
@@ -47,6 +49,7 @@ from yakhnama.modules.reports.application.guest_handlers import (
     GuestHandlerDependencies,
     IssueGuestChallengeHandler,
     OpenGuestSubmissionHandler,
+    PurgeGuestRecordsHandler,
     RequestGuestMediaUploadHandler,
     SubmitGuestReportHandler,
 )
@@ -114,6 +117,7 @@ from yakhnama.modules.reports.domain.errors import (
 )
 from yakhnama.modules.reports.domain.guest_submissions import (
     GUEST_MEDIA_MAX,
+    GuestCap,
     GuestChallenge,
     GuestSubmission,
     GuestSubmissionLimits,
@@ -155,6 +159,7 @@ __all__ = [
     "ConsentMethod",
     "FindNearbyReports",
     "GetReport",
+    "GuestCap",
     "GuestCapabilityExpiredError",
     "GuestCapabilityInvalidError",
     "GuestChallenge",
@@ -170,6 +175,7 @@ __all__ = [
     "GuestMediaLimitError",
     "GuestMediaNotFoundError",
     "GuestProofInvalidError",
+    "GuestPurgeOutcome",
     "GuestReportReceipt",
     "GuestSecretGenerator",
     "GuestSubmission",
@@ -190,6 +196,8 @@ __all__ = [
     "OpenGuestSubmissionHandler",
     "PhotoEvidence",
     "PhotoEvidenceProvider",
+    "PurgeGuestRecords",
+    "PurgeGuestRecordsHandler",
     "ReportChannel",
     "ReportChannelSpecification",
     "ReportContent",

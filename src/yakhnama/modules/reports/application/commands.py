@@ -9,9 +9,10 @@ Patterns: Command.
 
 from typing import Annotated, Final
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from yakhnama.modules.identity.public import Actor
+from yakhnama.modules.media.public import MAX_MEDIA_BYTES
 from yakhnama.modules.reports.domain.guest_submissions import ProofNonce
 from yakhnama.modules.reports.domain.value_objects import (
     AssistedSubmission,
@@ -35,6 +36,9 @@ CapabilityText = Annotated[
     str, StringConstraints(max_length=CAPABILITY_TEXT_MAX_LENGTH)
 ]
 """A capability as presented; only its digest is ever compared, never its format."""
+
+PhotoByteSize = Annotated[int, Field(ge=1, le=MAX_MEDIA_BYTES)]
+"""A guest photo's exact size in bytes, signed into its upload URL."""
 
 
 class SubmitReport(BaseModel):
@@ -154,6 +158,7 @@ class RequestGuestMediaUpload(BaseModel):
         submission_id: The guest submission.
         capability: The capability the guest presented, or ``None``.
         mime_type: The declared image type.
+        byte_size: The photo's exact size; storage refuses any other length.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -161,6 +166,7 @@ class RequestGuestMediaUpload(BaseModel):
     submission_id: EntityId
     capability: CapabilityText | None
     mime_type: GuestImageType
+    byte_size: PhotoByteSize
 
 
 class CompleteGuestMediaUpload(BaseModel):
@@ -198,3 +204,15 @@ class SubmitGuestReport(BaseModel):
     submission_id: EntityId
     capability: CapabilityText | None
     content: ReportContent
+
+
+class PurgeGuestRecords(BaseModel):
+    """Forget spent challenges and unfiled guest submissions past their retention.
+
+    A system command, sent by the periodic ``reports.purge_guest_records`` task
+    (ADR 0020, Q226).
+
+    Implements: Command.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")

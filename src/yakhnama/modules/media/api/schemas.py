@@ -61,11 +61,15 @@ class RequestUploadRequest(BaseModel):
     Attributes:
         mime_type: The declared media type, from the allow-list; the file's
             content is checked against it again when the upload completes.
+        byte_size: The file's exact size in bytes, 1 to ``MAX_MEDIA_BYTES``. The
+            upload URL signs it as ``Content-Length``, so storage refuses a body
+            of any other length; the client must ``PUT`` exactly the file.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mime_type: MimeType
+    byte_size: ByteSize
 
 
 class ModerateMediaRequest(BaseModel):

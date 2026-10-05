@@ -13,9 +13,13 @@ domain on every read.
 ``channel`` says how a report reached the platform (``account``, ``guest``,
 ``assisted``; ADR 0019); the three ``assisted_*`` columns hold the consent record
 of an assisted report and are set exactly for that channel (checked by
-``assisted_matches_channel``). ``guest_submissions`` and ``guest_challenges`` hold
-the guest channel's access records (ADR 0020): a submission's capability is stored
-only as its SHA-256 digest, and a spent challenge only as its salt and expiry.
+``assisted_matches_channel``); a guest report names no organisation
+(``guest_without_organisation``). ``guest_submissions`` and ``guest_challenges``
+hold the guest channel's access records (ADR 0020): a submission's capability is
+stored only as its SHA-256 digest, and a spent challenge only as its salt and
+expiry. A submission's report is first reserved (``content_fingerprint``,
+``source_id``, ``submitted_at``) and then filed (``report_id``, ``reference``); the
+checks mirror the aggregate's invariants.
 
 The revision chain is kept inside the table: ``supersedes_id`` and
 ``superseded_by_id`` reference ``reports.id`` (``ON DELETE RESTRICT``, and reports are
@@ -92,6 +96,20 @@ class ReportRow(Base):
             "channel IN ('account', 'guest', 'assisted')", name="channel_known"
         ),
         CheckConstraint(
+            "channel <> 'guest' OR organization_id IS NULL",
+            name="guest_without_organisation",
+        ),
+        CheckConstraint(
+            "assisted_consent_method IS NULL "
+            "OR assisted_consent_method IN ('verbal', 'written')",
+            name="assisted_consent_method_known",
+        ),
+        CheckConstraint(
+            "assisted_consent_statement_version IS NULL "
+            "OR assisted_consent_statement_version ~ '^[a-z0-9][a-z0-9._-]{0,31}$'",
+            name="assisted_statement_version_format",
+        ),
+        CheckConstraint(
             "(channel = 'assisted') = (assisted_consent_method IS NOT NULL) "
             "AND (assisted_consent_method IS NULL) = "
             "(assisted_consent_statement_version IS NULL) "
@@ -101,6 +119,15 @@ class ReportRow(Base):
         Index("ix_reports_observation_gist", "observation", postgresql_using="gist"),
         # Serves the newest-first keyset listing (read backwards).
         Index("ix_reports_created_at_id", "created_at", "id"),
+        # Serves the moderators' guest and assisted queues (``channel=...``,
+        # newest first); account reports, the bulk, stay out of it.
+        Index(
+            "ix_reports_channel_created_at_id_not_account",
+            "channel",
+            "created_at",
+            "id",
+            postgresql_where=text("channel <> 'account'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -136,9 +163,7 @@ class ReportRow(Base):
     version: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
-    channel: Mapped[str] = mapped_column(
-        String(16), server_default=text("'account'"), index=True
-    )
+    channel: Mapped[str] = mapped_column(String(16), server_default=text("'account'"))
     assisted_consent_method: Mapped[str | None] = mapped_column(String(16))
     # CONSENT_STATEMENT_VERSION_PATTERN and ASSISTANCE_NOTE_MAX_LENGTH.
     assisted_consent_statement_version: Mapped[str | None] = mapped_column(String(32))
@@ -155,10 +180,13 @@ class GuestSubmissionRow(Base):
         capability_digest: SHA-256 of the capability, hexadecimal.
         expires_at: When the capability stops working, UTC.
         media_ids: Granted photo asset ids, as a JSON array of strings.
-        report_id: The guest report, once submitted; unique.
-        reference: The receipt code, once submitted; unique.
-        content_fingerprint: SHA-256 of the submitted content.
-        submitted_at: When the report was submitted, UTC.
+        report_id: The guest report, once filed; unique.
+        reference: The receipt code, once filed; unique.
+        content_fingerprint: SHA-256 of the submitted content, once reserved.
+        source_id: The platform source the report cites, reserved before it
+            exists.
+        submitted_at: When the report was submitted (reserved), UTC; counted by
+            the reports cap.
         version: Optimistic-concurrency version.
         created_at: When the submission was opened, UTC; counted by the cap.
         updated_at: When it last changed, UTC.
@@ -167,23 +195,40 @@ class GuestSubmissionRow(Base):
     __tablename__ = GUEST_SUBMISSIONS_TABLE
     __table_args__ = (
         CheckConstraint(
+            "(content_fingerprint IS NULL) = (source_id IS NULL) "
+            "AND (content_fingerprint IS NULL) = (submitted_at IS NULL)",
+            name="reserved_fields_together",
+        ),
+        CheckConstraint(
             "(report_id IS NULL) = (reference IS NULL) "
-            "AND (report_id IS NULL) = (content_fingerprint IS NULL) "
-            "AND (report_id IS NULL) = (submitted_at IS NULL)",
-            name="closed_fields_together",
+            "AND (report_id IS NULL OR content_fingerprint IS NOT NULL)",
+            name="filed_after_reserved",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(media_ids) = 'array' AND jsonb_array_length(media_ids) <= 3",
+            name="media_ids_at_most_three",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(
+            "created_at < expires_at AND created_at <= updated_at",
+            name="times_ordered",
+        ),
+        CheckConstraint(
+            "capability_digest ~ '^[0-9a-f]{64}$'", name="capability_digest_format"
         ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     capability_digest: Mapped[str] = mapped_column(String(64))
-    expires_at: Mapped[datetime]
+    expires_at: Mapped[datetime] = mapped_column(index=True)
     media_ids: Mapped[list[str]] = mapped_column(JSONB)
     report_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("reports.id", ondelete="RESTRICT"), unique=True
     )
     reference: Mapped[str | None] = mapped_column(String(12), unique=True)
     content_fingerprint: Mapped[str | None] = mapped_column(String(64))
-    submitted_at: Mapped[datetime | None]
+    source_id: Mapped[UUID | None]
+    submitted_at: Mapped[datetime | None] = mapped_column(index=True)
     version: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(index=True)
     updated_at: Mapped[datetime]

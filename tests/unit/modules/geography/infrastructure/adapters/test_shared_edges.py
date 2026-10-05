@@ -171,7 +171,60 @@ def test_compute_with_overlapping_districts_flags_invalid_coverage() -> None:
     result = ShapelySharedEdgeCalculator().compute(boundary_set)
 
     assert result.is_coverage_valid is False
+    assert result.invalid_coverage_districts == ("XX101", "XX102")
     _assert_off_outline(result, boundary_set)
+
+
+def test_compute_with_gap_narrower_than_clearance_flags_invalid_coverage() -> None:
+    # A 2e-4 degree (~20 m) sliver between two districts: wider than the snap
+    # tolerance, so their edge is lost, but narrower than the outline clearance.
+    gap = 2e-4
+    boundary_set = _boundary_set(
+        {
+            "XX101": Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            "XX102": Polygon([(1 + gap, 0), (2, 0), (2, 1), (1 + gap, 1)]),
+            "XX103": Polygon([(2, 0), (3, 0), (3, 1), (2, 1)]),
+        }
+    )
+
+    result = ShapelySharedEdgeCalculator().compute(boundary_set)
+
+    assert result.is_coverage_valid is False
+    assert result.invalid_coverage_districts == ("XX101", "XX102")
+    _assert_off_outline(result, boundary_set)
+
+
+def test_compute_with_gap_wider_than_clearance_keeps_coverage_valid() -> None:
+    # A real gap (an unmapped area) is not a digitising error.
+    boundary_set = _boundary_set(
+        {
+            "XX101": Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            "XX102": Polygon([(1.01, 0), (2, 0), (2, 1), (1.01, 1)]),
+        }
+    )
+
+    result = ShapelySharedEdgeCalculator().compute(boundary_set)
+
+    assert result.is_coverage_valid is True
+    assert result.invalid_coverage_districts == ()
+
+
+def test_compute_with_custom_gap_width_uses_it() -> None:
+    boundary_set = _boundary_set(
+        {
+            "XX101": Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            "XX102": Polygon([(1.01, 0), (2, 0), (2, 1), (1.01, 1)]),
+        }
+    )
+
+    result = ShapelySharedEdgeCalculator(coverage_gap_width=0.02).compute(boundary_set)
+
+    assert result.invalid_coverage_districts == ("XX101", "XX102")
+
+
+def test_init_with_negative_gap_width_raises() -> None:
+    with pytest.raises(ValueError, match="coverage_gap_width"):
+        ShapelySharedEdgeCalculator(coverage_gap_width=-1.0)
 
 
 def test_compute_with_short_shared_stretch_drops_it() -> None:

@@ -104,7 +104,9 @@ def _report_body(client_report_id: str, media_ids: list[str]) -> Json:
 async def _upload_photo(client: httpx.AsyncClient, body: bytes) -> str:
     grant = json_body(
         await client.post(
-            f"{API}/media", json={"mime_type": "image/jpeg"}, headers=REPORTER_HEADERS
+            f"{API}/media",
+            json={"mime_type": "image/jpeg", "byte_size": len(body)},
+            headers=REPORTER_HEADERS,
         ),
         201,
     )

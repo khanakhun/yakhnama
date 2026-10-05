@@ -2,8 +2,11 @@
 
 Uploads go straight to object storage through presigned URLs: a client asks for
 an upload grant (``POST /media`` before its report exists, or
-``POST /reports/{id}/media`` for its own submitted report), ``PUT``s the file to
-the URL with the returned headers, then calls ``POST /media/{id}/complete``, which
+``POST /reports/{id}/media`` for its own submitted report) with the file's type and
+exact ``byte_size``, ``PUT``s exactly those bytes to the URL with the returned
+headers (the URL signs ``Content-Type`` and ``Content-Length``, so storage refuses
+any other type or length; a browser sets ``Content-Length`` itself from the body),
+then calls ``POST /media/{id}/complete``, which
 checks the stored object (size, magic bytes, SHA-256 deduplication) and schedules
 the malware scan. ``GET /media/{id}`` is open to anonymous callers, who only ever
 see a published asset and only its EXIF-stripped public copy; the uploader and
@@ -103,7 +106,12 @@ async def _grant(
     body: RequestUploadRequest,
 ) -> UploadGrant:
     return await services.request_upload_handler(
-        RequestUpload(actor=actor, report_id=report_id, mime_type=body.mime_type)
+        RequestUpload(
+            actor=actor,
+            report_id=report_id,
+            mime_type=body.mime_type,
+            byte_size=body.byte_size,
+        )
     )
 
 
@@ -118,7 +126,9 @@ async def request_upload(
     """Grant a presigned upload for a file whose report is not submitted yet.
 
     The returned ``asset_id`` can then be listed in ``media_ids`` of
-    ``POST /reports``.
+    ``POST /reports``. ``PUT`` exactly ``byte_size`` bytes with the returned
+    headers; a body of any other length is refused by storage (403), a
+    ``byte_size`` above ``max_bytes`` here (422).
 
     Args:
         body: The declared media type.

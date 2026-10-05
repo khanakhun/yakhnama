@@ -107,7 +107,9 @@ async def test_moderate_media_approved_video_or_pdf_is_never_published(
     mime_type: MimeType,
 ) -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=mime_type))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=mime_type, byte_size=1024)
+    )
     harness.upload(grant.asset_id)
     harness.sniffer.types[original_object_key(grant.asset_id)] = mime_type
     await harness.complete()(CompleteUpload(actor=OWNER, asset_id=grant.asset_id))

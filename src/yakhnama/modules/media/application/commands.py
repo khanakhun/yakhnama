@@ -5,11 +5,12 @@ Patterns: Command.
 
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.domain.value_objects import (
     PUBLISHABLE_MIME_TYPES,
+    ByteSize,
     MimeType,
     ModerationReason,
     ModerationStatus,
@@ -30,6 +31,8 @@ class RequestUpload(BaseModel):
             file uploaded before its report is submitted.
         mime_type: The media type the uploader declares; checked again against
             the file's content at completion.
+        byte_size: The file's exact size; signed into the upload URL, so storage
+            refuses a file of any other length.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -37,6 +40,7 @@ class RequestUpload(BaseModel):
     actor: Actor
     report_id: EntityId | None = None
     mime_type: MimeType
+    byte_size: ByteSize
 
 
 class CompleteUpload(BaseModel):
@@ -68,14 +72,19 @@ class RequestGuestUpload(BaseModel):
 
     Attributes:
         owner_id: The guest submission that will own the asset.
+        asset_id: The id the guest's reserved photo slot names; the asset gets
+            exactly this id.
         mime_type: The declared image type; checked again against the file's
             content at completion.
+        byte_size: The file's exact size, signed into the upload URL.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     owner_id: EntityId
+    asset_id: EntityId
     mime_type: MimeType
+    byte_size: ByteSize
 
     @model_validator(mode="after")
     def _images_only(self) -> Self:
@@ -157,3 +166,19 @@ class ModerateMedia(BaseModel):
     decision: ModerationStatus
     sensitivity: SensitivityFlag = SensitivityFlag.NONE
     reason: ModerationReason | None = None
+
+
+class SweepStaleUploads(BaseModel):
+    """Fail the uploads whose grant lapsed long ago and delete their upload objects.
+
+    A system command, sent by the periodic ``media.sweep_stale_uploads`` task.
+
+    Implements: Command.
+
+    Attributes:
+        batch_size: Most assets handled in one run; the next run continues.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch_size: int = Field(default=100, ge=1, le=1000)

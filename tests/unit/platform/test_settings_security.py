@@ -1,5 +1,6 @@
 """Unit tests for the Phase 2 settings: OIDC, rate limits, HTTP limits, the guard."""
 
+import base64
 from typing import Any
 
 import pytest
@@ -17,6 +18,8 @@ from yakhnama.platform.settings import (
 PRODUCTION_DATABASE_URL = PostgresDsn(
     "postgresql+asyncpg://yakhnama:secret@db.internal:5432/yakhnama"
 )
+# Built, not written out: 32 distinct bytes in URL-safe base64, obviously not a key.
+GUEST_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
 
 
 def _safe_production_values() -> dict[str, Any]:
@@ -39,9 +42,7 @@ def _safe_production_values() -> dict[str, Any]:
         "clamav_host": "clamd.internal",
         "redis_url": RedisDsn("redis://cache.internal:6379/0"),
         "trusted_hosts": ["api.yakhnama.org"],
-        "guest_challenge_secret": SecretStr(
-            "a-rotated-guest-challenge-signing-key-0001"
-        ),
+        "guest_challenge_secret": SecretStr(GUEST_KEY),
     }
 
 
@@ -230,6 +231,43 @@ def test_settings_safe_production_values_are_accepted() -> None:
         ({"log_level": "DEBUG"}, "log_level"),
         ({"database_echo": True}, "database_echo"),
         ({"storage_access_key_id": "minioadmin"}, "storage_access_key_id"),
+        ({"guest_pow_difficulty_bits": 17}, "guest_pow_difficulty_bits"),
+        (
+            {"guest_challenge_secret": SecretStr("not base64 at all, it has spaces!")},
+            "guest_challenge_secret must be URL-safe base64",
+        ),
+        (
+            {"guest_challenge_secret": SecretStr("A" * 40)},
+            "guest_challenge_secret must be URL-safe base64",
+        ),
+        (
+            {
+                "guest_challenge_secret": SecretStr(
+                    base64.urlsafe_b64encode(b"ab" * 20).decode()
+                )
+            },
+            "guest_challenge_secret must be URL-safe base64",
+        ),
+        (
+            {
+                "guest_challenge_secret": SecretStr(
+                    base64.urlsafe_b64encode(bytes(range(24))).decode() + "AAAAAAAA"
+                )
+            },
+            "guest_challenge_secret must be URL-safe base64",
+        ),
+        (
+            {"storage_secret_access_key": SecretStr(GUEST_KEY)},
+            "guest_challenge_secret must differ",
+        ),
+        (
+            {
+                "database_url": PostgresDsn(
+                    f"postgresql+asyncpg://yakhnama:{GUEST_KEY}@db.internal/yakhnama"
+                )
+            },
+            "guest_challenge_secret must differ",
+        ),
     ],
 )
 def test_settings_production_guard_each_rule_rejects_its_unsafe_value(
@@ -322,3 +360,42 @@ def test_production_problems_development_storage_key_id_is_reported_by_name() ->
 
     assert "storage_access_key_id must not be the development default" in problems
     assert all("minioadmin" not in problem for problem in problems)
+
+
+def test_settings_guest_base_difficulty_above_the_maximum_is_refused() -> None:
+    with pytest.raises(ValidationError, match="must not exceed"):
+        Settings(
+            _env_file=None,
+            guest_pow_difficulty_bits=20,
+            guest_pow_difficulty_max_bits=19,
+        )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"media_upload_sweep_after_seconds": 900},
+        {"guest_capability_ttl_seconds": 7200},
+        {"storage_presign_ttl_seconds": 3600, "media_upload_sweep_after_seconds": 3600},
+    ],
+)
+def test_settings_upload_sweep_not_after_every_url_and_capability_is_refused(
+    # Any: keyword arguments for the Settings constructor, like _safe_production_values.
+    override: dict[str, Any],
+) -> None:
+    with pytest.raises(ValidationError, match="media_upload_sweep_after_seconds"):
+        Settings(_env_file=None, **override)
+
+
+def test_settings_guest_defaults_are_the_proposed_operational_values() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.guest_pow_difficulty_bits == 18
+    assert settings.guest_pow_difficulty_max_bits == 22
+    assert settings.guest_pow_difficulty_step == 200
+    assert settings.guest_capability_ttl_seconds == 1800
+    assert settings.guest_submissions_per_hour == 2000
+    assert settings.guest_reports_per_hour == 200
+    assert settings.guest_receipt_grace_seconds == 86_400
+    assert settings.guest_upload_presign_ttl_seconds == 300
+    assert settings.media_upload_sweep_after_seconds == 7200

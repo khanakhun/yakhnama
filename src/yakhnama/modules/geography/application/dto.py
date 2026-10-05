@@ -12,7 +12,7 @@ Patterns: DTO.
 
 from typing import Final, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from yakhnama.modules.geography.domain.boundaries import (
     BoundaryAttribution,
@@ -351,8 +351,11 @@ class SharedEdgeComputation(BaseModel):
     Attributes:
         edges: The shared edges, sorted by pair of districts.
         is_coverage_valid: Whether the polygons formed a clean coverage (no
-            overlaps, matching vertices on shared edges); edges from an invalid
-            coverage may have gaps where the polygons do not meet.
+            overlaps, matching vertices on shared edges, no gap between districts
+            narrower than the outline clearance); edges from an invalid coverage
+            may miss stretches where the polygons do not meet.
+        invalid_coverage_districts: The dataset codes of the districts whose
+            outlines break the coverage, sorted; empty when it is valid.
         dropped_parts: Line parts dropped as too short to draw.
     """
 
@@ -360,7 +363,15 @@ class SharedEdgeComputation(BaseModel):
 
     edges: tuple[SharedEdge, ...]
     is_coverage_valid: bool
+    invalid_coverage_districts: tuple[SourceDistrictCode, ...] = ()
     dropped_parts: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _check_coverage_agrees(self) -> Self:
+        if self.is_coverage_valid and self.invalid_coverage_districts:
+            message = "a valid coverage has no invalid districts"
+            raise ValueError(message)
+        return self
 
 
 class BoundaryLoadReport(BaseModel):
@@ -376,6 +387,8 @@ class BoundaryLoadReport(BaseModel):
         districts_in_source: How many districts of the region the file has.
         match: How they line up with the link table and the gazetteer.
         is_coverage_valid: Whether the polygons formed a clean coverage.
+        invalid_coverage_districts: The districts that break it, if any; a load
+            with any is refused unless the operator allowed it.
         dropped_parts: Line parts dropped as too short to draw.
         edges: How many shared edges the snapshot holds.
         edges_with_unlinked_district: Of those, how many touch an unlinked district.
@@ -401,6 +414,7 @@ class BoundaryLoadReport(BaseModel):
     districts_in_source: int = Field(ge=0)
     match: DistrictMatch
     is_coverage_valid: bool
+    invalid_coverage_districts: tuple[SourceDistrictCode, ...] = ()
     dropped_parts: int = Field(ge=0)
     edges: int = Field(ge=0)
     edges_with_unlinked_district: int = Field(ge=0)

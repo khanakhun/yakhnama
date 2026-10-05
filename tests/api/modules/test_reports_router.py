@@ -164,7 +164,9 @@ async def test_submit_report_with_someone_elses_media_returns_403() -> None:
 
     async with api.client() as client:
         grant = await client.post(
-            "/api/v1/media", json={"mime_type": "image/jpeg"}, headers=other_headers()
+            "/api/v1/media",
+            json={"mime_type": "image/jpeg", "byte_size": 2048},
+            headers=other_headers(),
         )
         response = await client.post(
             REPORTS,

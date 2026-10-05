@@ -12,7 +12,9 @@ Each edge is then simplified with Douglas-Peucker (``simplify`` with
 line's end points, so edges still meet where three districts meet.
 
 **The outer edge is removed last.** The region's outline is the boundary of the
-union of all its districts (closed over gaps narrower than the snap tolerance).
+union of all its districts (closed over gaps narrower than the snap tolerance with
+mitre joins, so every corner of the outline, notches included, stays exactly where
+the data has it).
 Everything within ``outer_clearance`` of it is cut away *after* simplification, so
 no returned line lies on, or comes closer than the clearance to, the region's
 outline: an international border or the Line of Control can never be drawn from
@@ -23,8 +25,17 @@ Coordinates are finally rounded to ``decimals`` decimal places (5, about 1 m) to
 the published payload small, and parts shorter than ``min_part_length`` (slivers
 left by the cut) are dropped.
 
-The defaults are **proposed** (ADR 0021): 1e-5° snap (~1 m), 5e-4° simplification
-(~50 m), 5e-4° clearance, 1e-3° shortest part (~100 m), 5 decimals.
+**Coverage check.** ``shapely.coverage_invalid_edges`` (GEOS ``CoverageValidator``)
+names every district whose outline overlaps a neighbour, fails to share its
+vertices, or leaves a gap narrower than ``coverage_gap_width`` (by default the
+outline clearance). Such a gap is a digitising error: snapping cannot close it, so
+the edge across it is lost, and the outline then runs through the gap. The load
+refuses to publish an invalid coverage unless the operator allows it (ADR 0021).
+
+The work is CPU-bound and synchronous; the use case runs ``compute`` in a worker
+thread. The defaults are **proposed** (ADR 0021): 1e-5° snap (~1 m), 5e-4°
+simplification (~50 m), 5e-4° clearance and gap width, 1e-3° shortest part
+(~100 m), 5 decimals.
 
 Patterns: Adapter.
 """
@@ -50,6 +61,9 @@ SIMPLIFY_TOLERANCE_DEGREES: Final = 5e-4
 OUTER_CLEARANCE_DEGREES: Final = 5e-4
 MIN_PART_LENGTH_DEGREES: Final = 1e-3
 COORDINATE_DECIMALS: Final = 5
+MITRE_LIMIT: Final = 10_000.0
+"""How far a mitre join may reach, in multiples of the offset; high enough that no
+real corner is bevelled, so the closing gives every corner back unchanged."""
 
 
 class ShapelySharedEdgeCalculator:
@@ -58,7 +72,7 @@ class ShapelySharedEdgeCalculator:
     Implements: Adapter.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913  # reason: one keyword per tunable distance, all defaulted
         self,
         *,
         snap_tolerance: float = SNAP_TOLERANCE_DEGREES,
@@ -66,6 +80,7 @@ class ShapelySharedEdgeCalculator:
         outer_clearance: float = OUTER_CLEARANCE_DEGREES,
         min_part_length: float = MIN_PART_LENGTH_DEGREES,
         decimals: int = COORDINATE_DECIMALS,
+        coverage_gap_width: float | None = None,
     ) -> None:
         """Create the calculator; every distance is in degrees.
 
@@ -77,11 +92,14 @@ class ShapelySharedEdgeCalculator:
                 outline; more than ``snap_tolerance`` plus the rounding step.
             min_part_length: Shorter line parts are dropped.
             decimals: Coordinates are rounded to this many decimal places, 1 to 15.
+            coverage_gap_width: Gaps between districts narrower than this make the
+                coverage invalid; ``None`` uses ``outer_clearance``, the width below
+                which a gap would cut a shared edge away.
 
         Raises:
             ValueError: If a distance is not positive, ``decimals`` is out of range,
-                or the clearance does not exceed the snap tolerance plus the
-                rounding step.
+                the clearance does not exceed the snap tolerance plus the rounding
+                step, or ``coverage_gap_width`` is negative.
         """
         distances = (
             snap_tolerance,
@@ -100,6 +118,12 @@ class ShapelySharedEdgeCalculator:
                 "outer_clearance must exceed snap_tolerance plus the rounding step"
             )
             raise ValueError(message)
+        if coverage_gap_width is not None and coverage_gap_width < 0:
+            message = "coverage_gap_width must not be negative"
+            raise ValueError(message)
+        self._gap_width = (
+            outer_clearance if coverage_gap_width is None else coverage_gap_width
+        )
         self._snap = snap_tolerance
         self._simplify = simplify_tolerance
         self._clearance = outer_clearance
@@ -113,18 +137,36 @@ class ShapelySharedEdgeCalculator:
             boundary_set: The region's districts.
 
         Returns:
-            The edges sorted by pair, whether the polygons formed a valid coverage,
-            and how many short parts were dropped.
+            The edges sorted by pair, whether the polygons formed a valid coverage
+            (and which districts break it), and how many short parts were dropped.
         """
         polygons = {
             district.code: shape(district.geometry.geojson.model_dump(mode="json"))
             for district in boundary_set.districts
         }
-        is_coverage_valid = bool(shapely.coverage_is_valid(list(polygons.values())))
-        snapped = {
-            code: polygon.buffer(self._snap) for code, polygon in polygons.items()
-        }
-        outline = shapely.union_all(list(snapped.values())).buffer(-self._snap).boundary
+        invalid = shapely.coverage_invalid_edges(
+            list(polygons.values()), gap_width=self._gap_width
+        )
+        invalid_districts = tuple(
+            sorted(
+                code
+                for code, edges in zip(polygons, invalid.tolist(), strict=True)
+                if edges is not None and not edges.is_empty
+            )
+        )
+        # Closing with mitre joins (offset every side out, then back) fills gaps
+        # narrower than the snap tolerance but restores every corner exactly; a
+        # round join would pull the outline back from the tip of a sharp notch,
+        # and the clearance would then fall short of it there.
+        grown = [
+            polygon.buffer(self._snap, join_style="mitre", mitre_limit=MITRE_LIMIT)
+            for polygon in polygons.values()
+        ]
+        outline = (
+            shapely.union_all(grown)
+            .buffer(-self._snap, join_style="mitre", mitre_limit=MITRE_LIMIT)
+            .boundary
+        )
         outer_zone = outline.buffer(self._clearance)
         edges: list[SharedEdge] = []
         dropped = 0
@@ -139,7 +181,8 @@ class ShapelySharedEdgeCalculator:
                 edges.append(_shared_edge(first, second, parts))
         return SharedEdgeComputation(
             edges=tuple(edges),
-            is_coverage_valid=is_coverage_valid,
+            is_coverage_valid=not invalid_districts,
+            invalid_coverage_districts=invalid_districts,
             dropped_parts=dropped,
         )
 

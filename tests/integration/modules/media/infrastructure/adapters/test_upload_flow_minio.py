@@ -121,13 +121,20 @@ def flow(storage: S3StoragePort) -> Flow:
 
 
 async def _put(grant: UploadGrant, body: bytes) -> httpx.Response:
-    headers = {header.name: header.value for header in grant.headers}
+    # As a browser does: Content-Length comes from the body, never from script.
+    headers = {
+        header.name: header.value
+        for header in grant.headers
+        if header.name.lower() != "content-length"
+    }
     async with httpx.AsyncClient(timeout=10.0) as client:
         return await client.put(grant.upload_url, content=body, headers=headers)
 
 
 async def _completed(flow: Flow) -> tuple[UploadGrant, MediaAssetDetail]:
-    grant = await flow.request(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await flow.request(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=len(FIRST_PHOTO))
+    )
     assert (await _put(grant, FIRST_PHOTO)).status_code == httpx.codes.OK
     completed = await flow.complete(
         CompleteUpload(actor=OWNER, asset_id=grant.asset_id)
@@ -142,7 +149,9 @@ def _approve(detail: MediaAssetDetail) -> ModerateMedia:
 
 
 async def test_flow_upload_url_never_covers_the_original(flow: Flow) -> None:
-    grant = await flow.request(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await flow.request(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
 
     assert upload_object_key(grant.asset_id) in grant.upload_url
     assert original_object_key(grant.asset_id) not in grant.upload_url
@@ -152,13 +161,17 @@ async def test_flow_overwriting_the_upload_after_completion_publishes_the_first_
     flow: Flow,
 ) -> None:
     grant, completed = await _completed(flow)
+    # The URL signs the length, so only a body of the announced size gets through.
+    same_length = REPLACEMENT_PHOTO[: len(FIRST_PHOTO)].ljust(len(FIRST_PHOTO), b"\0")
 
-    overwrite = await _put(grant, REPLACEMENT_PHOTO)
+    refused = await _put(grant, FIRST_PHOTO + b"\0")
+    overwrite = await _put(grant, same_length)
     await flow.record_scan(
         RecordScanResult(asset_id=completed.id, verdict=ScanStatus.CLEAN)
     )
     published = await flow.moderate(_approve(completed))
 
+    assert refused.status_code == httpx.codes.FORBIDDEN
     assert overwrite.status_code == httpx.codes.OK
     assert published.is_published
     assert await flow.storage.read_original(original_object_key(completed.id)) == (

@@ -219,6 +219,8 @@ from yakhnama.modules.media.public import (
     RequestGuestUploadHandler,
     RequestUploadHandler,
     StoragePort,
+    SweepStaleUploads,
+    SweepStaleUploadsHandler,
 )
 from yakhnama.modules.provenance.infrastructure.queries import (
     SqlAlchemySourceQueryService,
@@ -228,6 +230,7 @@ from yakhnama.modules.provenance.infrastructure.uow import (
 )
 from yakhnama.modules.provenance.public import (
     AuthorisedSourceQueryService,
+    MarkPlatformSourceReferencedHandler,
     MarkSourceReferencedHandler,
     ProvenanceUnitOfWorkFactory,
     RegisterPlatformSourceHandler,
@@ -254,6 +257,8 @@ from yakhnama.modules.reports.public import (
     IssueGuestChallengeHandler,
     NearbyReportsFinder,
     OpenGuestSubmissionHandler,
+    PurgeGuestRecords,
+    PurgeGuestRecordsHandler,
     ReportQueryService,
     ReportsUnitOfWorkFactory,
     RequestGuestMediaUploadHandler,
@@ -295,9 +300,11 @@ from yakhnama.platform.tasks.broker import build_broker
 from yakhnama.platform.tasks.handlers import (
     EXCHANGE_RUN_EXPORT_TASK,
     EXCHANGE_RUN_IMPORT_TASK,
+    GUEST_PURGE_TASK,
     IDEMPOTENCY_PURGE_TASK,
     INGESTION_RUN_TASK,
     MEDIA_SCAN_TASK,
+    MEDIA_SWEEP_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
     REPORTS_TRIAGE_TASK,
@@ -424,11 +431,15 @@ class Container:
         request_guest_media_upload_handler: Grants guest photo uploads.
         complete_guest_media_upload_handler: Completes guest photo uploads.
         submit_guest_report_handler: Submits guest reports.
+        purge_guest_records_handler: Forgets spent challenges and unfiled guest
+            submissions; run by ``reports.purge_guest_records``.
         run_triage_handler: Triages a report; run by ``reports.run_triage``.
         request_upload_handler: Grants presigned uploads.
         complete_upload_handler: Completes uploads.
         moderate_media_handler: Moderates media.
         record_scan_result_handler: Stores a scan verdict; run by ``media.scan``.
+        sweep_stale_uploads_handler: Fails abandoned uploads; run by
+            ``media.sweep_stale_uploads``.
         media_queries: Authorised media reads.
         event_handler_dependencies: What every events handler is built from.
         event_queries: Authorised events reads.
@@ -526,11 +537,13 @@ class Container:
     request_guest_media_upload_handler: RequestGuestMediaUploadHandler
     complete_guest_media_upload_handler: CompleteGuestMediaUploadHandler
     submit_guest_report_handler: SubmitGuestReportHandler
+    purge_guest_records_handler: PurgeGuestRecordsHandler
     run_triage_handler: RunTriageHandler
     request_upload_handler: RequestUploadHandler
     complete_upload_handler: CompleteUploadHandler
     moderate_media_handler: ModerateMediaHandler
     record_scan_result_handler: RecordScanResultHandler
+    sweep_stale_uploads_handler: SweepStaleUploadsHandler
     media_queries: AuthorisedMediaQueryService
     event_handler_dependencies: EventHandlerDependencies
     event_queries: EventRecordQueryService
@@ -743,12 +756,15 @@ class MediaAdapters:
         exif_reader: Reads EXIF from stored originals.
         mime_sniffer: Detects stored originals' media types.
         malware_scanner: Scans stored originals.
+        upload_sweep_after: Age after which an upload that never completed is
+            failed and its upload object deleted.
     """
 
     storage: StoragePort
     exif_reader: ExifReader
     mime_sniffer: MimeSniffer
     malware_scanner: MalwareScanner
+    upload_sweep_after: timedelta
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -760,22 +776,26 @@ class GuestPorts:
     Attributes:
         signer: Signs and verifies proof-of-work challenges.
         secrets: Draws salts, capabilities and receipt references.
-        limits: Difficulty, lifetimes and the hourly cap.
+        limits: Difficulty, lifetimes and the hourly caps.
+        upload_ttl: Lifetime of a guest's photo upload URL.
     """
 
     signer: GuestChallengeSigner
     secrets: GuestSecretGenerator
     limits: GuestSubmissionLimits
+    upload_ttl: timedelta
 
 
 def build_guest_ports(settings: Settings) -> GuestPorts:
     """Bind the guest ports from the ``guest_*`` settings.
 
     Args:
-        settings: Supplies the challenge secret, difficulty, lifetimes and cap.
+        settings: Supplies the challenge secret, difficulty curve, lifetimes and
+            caps.
 
     Returns:
-        The HMAC signer, the ``secrets`` generator and the limits.
+        The HMAC signer, the ``secrets`` generator, the limits and the upload URL
+        lifetime.
     """
     return GuestPorts(
         signer=HmacGuestChallengeSigner(
@@ -784,10 +804,15 @@ def build_guest_ports(settings: Settings) -> GuestPorts:
         secrets=SecretsGuestSecretGenerator(),
         limits=GuestSubmissionLimits(
             difficulty_bits=settings.guest_pow_difficulty_bits,
+            difficulty_max_bits=settings.guest_pow_difficulty_max_bits,
+            difficulty_step=settings.guest_pow_difficulty_step,
             challenge_ttl=timedelta(seconds=settings.guest_challenge_ttl_seconds),
-            capability_ttl=timedelta(minutes=settings.guest_capability_ttl_minutes),
-            submissions_per_hour=settings.guest_submissions_per_hour,
+            capability_ttl=timedelta(seconds=settings.guest_capability_ttl_seconds),
+            opened_per_hour=settings.guest_submissions_per_hour,
+            reports_per_hour=settings.guest_reports_per_hour,
+            receipt_grace=timedelta(seconds=settings.guest_receipt_grace_seconds),
         ),
+        upload_ttl=timedelta(seconds=settings.guest_upload_presign_ttl_seconds),
     )
 
 
@@ -811,11 +836,13 @@ class RecordingServices:
         request_guest_media_upload_handler: Grants guest photo uploads.
         complete_guest_media_upload_handler: Completes guest photo uploads.
         submit_guest_report_handler: Submits guest reports.
+        purge_guest_records_handler: Forgets expired guest records.
         run_triage_handler: Triages a report.
         request_upload_handler: Grants presigned uploads.
         complete_upload_handler: Completes uploads.
         moderate_media_handler: Moderates media.
         record_scan_result_handler: Stores a scan verdict.
+        sweep_stale_uploads_handler: Fails abandoned uploads.
         media_queries: Authorised media reads.
         event_handler_dependencies: What every events handler is built from.
         event_queries: Authorised events reads.
@@ -837,11 +864,13 @@ class RecordingServices:
     request_guest_media_upload_handler: RequestGuestMediaUploadHandler
     complete_guest_media_upload_handler: CompleteGuestMediaUploadHandler
     submit_guest_report_handler: SubmitGuestReportHandler
+    purge_guest_records_handler: PurgeGuestRecordsHandler
     run_triage_handler: RunTriageHandler
     request_upload_handler: RequestUploadHandler
     complete_upload_handler: CompleteUploadHandler
     moderate_media_handler: ModerateMediaHandler
     record_scan_result_handler: RecordScanResultHandler
+    sweep_stale_uploads_handler: SweepStaleUploadsHandler
     media_queries: AuthorisedMediaQueryService
     event_handler_dependencies: EventHandlerDependencies
     event_queries: EventRecordQueryService
@@ -951,6 +980,7 @@ def build_media_adapters(settings: Settings, clock: Clock) -> MediaAdapters:
         exif_reader=PillowExifReader(storage.read_original),
         mime_sniffer=FiletypeMimeSniffer(storage.read_original_prefix),
         malware_scanner=build_malware_scanner(settings, storage),
+        upload_sweep_after=timedelta(seconds=settings.media_upload_sweep_after_seconds),
     )
 
 
@@ -980,6 +1010,7 @@ def build_recording_services(  # noqa: PLR0913  # reason: one keyword per group 
     clock, ids, coordinates = core.clock, core.id_generator, core.public_coordinates
     registrar = RegisterSourceHandler(units.provenance, clock, ids)
     platform_registrar = RegisterPlatformSourceHandler(units.provenance, clock, ids)
+    platform_marker = MarkPlatformSourceReferencedHandler(units.provenance, clock, ids)
     marker = MarkSourceReferencedHandler(units.provenance, clock, ids)
     media_ownership = MediaOwnershipAdapter(reads.media)
     complete_upload = CompleteUploadHandler(
@@ -1000,6 +1031,8 @@ def build_recording_services(  # noqa: PLR0913  # reason: one keyword per group 
                 uow_factory=units.media,
                 storage=media.storage,
                 source_registrar=platform_registrar,
+                source_marker=platform_marker,
+                upload_ttl=guest.upload_ttl,
                 clock=clock,
                 ids=ids,
             ),
@@ -1007,6 +1040,7 @@ def build_recording_services(  # noqa: PLR0913  # reason: one keyword per group 
         ),
         media_checker=media_ownership,
         source_registrar=platform_registrar,
+        source_marker=platform_marker,
         task_queue=task_queue,
         limits=guest.limits,
         clock=clock,
@@ -1060,6 +1094,7 @@ def build_recording_services(  # noqa: PLR0913  # reason: one keyword per group 
             guest_dependencies
         ),
         submit_guest_report_handler=SubmitGuestReportHandler(guest_dependencies),
+        purge_guest_records_handler=PurgeGuestRecordsHandler(guest_dependencies),
         run_triage_handler=RunTriageHandler(
             uow_factory=units.reports,
             nearby_reports=reads.nearby_reports,
@@ -1081,6 +1116,13 @@ def build_recording_services(  # noqa: PLR0913  # reason: one keyword per group 
             uow_factory=units.media, storage=media.storage, clock=clock, ids=ids
         ),
         record_scan_result_handler=RecordScanResultHandler(units.media, clock, ids),
+        sweep_stale_uploads_handler=SweepStaleUploadsHandler(
+            uow_factory=units.media,
+            storage=media.storage,
+            stale_after=media.upload_sweep_after,
+            clock=clock,
+            ids=ids,
+        ),
         media_queries=AuthorisedMediaQueryService(reads.media, media.storage),
         event_handler_dependencies=EventHandlerDependencies(
             uow_factory=units.events,
@@ -1632,11 +1674,13 @@ def build_container(settings: Settings) -> Container:
             services.complete_guest_media_upload_handler
         ),
         submit_guest_report_handler=services.submit_guest_report_handler,
+        purge_guest_records_handler=services.purge_guest_records_handler,
         run_triage_handler=services.run_triage_handler,
         request_upload_handler=services.request_upload_handler,
         complete_upload_handler=services.complete_upload_handler,
         moderate_media_handler=services.moderate_media_handler,
         record_scan_result_handler=services.record_scan_result_handler,
+        sweep_stale_uploads_handler=services.sweep_stale_uploads_handler,
         media_queries=services.media_queries,
         event_handler_dependencies=services.event_handler_dependencies,
         event_queries=services.event_queries,
@@ -1718,11 +1762,23 @@ def build_task_handlers(container: Container) -> Mapping[str, TaskHandler]:
         deleted = await container.idempotency_store.purge_expired(container.clock.now())
         structlog.get_logger(__name__).info("idempotency_purged", deleted=deleted)
 
+    async def purge_guest_records(_task: ScheduledTask) -> None:
+        outcome = await container.purge_guest_records_handler(PurgeGuestRecords())
+        structlog.get_logger(__name__).info(
+            "guest_records_purged", **outcome.model_dump()
+        )
+
+    async def sweep_stale_uploads(_task: ScheduledTask) -> None:
+        failed = await container.sweep_stale_uploads_handler(SweepStaleUploads())
+        structlog.get_logger(__name__).info("stale_uploads_swept", failed=failed)
+
     return MappingProxyType(
         {
             OUTBOX_RELAY_TASK: relay_outbox,
             OUTBOX_PURGE_TASK: purge_outbox,
             IDEMPOTENCY_PURGE_TASK: purge_idempotency_keys,
+            GUEST_PURGE_TASK: purge_guest_records,
+            MEDIA_SWEEP_TASK: sweep_stale_uploads,
             REPORTS_TRIAGE_TASK: RunTriageTaskAdapter(container.run_triage_handler),
             MEDIA_SCAN_TASK: ScanTaskAdapter(
                 media=container.media_query_service,
@@ -1757,6 +1813,10 @@ def includes_fixture_datasets(settings: Settings) -> bool:
     return settings.environment != "production"
 
 
+DEMO_ACCOUNT_ENVIRONMENTS: frozenset[str] = frozenset({"development", "test"})
+"""Where the development demo accounts may be seeded: an allow-list, not a deny-list."""
+
+
 def build_demo_accounts_step(container: Container) -> DemoAccountsSeedStep | None:
     """Wire the development demo accounts, or nothing where they do not belong.
 
@@ -1767,10 +1827,15 @@ def build_demo_accounts_step(container: Container) -> DemoAccountsSeedStep | Non
         container: Supplies the settings, identity unit of work, clock and ids.
 
     Returns:
-        The step, or ``None`` in production or without ``oidc_issuer``.
+        The step in the ``development`` and ``test`` environments with an
+        ``oidc_issuer``; ``None`` anywhere else, including any environment added
+        later.
     """
     settings = container.settings
-    if settings.environment == "production" or settings.oidc_issuer is None:
+    if (
+        settings.environment not in DEMO_ACCOUNT_ENVIRONMENTS
+        or settings.oidc_issuer is None
+    ):
         return None
     return DemoAccountsSeedStep(
         load=SeedAccountsHandler(

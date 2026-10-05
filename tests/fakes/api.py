@@ -38,6 +38,7 @@ Patterns: Fake.
 import dataclasses
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Final
 
 import httpx
@@ -530,6 +531,7 @@ def build_recording_services_over_fakes(
         mime_sniffer=stores.mime_sniffer,
         # Clean, so a test can publish media; the fake storage holds no bytes.
         malware_scanner=NoOpMalwareScanner(verdict=ScanStatus.CLEAN),
+        upload_sweep_after=timedelta(hours=1),
     )
     services = build_recording_services(
         core=core,
@@ -598,11 +600,13 @@ def lay_recording_over(  # noqa: PLR0913  # reason: one argument per group laid 
             services.complete_guest_media_upload_handler
         ),
         submit_guest_report_handler=services.submit_guest_report_handler,
+        purge_guest_records_handler=services.purge_guest_records_handler,
         run_triage_handler=services.run_triage_handler,
         request_upload_handler=services.request_upload_handler,
         complete_upload_handler=services.complete_upload_handler,
         moderate_media_handler=services.moderate_media_handler,
         record_scan_result_handler=services.record_scan_result_handler,
+        sweep_stale_uploads_handler=services.sweep_stale_uploads_handler,
         media_queries=services.media_queries,
         event_handler_dependencies=services.event_handler_dependencies,
         event_queries=services.event_queries,

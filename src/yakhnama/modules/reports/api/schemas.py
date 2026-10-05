@@ -24,6 +24,7 @@ from pydantic import (
     model_validator,
 )
 
+from yakhnama.modules.reports.application.commands import PhotoByteSize
 from yakhnama.modules.reports.domain.guest_submissions import (
     GUEST_MEDIA_MAX,
     ProofNonce,
@@ -358,11 +359,15 @@ class GuestMediaUploadRequest(BaseModel):
 
     Attributes:
         mime_type: The declared image type: JPEG, PNG or WebP only.
+        byte_size: The photo's exact size in bytes, 1 to the media size cap;
+            signed into the upload URL as ``Content-Length``, so the client must
+            ``PUT`` exactly the file's bytes.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mime_type: GuestImageType
+    byte_size: PhotoByteSize
 
 
 class GuestReportRequest(ReportContentRequest):

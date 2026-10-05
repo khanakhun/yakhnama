@@ -8,6 +8,8 @@ with a reason.
 Patterns: Command Handler, Unit of Work, Policy, Domain Events.
 """
 
+import asyncio
+
 from pydantic import BaseModel, ConfigDict
 
 from yakhnama.modules.geography.application.authorisation import (
@@ -45,6 +47,7 @@ from yakhnama.modules.geography.domain.boundaries import (
 )
 from yakhnama.modules.geography.domain.entities import Place
 from yakhnama.modules.geography.domain.errors import (
+    BoundaryCoverageInvalidError,
     PlaceNotFoundError,
     PlaceRetiredError,
 )
@@ -343,7 +346,9 @@ class LoadDistrictBoundariesHandler:
     """Load a region's district polygons and publish the edges they share.
 
     The file is obtained and verified by the ``BoundaryLoader`` and the edges are
-    computed by the ``SharedEdgeCalculator`` before any transaction opens. Inside
+    computed by the ``SharedEdgeCalculator`` (in a worker thread, it is CPU-bound)
+    before any transaction opens. If the districts do not form a valid coverage the
+    load stops there, unless it is a dry run or the command allows it. Inside
     one unit of work the districts are matched against the committed link table and
     the gazetteer, every linked active place gets the district's polygon as its
     footprint (the full polygon is stored, never published), and the edges become a
@@ -393,10 +398,22 @@ class LoadDistrictBoundariesHandler:
         Raises:
             PermissionDeniedError: If the policy refuses ``command.actor``.
             BoundarySourceError: If the file cannot be obtained or read.
+            BoundaryCoverageInvalidError: If the districts do not form a valid
+                coverage and the command neither is a dry run nor allows it.
         """
         require_allowed(self._policy, command.actor, action="load district boundaries")
         boundary_set = await self._loader.load(command.source)
-        computation = self._calculator.compute(boundary_set)
+        # Seconds of GEOS work on the real archive; off the event loop so a load
+        # run inside a serving process never stalls its other requests.
+        computation = await asyncio.to_thread(self._calculator.compute, boundary_set)
+        if not (
+            computation.is_coverage_valid
+            or command.dry_run
+            or command.is_invalid_coverage_allowed
+        ):
+            raise BoundaryCoverageInvalidError.for_districts(
+                computation.invalid_coverage_districts
+            )
         async with self._uow_factory() as uow:
             places = await _linked_places(uow, command.source)
             match = match_district_boundaries(
@@ -452,6 +469,7 @@ class LoadDistrictBoundariesHandler:
             districts_in_source=len(boundary_set.districts),
             match=match,
             is_coverage_valid=computation.is_coverage_valid,
+            invalid_coverage_districts=computation.invalid_coverage_districts,
             dropped_parts=computation.dropped_parts,
             edges=len(edge_set.edges),
             edges_with_unlinked_district=sum(

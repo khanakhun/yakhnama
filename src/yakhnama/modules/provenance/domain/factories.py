@@ -12,7 +12,7 @@ from yakhnama.modules.provenance.domain.value_objects import (
 )
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.events import AggregateChange
-from yakhnama.shared_kernel.ids import IdGenerator
+from yakhnama.shared_kernel.ids import EntityId, IdGenerator
 
 
 class SourceFactory:
@@ -21,7 +21,7 @@ class SourceFactory:
     Implements: Factory.
     """
 
-    def register(
+    def register(  # noqa: PLR0913  # reason: the reserved id joins the five registration inputs
         self,
         source_type: SourceType,
         details: SourceDetails,
@@ -29,6 +29,7 @@ class SourceFactory:
         *,
         clock: Clock,
         ids: IdGenerator,
+        source_id: EntityId | None = None,
     ) -> AggregateChange[Source]:
         """Create an unreferenced source at version 1 and ``SourceRegistered``.
 
@@ -43,7 +44,9 @@ class SourceFactory:
                 for importers. Whether the actor may act for the organisation is an
                 authorisation rule the handler checks with the identity policies.
             clock: Source of every timestamp.
-            ids: Source of the source id and the event id.
+            ids: Source of the source id (unless given) and the event id.
+            source_id: The id to give the source, when the caller chose it in
+                advance (a guest report reserves its source's id, ADR 0020).
 
         Returns:
             The new source and ``SourceRegistered``.
@@ -52,7 +55,7 @@ class SourceFactory:
         source = Source.model_validate(
             {
                 **details.as_fields(),
-                "id": ids.new_id(),
+                "id": ids.new_id() if source_id is None else source_id,
                 "source_type": source_type,
                 "owner_actor_id": owner.actor_id,
                 "organization_id": owner.organization_id,

@@ -17,7 +17,7 @@ Patterns: Fake.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from tests.fakes.uow import InMemoryUnitOfWork
 from yakhnama.modules.media.public import HttpHeader, UploadGrant, UploadStatus
@@ -28,9 +28,13 @@ from yakhnama.modules.reports.application.dto import (
 )
 from yakhnama.modules.reports.application.queries import FindNearbyReports
 from yakhnama.modules.reports.domain.entities import Report
-from yakhnama.modules.reports.domain.errors import GuestChallengeSpentError
+from yakhnama.modules.reports.domain.errors import (
+    GuestChallengeExpiredError,
+    GuestChallengeSpentError,
+)
 from yakhnama.modules.reports.domain.guest_submissions import (
     REFERENCE_ALPHABET,
+    GuestCap,
     GuestSubmission,
 )
 from yakhnama.modules.reports.domain.triage import (
@@ -38,6 +42,7 @@ from yakhnama.modules.reports.domain.triage import (
     ReportSummaryForTriage,
 )
 from yakhnama.modules.reports.domain.value_objects import GuestImageType
+from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
@@ -129,10 +134,15 @@ class InMemoryReportRepository:
 class InMemoryGuestSubmissionRepository:
     """``GuestSubmissionRepository`` over a dictionary keyed by id.
 
+    One process and one shared unit of work serialise everything already, so
+    ``lock_cap`` only records which caps were locked, for the tests to check that
+    a handler locks before it counts.
+
     Implements: Fake (of Repository).
 
     Attributes:
         committed: The stored submissions, as a committed transaction left them.
+        locked_caps: Every cap locked, in order.
     """
 
     def __init__(self, submissions: Iterable[GuestSubmission] = ()) -> None:
@@ -144,10 +154,15 @@ class InMemoryGuestSubmissionRepository:
         self.committed: dict[EntityId, GuestSubmission] = {
             submission.id: submission for submission in submissions
         }
+        self.locked_caps: list[GuestCap] = []
         self._staged: dict[EntityId, GuestSubmission] = {}
+        self._deleted: set[EntityId] = set()
 
     def _current(self) -> dict[EntityId, GuestSubmission]:
-        return {**self.committed, **self._staged}
+        current = {**self.committed, **self._staged}
+        for submission_id in self._deleted:
+            current.pop(submission_id, None)
+        return current
 
     async def get(self, submission_id: EntityId) -> GuestSubmission | None:
         """Return the submission, staged changes included.
@@ -200,6 +215,14 @@ class InMemoryGuestSubmissionRepository:
             raise ConflictError(message)
         self._staged[submission.id] = submission
 
+    async def lock_cap(self, cap: GuestCap) -> None:
+        """Record the lock.
+
+        Args:
+            cap: The cap.
+        """
+        self.locked_caps.append(cap)
+
     async def count_opened_since(self, since: datetime) -> GuestSubmissionWindow:
         """Count submissions opened at or after ``since``.
 
@@ -215,8 +238,43 @@ class InMemoryGuestSubmissionRepository:
             if submission.created_at >= since
         ]
         return GuestSubmissionWindow(
-            count=len(opened), oldest_opened_at=min(opened, default=None)
+            count=len(opened), oldest_at=min(opened, default=None)
         )
+
+    async def count_submitted_since(self, since: datetime) -> GuestSubmissionWindow:
+        """Count reports submitted at or after ``since``.
+
+        Args:
+            since: Start of the window.
+
+        Returns:
+            The count and the oldest submission time.
+        """
+        submitted = [
+            submission.submitted_at
+            for submission in self._current().values()
+            if submission.submitted_at is not None and submission.submitted_at >= since
+        ]
+        return GuestSubmissionWindow(
+            count=len(submitted), oldest_at=min(submitted, default=None)
+        )
+
+    async def purge_unfiled(self, expired_before: datetime) -> int:
+        """Stage deleting unfiled submissions that expired before the cut-off.
+
+        Args:
+            expired_before: The cut-off.
+
+        Returns:
+            How many are deleted.
+        """
+        doomed = {
+            submission.id
+            for submission in self._current().values()
+            if submission.report_id is None and submission.expires_at < expired_before
+        }
+        self._deleted |= doomed
+        return len(doomed)
 
     async def is_reference_taken(self, reference: str) -> bool:
         """Tell whether a submission carries ``reference``.
@@ -234,25 +292,39 @@ class InMemoryGuestSubmissionRepository:
     def apply_staged(self) -> None:
         """Make the staged writes permanent; called on commit."""
         self.committed.update(self._staged)
+        for submission_id in self._deleted:
+            self.committed.pop(submission_id, None)
         self._staged.clear()
+        self._deleted.clear()
 
     def discard_staged(self) -> None:
         """Forget the staged writes; called on rollback."""
         self._staged.clear()
+        self._deleted.clear()
 
 
 class InMemorySpentChallengeRepository:
     """``SpentChallengeRepository`` over a dictionary keyed by salt.
 
+    ``database_clock`` plays the database's ``now()``: when set, ``spend`` refuses
+    a challenge it says has expired and ``purge_expired`` measures the grace from
+    it. Unset, nothing expires.
+
     Implements: Fake (of Repository).
 
     Attributes:
         committed: Redeemed salts and their expiry, as committed.
+        database_clock: The store's own clock, or ``None``.
     """
 
-    def __init__(self) -> None:
-        """Create an empty repository."""
+    def __init__(self, database_clock: Clock | None = None) -> None:
+        """Create an empty repository.
+
+        Args:
+            database_clock: The store's own clock, or ``None``.
+        """
         self.committed: dict[str, datetime] = {}
+        self.database_clock = database_clock
         self._staged: dict[str, datetime] = {}
         self._purged: set[str] = set()
 
@@ -265,23 +337,29 @@ class InMemorySpentChallengeRepository:
 
         Raises:
             GuestChallengeSpentError: If it was redeemed before.
+            GuestChallengeExpiredError: If ``database_clock`` says it expired.
         """
         if salt in self._staged or (
             salt in self.committed and salt not in self._purged
         ):
             raise GuestChallengeSpentError.create()
+        if self.database_clock is not None and expires_at <= self.database_clock.now():
+            raise GuestChallengeExpiredError.create()
         self._staged[salt] = expires_at
 
-    async def purge_expired(self, now: datetime) -> int:
-        """Stage forgetting the expired challenges.
+    async def purge_expired(self, grace: timedelta) -> int:
+        """Stage forgetting the challenges expired more than ``grace`` ago.
 
         Args:
-            now: The current instant.
+            grace: How long after expiry a record is kept.
 
         Returns:
             How many are forgotten.
         """
-        expired = {salt for salt, expiry in self.committed.items() if expiry < now}
+        if self.database_clock is None:
+            return 0
+        cutoff = self.database_clock.now() - grace
+        expired = {salt for salt, expiry in self.committed.items() if expiry < cutoff}
         self._purged |= expired
         return len(expired)
 
@@ -315,17 +393,19 @@ class InMemoryReportsUnitOfWork(InMemoryUnitOfWork):
         *,
         reports: Iterable[Report] = (),
         guest_submissions: Iterable[GuestSubmission] = (),
+        database_clock: Clock | None = None,
     ) -> None:
         """Create the unit of work.
 
         Args:
             reports: Reports that exist before the test acts.
             guest_submissions: Guest submissions that exist before the test acts.
+            database_clock: The spent challenge store's own clock, or ``None``.
         """
         super().__init__()
         self.reports = InMemoryReportRepository(reports)
         self.guest_submissions = InMemoryGuestSubmissionRepository(guest_submissions)
-        self.spent_challenges = InMemorySpentChallengeRepository()
+        self.spent_challenges = InMemorySpentChallengeRepository(database_clock)
 
     def _on_commit(self) -> None:
         self.reports.apply_staged()
@@ -580,41 +660,54 @@ class FakeGuestMediaGateway:
     Attributes:
         owners: The owning submission of every granted asset.
         types: The declared image type of every granted asset.
+        sizes: The signed size of every granted asset.
         completed: Assets completed so far, in order.
     """
 
-    def __init__(self, ids: Iterable[EntityId]) -> None:
-        """Create the gateway.
-
-        Args:
-            ids: The asset ids to hand out, in order.
-        """
-        self._ids = iter(ids)
+    def __init__(self) -> None:
+        """Create the gateway."""
         self.owners: dict[EntityId, EntityId] = {}
         self.types: dict[EntityId, GuestImageType] = {}
+        self.sizes: dict[EntityId, int] = {}
         self.completed: list[EntityId] = []
 
     async def request_upload(
-        self, owner_id: EntityId, mime_type: GuestImageType
+        self,
+        owner_id: EntityId,
+        mime_type: GuestImageType,
+        *,
+        asset_id: EntityId,
+        byte_size: int,
     ) -> UploadGrant:
-        """Grant an upload for the next asset id.
+        """Grant an upload for the reserved asset id.
 
         Args:
             owner_id: The submission.
             mime_type: The image type.
+            asset_id: The reserved asset id.
+            byte_size: The signed size.
 
         Returns:
             A grant with a fake URL.
+
+        Raises:
+            ConflictError: If the asset id was granted before.
         """
-        asset_id = next(self._ids)
+        if asset_id in self.owners:
+            message = "the media asset already exists"
+            raise ConflictError(message)
         self.owners[asset_id] = owner_id
         self.types[asset_id] = mime_type
+        self.sizes[asset_id] = byte_size
         return UploadGrant(
             asset_id=asset_id,
             upload_url=f"https://storage.test/upload/{asset_id}",
-            headers=(HttpHeader(name="Content-Type", value=mime_type),),
+            headers=(
+                HttpHeader(name="Content-Type", value=mime_type),
+                HttpHeader(name="Content-Length", value=str(byte_size)),
+            ),
             expires_at=FAKE_GUEST_UPLOAD_EXPIRY,
-            max_bytes=1024,
+            max_bytes=50 * 1024 * 1024,
         )
 
     async def complete_upload(

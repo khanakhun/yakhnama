@@ -182,19 +182,31 @@ class GuestMediaGatewayAdapter:
         self._complete_upload = complete_upload
 
     async def request_upload(
-        self, owner_id: EntityId, mime_type: GuestImageType
+        self,
+        owner_id: EntityId,
+        mime_type: GuestImageType,
+        *,
+        asset_id: EntityId,
+        byte_size: int,
     ) -> UploadGrant:
-        """Create an asset owned by the guest submission and presign its upload.
+        """Create the reserved asset owned by the guest submission; presign it.
 
         Args:
             owner_id: The guest submission.
             mime_type: The declared image type.
+            asset_id: The id the reserved photo slot names.
+            byte_size: The photo's exact size, signed into the URL.
 
         Returns:
             The media module's upload grant.
         """
         return await self._request_upload(
-            RequestGuestUpload(owner_id=owner_id, mime_type=MimeType(mime_type))
+            RequestGuestUpload(
+                owner_id=owner_id,
+                asset_id=asset_id,
+                mime_type=MimeType(mime_type),
+                byte_size=byte_size,
+            )
         )
 
     async def complete_upload(

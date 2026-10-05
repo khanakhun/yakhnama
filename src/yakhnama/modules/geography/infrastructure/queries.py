@@ -500,6 +500,15 @@ class SqlAlchemyDistrictEdgeQueryService:
         """
         self._session_factory = session_factory
 
+    async def get_current_id(self) -> EntityId | None:
+        """Return the newest committed snapshot's id; one indexed row, no edges.
+
+        Returns:
+            The id, or ``None`` if none is stored.
+        """
+        async with self._session_factory() as session:
+            return await SqlAlchemyDistrictEdgeSetRepository(session).get_current_id()
+
     async def get_current(self) -> DistrictEdgeSnapshot | None:
         """Return the newest committed snapshot as its public collection.
 

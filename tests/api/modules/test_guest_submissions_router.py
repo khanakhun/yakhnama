@@ -4,6 +4,7 @@ from datetime import timedelta
 from typing import Any, Final
 
 import httpx
+import pytest
 
 from tests.api.modules.recording import (
     REPORTS,
@@ -99,7 +100,7 @@ async def test_guest_full_flow_files_a_guest_report_with_a_photo() -> None:
         grant = await open_submission(client)
         upload = await client.post(
             f"{GUEST}/{grant['submission_id']}/media",
-            json={"mime_type": "image/jpeg"},
+            json={"mime_type": "image/jpeg", "byte_size": 2048},
             headers=capability(grant),
         )
         asset_id = upload.json()["asset_id"]
@@ -170,7 +171,7 @@ async def test_guest_report_retry_returns_same_receipt_and_other_content_409() -
         )
         late_upload = await client.post(
             f"{GUEST}/{grant['submission_id']}/media",
-            json={"mime_type": "image/png"},
+            json={"mime_type": "image/png", "byte_size": 2048},
             headers=capability(grant),
         )
 
@@ -190,13 +191,17 @@ async def test_guest_fourth_photo_is_refused() -> None:
         statuses = [
             (
                 await client.post(
-                    path, json={"mime_type": "image/webp"}, headers=capability(grant)
+                    path,
+                    json={"mime_type": "image/webp", "byte_size": 2048},
+                    headers=capability(grant),
                 )
             ).status_code
             for _ in range(3)
         ]
         fourth = await client.post(
-            path, json={"mime_type": "image/webp"}, headers=capability(grant)
+            path,
+            json={"mime_type": "image/webp", "byte_size": 2048},
+            headers=capability(grant),
         )
 
     assert statuses == [201, 201, 201]
@@ -210,7 +215,7 @@ async def test_guest_non_image_upload_is_422() -> None:
         grant = await open_submission(client)
         response = await client.post(
             f"{GUEST}/{grant['submission_id']}/media",
-            json={"mime_type": "application/pdf"},
+            json={"mime_type": "application/pdf", "byte_size": 2048},
             headers=capability(grant),
         )
 
@@ -300,6 +305,125 @@ async def test_guest_hourly_cap_is_429_with_retry_after() -> None:
 
     assert_problem(refused, 429, "rate-limited")
     assert int(refused.headers["retry-after"]) == 3601
+
+
+async def test_guest_reports_cap_is_429_with_retry_after_on_the_report() -> None:
+    api = guest_app(guest_reports_per_hour=1)
+
+    async with api.client() as client:
+        first = await open_submission(client)
+        second = await open_submission(client)
+        filed = await client.post(
+            f"{GUEST}/{first['submission_id']}/report",
+            json=guest_report(),
+            headers=capability(first),
+        )
+        api.clock.advance(timedelta(minutes=10))
+        refused = await client.post(
+            f"{GUEST}/{second['submission_id']}/report",
+            json=guest_report(description="A second guest's report."),
+            headers=capability(second),
+        )
+
+    assert filed.status_code == 201
+    assert_problem(refused, 429, "rate-limited")
+    assert int(refused.headers["retry-after"]) == 50 * 60 + 1
+
+
+async def test_guest_upload_grant_signs_the_size_with_the_guest_lifetime() -> None:
+    api = guest_app()
+
+    async with api.client() as client:
+        grant = await open_submission(client)
+        upload = await client.post(
+            f"{GUEST}/{grant['submission_id']}/media",
+            json={"mime_type": "image/jpeg", "byte_size": 4096},
+            headers=capability(grant),
+        )
+
+    assert upload.status_code == 201
+    assert {"name": "Content-Length", "value": "4096"} in upload.json()["headers"]
+    assert api.storage.presigned_sizes == [(4096, timedelta(seconds=300))]
+
+
+@pytest.mark.parametrize("byte_size", [None, 0, 50 * 1024 * 1024 + 1])
+async def test_guest_upload_without_a_valid_size_is_422(byte_size: int | None) -> None:
+    api = guest_app()
+    body: dict[str, object] = {"mime_type": "image/jpeg"}
+    if byte_size is not None:
+        body["byte_size"] = byte_size
+
+    async with api.client() as client:
+        grant = await open_submission(client)
+        response = await client.post(
+            f"{GUEST}/{grant['submission_id']}/media",
+            json=body,
+            headers=capability(grant),
+        )
+
+    assert_problem(response, 422, "validation-error")
+    assert api.storage.presigned_puts == []
+
+
+async def test_guest_receipt_is_replayed_after_the_capability_expired() -> None:
+    api = guest_app()
+
+    async with api.client() as client:
+        grant = await open_submission(client)
+        path = f"{GUEST}/{grant['submission_id']}/report"
+        first = await client.post(path, json=guest_report(), headers=capability(grant))
+        api.clock.advance(timedelta(hours=2))
+        again = await client.post(path, json=guest_report(), headers=capability(grant))
+
+    assert (first.status_code, again.status_code) == (201, 201)
+    assert first.json() == again.json()
+
+
+async def test_guest_photo_completed_after_the_report_is_accepted() -> None:
+    api = guest_app()
+
+    async with api.client() as client:
+        grant = await open_submission(client)
+        upload = await client.post(
+            f"{GUEST}/{grant['submission_id']}/media",
+            json={"mime_type": "image/jpeg", "byte_size": 2048},
+            headers=capability(grant),
+        )
+        asset_id = upload.json()["asset_id"]
+        await client.post(
+            f"{GUEST}/{grant['submission_id']}/report",
+            json=guest_report(),
+            headers=capability(grant),
+        )
+        api.storage.objects[upload_object_key(asset_id)] = StoredObject(
+            sha256="c" * 64, byte_size=2048, content_type="image/jpeg"
+        )
+        api.mime_sniffer.types[original_object_key(asset_id)] = MimeType.JPEG
+        completed = await client.post(
+            f"{GUEST}/{grant['submission_id']}/media/{asset_id}/complete",
+            headers=capability(grant),
+        )
+
+    [report] = api.reports.reports.committed.values()
+    assert completed.status_code == 200
+    assert report.media_ids == ()
+
+
+async def test_guest_routes_document_retry_after_on_every_429() -> None:
+    api = guest_app()
+
+    async with api.client() as client:
+        schema = (await client.get("/api/v1/openapi.json")).json()
+
+    guest_operations = [
+        operation
+        for path, item in schema["paths"].items()
+        if path.startswith(GUEST)
+        for operation in item.values()
+    ]
+    assert len(guest_operations) == 5
+    for operation in guest_operations:
+        assert "Retry-After" in operation["responses"]["429"]["headers"]
 
 
 async def test_guest_report_with_account_only_fields_is_422() -> None:

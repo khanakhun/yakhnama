@@ -210,6 +210,26 @@ def test_is_sensitive_key_identity_claim_key_returns_true(key: str) -> None:
     assert result is True
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "capability",
+        "guest_capability",
+        "Guest-Capability",
+        "challenge",
+        "nonce",
+        "consent_method",
+        "assisted_consent_statement_version",
+        "assisted_note",
+        "note",
+    ],
+)
+def test_is_sensitive_key_guest_and_consent_key_returns_true(key: str) -> None:
+    result = is_sensitive_key(key)
+
+    assert result is True
+
+
 def test_redact_personal_data_identity_claims_are_redacted() -> None:
     event = {
         "event": "user_mirrored",

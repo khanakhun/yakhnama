@@ -80,6 +80,9 @@ class LoadDistrictBoundaries(BaseModel):
         source: The committed description of the boundary file and its links.
         actor: Who asks; refused unless the policy explicitly allows them.
         dry_run: Compute the report but roll back instead of committing.
+        is_invalid_coverage_allowed: Publish even when the districts do not form a
+            valid coverage; otherwise such a load is refused (ADR 0021). A dry run
+            never publishes, so it reports an invalid coverage without refusing.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -87,3 +90,4 @@ class LoadDistrictBoundaries(BaseModel):
     source: DistrictBoundarySource
     actor: Actor
     dry_run: bool = False
+    is_invalid_coverage_allowed: bool = False

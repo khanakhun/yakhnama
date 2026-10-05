@@ -2729,8 +2729,14 @@
       },
       "GuestMediaUploadRequest": {
         "additionalProperties": false,
-        "description": "Body of ``POST /api/v1/guest-submissions/{id}/media``.\n\nImplements: API Schema.\n\nAttributes:\n    mime_type: The declared image type: JPEG, PNG or WebP only.",
+        "description": "Body of ``POST /api/v1/guest-submissions/{id}/media``.\n\nImplements: API Schema.\n\nAttributes:\n    mime_type: The declared image type: JPEG, PNG or WebP only.\n    byte_size: The photo's exact size in bytes, 1 to the media size cap;\n        signed into the upload URL as ``Content-Length``, so the client must\n        ``PUT`` exactly the file's bytes.",
         "properties": {
+          "byte_size": {
+            "maximum": 52428800.0,
+            "minimum": 1.0,
+            "title": "Byte Size",
+            "type": "integer"
+          },
           "mime_type": {
             "enum": [
               "image/jpeg",
@@ -2742,7 +2748,8 @@
           }
         },
         "required": [
-          "mime_type"
+          "mime_type",
+          "byte_size"
         ],
         "title": "GuestMediaUploadRequest",
         "type": "object"
@@ -6745,14 +6752,21 @@
       },
       "RequestUploadRequest": {
         "additionalProperties": false,
-        "description": "Body of ``POST /api/v1/media`` and ``POST /api/v1/reports/{id}/media``.\n\nImplements: API Schema.\n\nAttributes:\n    mime_type: The declared media type, from the allow-list; the file's\n        content is checked against it again when the upload completes.",
+        "description": "Body of ``POST /api/v1/media`` and ``POST /api/v1/reports/{id}/media``.\n\nImplements: API Schema.\n\nAttributes:\n    mime_type: The declared media type, from the allow-list; the file's\n        content is checked against it again when the upload completes.\n    byte_size: The file's exact size in bytes, 1 to ``MAX_MEDIA_BYTES``. The\n        upload URL signs it as ``Content-Length``, so storage refuses a body\n        of any other length; the client must ``PUT`` exactly the file.",
         "properties": {
+          "byte_size": {
+            "maximum": 52428800.0,
+            "minimum": 1.0,
+            "title": "Byte Size",
+            "type": "integer"
+          },
           "mime_type": {
             "$ref": "#/components/schemas/MimeType"
           }
         },
         "required": [
-          "mime_type"
+          "mime_type",
+          "byte_size"
         ],
         "title": "RequestUploadRequest",
         "type": "object"
@@ -9274,10 +9288,38 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=86400` for a snapshot, `public, max-age=300` while none is loaded; `no-store` when the request carried a bearer token.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong tag naming the current snapshot; absent while no boundaries are loaded.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "304": {
-            "description": "The representation named by If-None-Match is current"
+            "description": "The representation named by If-None-Match is current",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=86400` for a snapshot, `public, max-age=300` while none is loaded; `no-store` when the request carried a bearer token.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong tag naming the current snapshot; absent while no boundaries are loaded.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "content": {
@@ -10372,7 +10414,7 @@
     },
     "/api/v1/guest-submissions": {
       "post": {
-        "description": "Redeem a solved challenge for one guest submission.\n\nA challenge opens one submission only (409 ``guest-challenge-spent`` on a\nreplay); a forged one is 422 ``guest-challenge-invalid``, an expired one 422\n``guest-challenge-expired``, a wrong nonce 422 ``guest-proof-invalid``. When\ntoo many submissions were opened in the last hour, 429 ``rate-limited`` with\n``Retry-After``.\n\nArgs:\n    body: The challenge and its solution.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The submission id and its capability, which is shown only this once.",
+        "description": "Redeem a solved challenge for one guest submission.\n\nA challenge opens one submission only (409 ``guest-challenge-spent`` on a\nreplay); a forged one is 422 ``guest-challenge-invalid``, an expired one 422\n``guest-challenge-expired``, a wrong nonce 422 ``guest-proof-invalid``. When\ntoo many submissions were opened, or reports submitted, in the last hour,\n429 ``rate-limited`` with ``Retry-After``.\n\nArgs:\n    body: The challenge and its solution.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The submission id and its capability, which is shown only this once.",
         "operationId": "open_guest_submission_api_v1_guest_submissions_post",
         "requestBody": {
           "content": {
@@ -10417,7 +10459,16 @@
             "content": {
               "application/problem+json": {}
             },
-            "description": "RFC 9457 Problem Details"
+            "description": "RFC 9457 Problem Details, ``rate-limited``: the anonymous rate limit or an hourly guest cap is reached",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before trying again.",
+                "schema": {
+                  "minimum": 1.0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "503": {
             "content": {
@@ -10434,7 +10485,7 @@
     },
     "/api/v1/guest-submissions/challenges": {
       "post": {
-        "description": "Issue a proof-of-work challenge to an anonymous caller.\n\nFind a decimal ``nonce`` such that ``SHA-256(salt + nonce)`` (UTF-8, the\nnonce appended to the salt) starts with ``difficulty_bits`` zero bits, then\nsend the challenge and the nonce to ``POST /guest-submissions`` before\n``expires_at``.\n\nArgs:\n    services: Use cases bound by the composition root.\n\nReturns:\n    The signed challenge, its salt, difficulty and expiry.",
+        "description": "Issue a proof-of-work challenge to an anonymous caller.\n\nThe difficulty rises with the number of submissions opened in the last hour\n(one bit per configured step, up to 22 bits). Find a decimal ``nonce`` such\nthat ``SHA-256(salt + nonce)`` (UTF-8, the nonce appended to the salt)\nstarts with ``difficulty_bits`` zero bits, then\nsend the challenge and the nonce to ``POST /guest-submissions`` before\n``expires_at``.\n\nArgs:\n    services: Use cases bound by the composition root.\n\nReturns:\n    The signed challenge, its salt, difficulty and expiry.",
         "operationId": "issue_guest_challenge_api_v1_guest_submissions_challenges_post",
         "responses": {
           "201": {
@@ -10463,7 +10514,16 @@
             "content": {
               "application/problem+json": {}
             },
-            "description": "RFC 9457 Problem Details"
+            "description": "RFC 9457 Problem Details, ``rate-limited``: the anonymous rate limit or an hourly guest cap is reached",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before trying again.",
+                "schema": {
+                  "minimum": 1.0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "503": {
             "content": {
@@ -10480,7 +10540,7 @@
     },
     "/api/v1/guest-submissions/{submission_id}/media": {
       "post": {
-        "description": "Grant a presigned upload of one photo to a guest submission.\n\nAt most three per submission (409 ``guest-media-limit`` for a fourth); none\nonce the report was submitted (409 ``guest-submission-closed``).\n\nArgs:\n    submission_id: The guest submission.\n    body: The declared image type.\n    services: Use cases bound by the composition root.\n    capability: The ``Guest-Capability`` header.\n\nReturns:\n    The asset id, upload URL, headers, expiry and size cap.",
+        "description": "Grant a presigned upload of one photo to a guest submission.\n\nAt most three per submission (409 ``guest-media-limit`` for a fourth); none\nonce the report was submitted (409 ``guest-submission-closed``). ``PUT``\nexactly ``byte_size`` bytes with the returned headers before ``expires_at``:\nstorage refuses a body of any other length or type. A browser sets\n``Content-Length`` itself from the body; other clients must send it.\n\nArgs:\n    submission_id: The guest submission.\n    body: The declared image type.\n    services: Use cases bound by the composition root.\n    capability: The ``Guest-Capability`` header.\n\nReturns:\n    The asset id, upload URL, headers, expiry and size cap.",
         "operationId": "request_guest_media_upload_api_v1_guest_submissions__submission_id__media_post",
         "parameters": [
           {
@@ -10562,7 +10622,16 @@
             "content": {
               "application/problem+json": {}
             },
-            "description": "RFC 9457 Problem Details"
+            "description": "RFC 9457 Problem Details, ``rate-limited``: the anonymous rate limit or an hourly guest cap is reached",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before trying again.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "503": {
             "content": {
@@ -10579,7 +10648,7 @@
     },
     "/api/v1/guest-submissions/{submission_id}/media/{asset_id}/complete": {
       "post": {
-        "description": "Check and complete a guest's uploaded photo.\n\nArgs:\n    submission_id: The guest submission.\n    asset_id: The asset from the upload grant.\n    services: Use cases bound by the composition root.\n    capability: The ``Guest-Capability`` header.\n\nReturns:\n    The completed photo (type, size, status); no download links.",
+        "description": "Check and complete a guest's uploaded photo.\n\nAllowed until the capability expires, also after the report was submitted;\na photo completed then is kept private and is not added to the report.\n\nArgs:\n    submission_id: The guest submission.\n    asset_id: The asset from the upload grant.\n    services: Use cases bound by the composition root.\n    capability: The ``Guest-Capability`` header.\n\nReturns:\n    The completed photo (type, size, status); no download links.",
         "operationId": "complete_guest_media_upload_api_v1_guest_submissions__submission_id__media__asset_id__complete_post",
         "parameters": [
           {
@@ -10667,7 +10736,16 @@
             "content": {
               "application/problem+json": {}
             },
-            "description": "RFC 9457 Problem Details"
+            "description": "RFC 9457 Problem Details, ``rate-limited``: the anonymous rate limit or an hourly guest cap is reached",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before trying again.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "503": {
             "content": {
@@ -10684,7 +10762,7 @@
     },
     "/api/v1/guest-submissions/{submission_id}/report": {
       "post": {
-        "description": "Submit the one report of a guest submission.\n\nA retry with the same content returns the same receipt (201 again), so a\nlost response is safe to retry; different content is 409\n``guest-submission-closed``. The report enters the moderators' guest queue\n(``GET /reports?channel=guest``); the guest cannot revise or withdraw it.\n\nArgs:\n    submission_id: The guest submission.\n    body: The observation; ``media_ids`` must be this submission's photos.\n    services: Use cases bound by the composition root.\n    capability: The ``Guest-Capability`` header.\n\nReturns:\n    The receipt reference and the submission time.",
+        "description": "Submit the one report of a guest submission.\n\nA retry with the same content returns the same receipt (201 again), so a\nlost response is safe to retry, also for 24 hours after the capability\nexpired; different content is 409 ``guest-submission-closed``. When guests\nsubmitted too many reports in the last hour, 429 ``rate-limited`` with\n``Retry-After``. The report enters the moderators' guest queue\n(``GET /reports?channel=guest``); the guest cannot revise or withdraw it.\n\nArgs:\n    submission_id: The guest submission.\n    body: The observation; ``media_ids`` must be this submission's photos.\n    services: Use cases bound by the composition root.\n    capability: The ``Guest-Capability`` header.\n\nReturns:\n    The receipt reference and the submission time.",
         "operationId": "submit_guest_report_api_v1_guest_submissions__submission_id__report_post",
         "parameters": [
           {
@@ -10766,7 +10844,16 @@
             "content": {
               "application/problem+json": {}
             },
-            "description": "RFC 9457 Problem Details"
+            "description": "RFC 9457 Problem Details, ``rate-limited``: the anonymous rate limit or an hourly guest cap is reached",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before trying again.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "503": {
             "content": {
@@ -11386,7 +11473,7 @@
     },
     "/api/v1/media": {
       "post": {
-        "description": "Grant a presigned upload for a file whose report is not submitted yet.\n\nThe returned ``asset_id`` can then be listed in ``media_ids`` of\n``POST /reports``.\n\nArgs:\n    body: The declared media type.\n    actor: The authenticated uploader.\n    response: Used to set ``Location``.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The asset id, upload URL, headers, expiry and size cap.",
+        "description": "Grant a presigned upload for a file whose report is not submitted yet.\n\nThe returned ``asset_id`` can then be listed in ``media_ids`` of\n``POST /reports``. ``PUT`` exactly ``byte_size`` bytes with the returned\nheaders; a body of any other length is refused by storage (403), a\n``byte_size`` above ``max_bytes`` here (422).\n\nArgs:\n    body: The declared media type.\n    actor: The authenticated uploader.\n    response: Used to set ``Location``.\n    services: Use cases bound by the composition root.\n    idempotency_key: Documented here; the idempotency middleware acts on it.\n\nReturns:\n    The asset id, upload URL, headers, expiry and size cap.",
         "operationId": "request_upload_api_v1_media_post",
         "parameters": [
           {

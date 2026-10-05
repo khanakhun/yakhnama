@@ -93,6 +93,29 @@ class InMemoryMediaAssetRepository:
         )
         return matches[0] if matches else None
 
+    async def find_requested_before(
+        self, before: datetime, limit: int
+    ) -> Sequence[MediaAsset]:
+        """Return requested assets created before ``before``, oldest first.
+
+        Args:
+            before: The cut-off.
+            limit: Most assets returned.
+
+        Returns:
+            The assets.
+        """
+        matches = sorted(
+            (
+                asset
+                for asset in self._current().values()
+                if asset.upload_status is UploadStatus.REQUESTED
+                and asset.created_at < before
+            ),
+            key=lambda asset: (asset.created_at, asset.id),
+        )
+        return tuple(matches[:limit])
+
     async def add(self, asset: MediaAsset) -> None:
         """Stage a new asset.
 
@@ -214,6 +237,9 @@ class FakeStoragePort:
     Attributes:
         objects: What ``head`` reports per key; tests put uploads here.
         presigned_puts: Keys presigned for upload, in order.
+        presigned_sizes: The signed size and lifetime of each presigned upload,
+            in order.
+        deleted_uploads: Upload keys deleted, in order.
         presigned_gets: Keys presigned for download, in order.
         seals: ``(upload_key, original_key)`` pairs sealed, in order.
         copies: ``(original_key, public_key)`` pairs copied, in order.
@@ -228,33 +254,53 @@ class FakeStoragePort:
         """
         self.objects: dict[str, StoredObject] = dict(objects or {})
         self.presigned_puts: list[str] = []
+        self.presigned_sizes: list[tuple[int, timedelta | None]] = []
+        self.deleted_uploads: list[str] = []
         self.presigned_gets: list[str] = []
         self.seals: list[tuple[str, str]] = []
         self.copies: list[tuple[str, str]] = []
         self.on_copy: Callable[[], None] | None = None
 
     async def presign_put(
-        self, key: str, mime_type: MimeType, max_bytes: int
+        self,
+        key: str,
+        mime_type: MimeType,
+        byte_size: int,
+        *,
+        ttl: timedelta | None = None,
     ) -> PresignedUpload:
-        """Record the key and return a fake upload URL.
+        """Record the key, size and lifetime and return a fake upload URL.
 
         Args:
             key: The object key.
             mime_type: The declared media type.
-            max_bytes: The size cap.
+            byte_size: The signed size.
+            ttl: The requested lifetime, ``None`` for the default.
 
         Returns:
-            A URL naming the key, with the content type and cap as headers.
+            A URL naming the key, with the content type and length as headers.
         """
         self.presigned_puts.append(key)
+        self.presigned_sizes.append((byte_size, ttl))
         return PresignedUpload(
             url=f"https://storage.example.test/private/{key}?signature=put",
             headers=(
                 HttpHeader(name="Content-Type", value=mime_type.value),
-                HttpHeader(name="X-Max-Bytes", value=str(max_bytes)),
+                HttpHeader(name="Content-Length", value=str(byte_size)),
             ),
-            expires_at=FAKE_STORAGE_EXPIRY,
+            expires_at=FAKE_STORAGE_EXPIRY
+            if ttl is None
+            else FAKE_STORAGE_EXPIRY - timedelta(hours=1) + ttl,
         )
+
+    async def delete_upload(self, key: str) -> None:
+        """Record the deletion and forget the object at ``key``.
+
+        Args:
+            key: The upload key.
+        """
+        self.deleted_uploads.append(key)
+        self.objects.pop(key, None)
 
     async def head(self, key: str) -> StoredObject | None:
         """Return the arranged object at ``key``.

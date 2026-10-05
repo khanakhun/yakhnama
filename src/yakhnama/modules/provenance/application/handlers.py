@@ -15,6 +15,7 @@ from yakhnama.modules.provenance.application.authorisation import (
     source_editor_policy,
 )
 from yakhnama.modules.provenance.application.commands import (
+    MarkPlatformSourceReferenced,
     MarkSourceReferenced,
     RegisterPlatformSource,
     RegisterSource,
@@ -30,7 +31,11 @@ from yakhnama.modules.provenance.domain.errors import SourceNotFoundError
 from yakhnama.modules.provenance.domain.factories import SourceFactory
 from yakhnama.modules.provenance.domain.value_objects import SYSTEM_OWNER, SourceOwner
 from yakhnama.shared_kernel.clock import Clock
-from yakhnama.shared_kernel.errors import PreconditionFailedError
+from yakhnama.shared_kernel.errors import (
+    ConflictError,
+    PermissionDeniedError,
+    PreconditionFailedError,
+)
 from yakhnama.shared_kernel.ids import EntityId, IdGenerator
 
 
@@ -203,43 +208,124 @@ class MarkSourceReferencedHandler(_ProvenanceHandler):
 
 
 class RegisterPlatformSourceHandler(_ProvenanceHandler):
-    """Register a platform-owned source and freeze it at once (ADR 0020).
+    """Register a platform-owned source (ADR 0020).
 
     The source has no owner (``SYSTEM_OWNER``), so only moderators could ever
     edit it, and nobody needs to: its details are fixed text the platform wrote.
-    It is marked referenced in the same unit of work because the caller registers
-    it only for a fact it is about to record; if recording that fact then fails,
-    the frozen source cites nothing, which is as harmless as the unreferenced
-    source an interrupted ``SubmitReport`` leaves.
+    It stays unreferenced until the caller has stored the fact that cites it and
+    sends ``MarkPlatformSourceReferenced``, so a source is never frozen for a fact
+    that was not recorded.
+
+    With a ``source_id`` the registration is idempotent: a guest report reserves
+    its source's id before the source exists, and two requests completing the
+    same reservation register it once.
 
     Implements: Command Handler.
     """
 
     async def __call__(self, command: RegisterPlatformSource) -> SourceDetail:
-        """Register and reference the source.
+        """Register the source, or return the platform source with its id.
 
         Args:
             command: The validated command.
 
         Returns:
-            The new, referenced source.
+            The new (or already registered) source.
+
+        Raises:
+            ConflictError: If ``source_id`` names a source that is not a platform
+                source.
         """
-        async with self._uow_factory() as uow:
-            registered = (
-                SourceFactory()
-                .register(
-                    command.source_type,
-                    command.details,
-                    SYSTEM_OWNER,
-                    clock=self._clock,
-                    ids=self._ids,
+        if command.source_id is not None:
+            existing = await self._existing(command.source_id)
+            if existing is not None:
+                return existing
+        try:
+            async with self._uow_factory() as uow:
+                source = (
+                    SourceFactory()
+                    .register(
+                        command.source_type,
+                        command.details,
+                        SYSTEM_OWNER,
+                        clock=self._clock,
+                        ids=self._ids,
+                        source_id=command.source_id,
+                    )
+                    .record_into(uow)
                 )
-                .record_into(uow)
-            )
-            await uow.sources.add(registered)
-            source = registered.mark_referenced(
-                clock=self._clock, ids=self._ids
-            ).record_into(uow)
-            await uow.sources.save(source)
+                await uow.sources.add(source)
+                await uow.commit()
+        except ConflictError:
+            # Only a reserved id can collide: a concurrent request registered it
+            # between the lookup and the insert.
+            if command.source_id is None:
+                raise
+            existing = await self._existing(command.source_id)
+            if existing is None:
+                raise
+            return existing
+        return SourceDetail.from_entity(source)
+
+    async def _existing(self, source_id: EntityId) -> SourceDetail | None:
+        async with self._uow_factory() as uow:
+            source = await uow.sources.get(source_id)
+        if source is None:
+            return None
+        if source.owner != SYSTEM_OWNER:
+            message = "the reserved source id belongs to another source"
+            raise ConflictError(message, details={"source_id": str(source_id)})
+        return SourceDetail.from_entity(source)
+
+
+class MarkPlatformSourceReferencedHandler(_ProvenanceHandler):
+    """Freeze a platform-owned source once the fact citing it is stored.
+
+    Internal: bound to the ``PlatformSourceReferenceMarker`` port of the reports
+    and media guest use cases (ADR 0020); no endpoint routes to it. Like
+    ``MarkSourceReferencedHandler`` it runs in a unit of work of its own after the
+    citing fact committed; if it fails, the source stays mutable (by moderators
+    only, being ownerless) until a retry marks it.
+
+    Implements: Command Handler.
+    """
+
+    async def __call__(self, command: MarkPlatformSourceReferenced) -> SourceDetail:
+        """Mark the platform source as referenced; idempotent.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            The referenced source.
+
+        Raises:
+            SourceNotFoundError: If the source does not exist.
+            PermissionDeniedError: If it is not a platform source.
+            ConflictError: If a concurrent change other than the same mark won.
+        """
+        try:
+            return await self._mark(command.source_id)
+        except ConflictError:
+            # Two retries of one guest report mark the same source at once; the
+            # loser finds it referenced, which is all it wanted.
+            async with self._uow_factory() as uow:
+                source = await _load_source(uow, command.source_id)
+            if not source.is_referenced:
+                raise
+            return SourceDetail.from_entity(source)
+
+    async def _mark(self, source_id: EntityId) -> SourceDetail:
+        async with self._uow_factory() as uow:
+            source = await _load_source(uow, source_id)
+            if source.owner != SYSTEM_OWNER:
+                message = "only platform sources are marked through this path"
+                raise PermissionDeniedError(
+                    message, details={"action": "cite sources", "reason": "owner"}
+                )
+            change = source.mark_referenced(clock=self._clock, ids=self._ids)
+            if change.events:
+                source = change.record_into(uow)
+                await uow.sources.save(source)
             await uow.commit()
         return SourceDetail.from_entity(source)

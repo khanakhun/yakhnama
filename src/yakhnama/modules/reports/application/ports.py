@@ -22,7 +22,7 @@ Patterns: Repository (port side), Unit of Work, Query Service, Adapter (port sid
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final, Protocol
 
 from yakhnama.modules.media.public import UploadGrant
@@ -34,6 +34,7 @@ from yakhnama.modules.reports.application.dto import (
 from yakhnama.modules.reports.application.queries import FindNearbyReports
 from yakhnama.modules.reports.domain.entities import Report
 from yakhnama.modules.reports.domain.guest_submissions import (
+    GuestCap,
     GuestChallenge,
     GuestSubmission,
 )
@@ -136,6 +137,18 @@ class GuestSubmissionRepository(Protocol):
         """
         ...
 
+    async def lock_cap(self, cap: GuestCap) -> None:
+        """Serialise the checks of ``cap`` until this unit of work ends.
+
+        A transaction that counts towards a cap and then writes must hold the
+        cap's lock first, so a concurrent transaction counts only after the first
+        one committed or rolled back and the cap is never overshot.
+
+        Args:
+            cap: The cap about to be checked.
+        """
+        ...
+
     async def count_opened_since(self, since: datetime) -> GuestSubmissionWindow:
         """Count the submissions opened at or after ``since``, by all guests.
 
@@ -144,6 +157,32 @@ class GuestSubmissionRepository(Protocol):
 
         Returns:
             The count and when the oldest of them was opened.
+        """
+        ...
+
+    async def count_submitted_since(self, since: datetime) -> GuestSubmissionWindow:
+        """Count the guest reports submitted (reserved) at or after ``since``.
+
+        Args:
+            since: Start of the window, UTC.
+
+        Returns:
+            The count and when the oldest of them was submitted.
+        """
+        ...
+
+    async def purge_unfiled(self, expired_before: datetime) -> int:
+        """Delete submissions that never filed a report and expired before an instant.
+
+        Filed submissions are kept: they carry the receipt reference a guest may
+        quote, and the report names them as its reporter.
+
+        Args:
+            expired_before: Only submissions whose capability expired before this
+                instant are deleted.
+
+        Returns:
+            How many were deleted.
         """
         ...
 
@@ -168,20 +207,29 @@ class SpentChallengeRepository(Protocol):
     async def spend(self, salt: str, expires_at: datetime) -> None:
         """Record that the challenge with ``salt`` was redeemed.
 
+        The store's own clock decides whether the challenge has expired, the same
+        clock ``purge_expired`` uses, so a challenge can never be spendable again
+        after its record was purged, whatever the application servers' clocks
+        say.
+
         Args:
             salt: The challenge's salt, unique per challenge.
             expires_at: When the challenge expires; it may be forgotten after.
 
         Raises:
             GuestChallengeSpentError: If it was redeemed before.
+            GuestChallengeExpiredError: If it has expired by the store's clock.
         """
         ...
 
-    async def purge_expired(self, now: datetime) -> int:
-        """Forget redeemed challenges that have expired; they open nothing anyway.
+    async def purge_expired(self, grace: timedelta) -> int:
+        """Forget redeemed challenges that expired more than ``grace`` ago.
+
+        Uses the store's own clock, like ``spend``; the grace margin covers the
+        transactions still running when a challenge expires.
 
         Args:
-            now: The current instant.
+            grace: How long after its expiry a record is kept.
 
         Returns:
             How many were forgotten.
@@ -401,19 +449,26 @@ class GuestMediaGateway(Protocol):
     """Requests and completes a guest's photo uploads, from the ``media`` module.
 
     The asset is owned by the guest submission; the caller has checked the
-    guest's capability and photo limit.
+    guest's capability and reserved the photo slot for ``asset_id`` first.
 
     Implements: Adapter (port side).
     """
 
     async def request_upload(
-        self, owner_id: EntityId, mime_type: GuestImageType
+        self,
+        owner_id: EntityId,
+        mime_type: GuestImageType,
+        *,
+        asset_id: EntityId,
+        byte_size: int,
     ) -> UploadGrant:
-        """Create an asset owned by ``owner_id`` and presign its upload.
+        """Create the asset ``asset_id`` owned by ``owner_id`` and presign its upload.
 
         Args:
             owner_id: The guest submission.
             mime_type: The declared image type.
+            asset_id: The id the reserved slot names.
+            byte_size: The file's exact size; storage refuses any other length.
 
         Returns:
             The media module's upload grant.

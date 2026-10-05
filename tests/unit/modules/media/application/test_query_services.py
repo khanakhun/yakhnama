@@ -64,7 +64,9 @@ async def test_get_media_asset_unpublished_owner_gets_original_only() -> None:
 
 async def test_get_media_asset_requested_owner_gets_no_link() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
 
     result = await harness.queries().get_media_asset(
         GetMediaAsset(actor=OWNER, asset_id=grant.asset_id)

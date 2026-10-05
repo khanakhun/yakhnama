@@ -33,11 +33,13 @@ from yakhnama.modules.geography.application.handlers import (
     LoadDistrictBoundariesHandler,
 )
 from yakhnama.modules.geography.domain.boundaries import (
+    DistrictBoundarySource,
     DistrictCentroid,
     DistrictEdge,
     DistrictEdgeSet,
 )
 from yakhnama.modules.geography.domain.entities import Place
+from yakhnama.modules.geography.domain.errors import BoundaryCoverageInvalidError
 from yakhnama.modules.geography.domain.value_objects import AdminLevel, PlaceName
 from yakhnama.modules.geography.infrastructure.adapters.cod_ab import (
     CodAbBoundaryLoader,
@@ -71,6 +73,7 @@ FIXTURE: Final = (
     / "boundaries"
     / "synthetic_admin2.geojson"
 )
+GAP_FIXTURE: Final = FIXTURE.with_name("synthetic_admin2_gap.geojson")
 FIRST_ID: Final = EntityId("0192a3b4-0000-7000-8000-0000000000f1")
 SECOND_ID: Final = EntityId("0192a3b4-0000-7000-8000-0000000000f2")
 CREATED_AT: Final = datetime(2026, 10, 5, 13, 0, tzinfo=UTC)
@@ -238,6 +241,105 @@ async def test_place_repository_list_at_level_returns_active_places_by_code(
 
     assert [place.code for place in districts] == [f"xx.gb.{x}" for x in "abcde"]
     assert [place.code for place in countries] == ["xx"]
+
+
+async def test_edge_query_service_get_current_id_returns_newest_or_none(
+    geography_uow_factory: GeographyFactory,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = SqlAlchemyDistrictEdgeQueryService(session_factory)
+    empty = await service.get_current_id()
+    await _add(geography_uow_factory, _edge_set(SECOND_ID, CREATED_AT))
+    await _add(
+        geography_uow_factory,
+        _edge_set(FIRST_ID, CREATED_AT + timedelta(minutes=1), edges=(), centroids=()),
+    )
+
+    current = await service.get_current_id()
+
+    assert empty is None
+    assert current == FIRST_ID
+
+
+async def _seed_gazetteer(factory: GeographyFactory) -> None:
+    async with factory() as uow:
+        for place in _gazetteer():
+            await uow.places.add(place)
+        await uow.commit()
+
+
+def _cached_source(
+    tmp_path: Path, fixture: Path, links: list[tuple[str, str | None]]
+) -> DistrictBoundarySource:
+    staging = tmp_path / "staging.zip"
+    with zipfile.ZipFile(staging, "w") as archive:
+        archive.writestr("synthetic_admin2.geojson", fixture.read_bytes())
+    source = boundary_source(
+        links, sha256=sha256_of(staging), region_place_code="xx.gb"
+    )
+    staging.rename(cached_archive_path(tmp_path, source))
+    return source
+
+
+def _production_handler(
+    factory: GeographyFactory, cache_dir: Path
+) -> LoadDistrictBoundariesHandler:
+    return LoadDistrictBoundariesHandler(
+        uow_factory=factory,
+        policy=reference_data_policy(),
+        loader=CodAbBoundaryLoader(cache_dir),
+        calculator=ShapelySharedEdgeCalculator(),
+        clock=SteppingClock(CREATED_AT, timedelta(seconds=1)),
+        ids=SequentialIdGenerator(seed=77),
+    )
+
+
+async def test_boundary_load_with_sliver_gap_refuses_to_publish(
+    geography_uow_factory: GeographyFactory,
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    await _seed_gazetteer(geography_uow_factory)
+    source = _cached_source(
+        tmp_path,
+        GAP_FIXTURE,
+        [("XX101", "xx.gb.a"), ("XX102", "xx.gb.b"), ("XX103", "xx.gb.c")],
+    )
+    handler = _production_handler(geography_uow_factory, tmp_path)
+
+    with pytest.raises(BoundaryCoverageInvalidError) as raised:
+        await handler(LoadDistrictBoundaries(source=source, actor=ADMIN))
+
+    assert raised.value.details["districts"] == ["XX101", "XX102"]
+    snapshot = await SqlAlchemyDistrictEdgeQueryService(session_factory).get_current()
+    assert snapshot is None
+    async with geography_uow_factory() as uow:
+        stored = await uow.places.get_by_code("xx.gb.a")
+    assert stored is not None
+    assert stored.geometry is None
+
+
+async def test_boundary_load_with_sliver_gap_publishes_when_allowed(
+    geography_uow_factory: GeographyFactory,
+    tmp_path: Path,
+) -> None:
+    await _seed_gazetteer(geography_uow_factory)
+    source = _cached_source(
+        tmp_path,
+        GAP_FIXTURE,
+        [("XX101", "xx.gb.a"), ("XX102", "xx.gb.b"), ("XX103", "xx.gb.c")],
+    )
+    handler = _production_handler(geography_uow_factory, tmp_path)
+
+    report = await handler(
+        LoadDistrictBoundaries(
+            source=source, actor=ADMIN, is_invalid_coverage_allowed=True
+        )
+    )
+
+    assert report.is_coverage_valid is False
+    assert report.invalid_coverage_districts == ("XX101", "XX102")
+    assert report.is_edge_set_created is True
 
 
 async def test_boundary_load_with_production_adapters_is_idempotent(
