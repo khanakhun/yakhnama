@@ -3,7 +3,8 @@
 **Submission** (``SubmitReportHandler``) spans three modules that never share a
 transaction, so it runs as ordered steps, each safe to repeat:
 
-1. the policy is checked before anything is read (deny by default);
+1. the policy is checked before anything is read (deny by default); an assisted
+   submission (ADR 0019) also needs ``CanReportOnBehalf``;
 2. if a report with the client's id exists, the call is a retry: the stored
    report is returned and nothing else happens (no source, no event, no task);
 3. the attached media are checked to be the reporter's own;
@@ -39,6 +40,7 @@ from yakhnama.modules.provenance.public import (
     SourceType,
 )
 from yakhnama.modules.reports.application.authorisation import (
+    assisted_submit_policy,
     reporter_policy,
     require_allowed,
     require_user,
@@ -72,6 +74,7 @@ from yakhnama.modules.reports.domain.triage import (
 )
 from yakhnama.modules.reports.domain.value_objects import (
     ReportAttribution,
+    ReportChannel,
     ReportContent,
     TriageResult,
 )
@@ -93,14 +96,27 @@ CITIZEN_SOURCE_TITLE: Final = "Community report"
 ORGANISATION_SOURCE_TITLE: Final = "Organisation report"
 CITIZEN_SOURCE_CITATION: Final = "Yakhnama community report"
 ORGANISATION_SOURCE_CITATION: Final = "Yakhnama organisation report"
+# An assisted report's source says that the observation came through someone who
+# entered it for the observer (ADR 0019); it still names nobody.
+ASSISTED_CITIZEN_SOURCE_TITLE: Final = "Assisted community report"
+ASSISTED_ORGANISATION_SOURCE_TITLE: Final = "Assisted organisation report"
+ASSISTED_CITIZEN_SOURCE_CITATION: Final = "Yakhnama assisted community report"
+ASSISTED_ORGANISATION_SOURCE_CITATION: Final = "Yakhnama assisted organisation report"
+
+_SOURCE_DETAILS: Final = {
+    (False, False): (CITIZEN_SOURCE_TITLE, CITIZEN_SOURCE_CITATION),
+    (True, False): (ORGANISATION_SOURCE_TITLE, ORGANISATION_SOURCE_CITATION),
+    (False, True): (ASSISTED_CITIZEN_SOURCE_TITLE, ASSISTED_CITIZEN_SOURCE_CITATION),
+    (True, True): (
+        ASSISTED_ORGANISATION_SOURCE_TITLE,
+        ASSISTED_ORGANISATION_SOURCE_CITATION,
+    ),
+}
 
 
-def _source_details(*, is_organisation: bool) -> SourceDetails:
-    if is_organisation:
-        return SourceDetails(
-            title=ORGANISATION_SOURCE_TITLE, citation=ORGANISATION_SOURCE_CITATION
-        )
-    return SourceDetails(title=CITIZEN_SOURCE_TITLE, citation=CITIZEN_SOURCE_CITATION)
+def _source_details(*, is_organisation: bool, is_assisted: bool) -> SourceDetails:
+    title, citation = _SOURCE_DETAILS[is_organisation, is_assisted]
+    return SourceDetails(title=title, citation=citation)
 
 
 async def _load_report(uow: ReportsUnitOfWork, report_id: EntityId) -> Report:
@@ -121,11 +137,22 @@ def _check_version(expected: int | None, current: int) -> None:
         )
 
 
-async def _require_own_media(
+async def require_own_media(
     checker: MediaOwnershipChecker, content: ReportContent, reporter_id: EntityId
 ) -> None:
-    # Attaching someone else's asset would publish their photo under this report
-    # and feed their EXIF position into this report's triage.
+    """Refuse content that attaches media the reporter did not upload.
+
+    Attaching someone else's asset would publish their photo under this report
+    and feed their EXIF position into this report's triage.
+
+    Args:
+        checker: Answers who owns the assets.
+        content: The report content.
+        reporter_id: The reporter: a user, or a guest submission.
+
+    Raises:
+        PermissionDeniedError: If an attached asset is not the reporter's.
+    """
     if content.media_ids and not await checker.is_owned_by(
         content.media_ids, reporter_id
     ):
@@ -135,9 +162,17 @@ async def _require_own_media(
         )
 
 
-async def _enqueue_triage(task_queue: TaskQueue, report_id: EntityId) -> None:
-    # The key names the report, so a repeated enqueue of the same revision is
-    # recognisable; a new revision has a new id and is triaged on its own.
+async def enqueue_triage(task_queue: TaskQueue, report_id: EntityId) -> None:
+    """Schedule the triage of one report revision.
+
+    The idempotency key names the report, so a repeated enqueue of the same
+    revision is recognisable; a new revision has a new id and is triaged on its
+    own.
+
+    Args:
+        task_queue: The task queue.
+        report_id: The report revision.
+    """
     await task_queue.enqueue(
         RUN_TRIAGE_TASK,
         {"report_id": report_id},
@@ -192,7 +227,8 @@ class SubmitReportHandler:
 
         Raises:
             PermissionDeniedError: If the actor is anonymous, not a member of the
-                named organisation, or attaches media they did not upload.
+                named organisation, may not report on behalf of someone else, or
+                attaches media they did not upload.
             ConflictError: If the client id was used before by another reporter,
                 with other content or for another organisation, or concurrently.
         """
@@ -202,11 +238,17 @@ class SubmitReportHandler:
             command.actor,
             action="submit reports",
         )
+        if command.assisted is not None:
+            require_allowed(
+                assisted_submit_policy(command.organization_id),
+                command.actor,
+                action="report on behalf of another person",
+            )
         async with self._uow_factory() as uow:
             existing = await uow.reports.get(command.client_report_id)
         if existing is not None:
             return self._replay(existing, command)
-        await _require_own_media(self._media_checker, command.content, reporter_id)
+        await require_own_media(self._media_checker, command.content, reporter_id)
         source = await self._source_registrar(
             RegisterSource(
                 actor=command.actor,
@@ -216,7 +258,8 @@ class SubmitReportHandler:
                     else SourceType.ORGANISATION
                 ),
                 details=_source_details(
-                    is_organisation=command.organization_id is not None
+                    is_organisation=command.organization_id is not None,
+                    is_assisted=command.assisted is not None,
                 ),
                 organization_id=command.organization_id,
             )
@@ -225,6 +268,12 @@ class SubmitReportHandler:
             reporter_id=reporter_id,
             organization_id=command.organization_id,
             source_id=source.id,
+            channel=(
+                ReportChannel.ACCOUNT
+                if command.assisted is None
+                else ReportChannel.ASSISTED
+            ),
+            assisted=command.assisted,
         )
         async with self._uow_factory() as uow:
             report = (
@@ -243,16 +292,18 @@ class SubmitReportHandler:
         await self._source_marker(
             MarkSourceReferenced(actor=command.actor, source_id=source.id)
         )
-        await _enqueue_triage(self._task_queue, report.id)
+        await enqueue_triage(self._task_queue, report.id)
         return ReportDetail.for_reporter(report)
 
     @staticmethod
     def _replay(existing: Report, command: SubmitReport) -> ReportDetail:
-        # A retry carries the same reporter, organisation and content. Anything else
-        # is a different report reusing the id, refused without saying whose it is.
+        # A retry carries the same reporter, organisation, assistance and content.
+        # Anything else is a different report reusing the id, refused without
+        # saying whose it is.
         is_retry = (
             existing.reporter_id == command.actor.user_id
             and existing.organization_id == command.organization_id
+            and existing.assisted == command.assisted
             and existing.revision == 1
             and existing.content == command.content
         )
@@ -319,7 +370,7 @@ class ReviseReportHandler:
                 action="revise this report",
             )
             _check_version(command.expected_version, current.version)
-            await _require_own_media(
+            await require_own_media(
                 self._media_checker, command.content, current.reporter_id
             )
             revision = current.revise(
@@ -331,7 +382,7 @@ class ReviseReportHandler:
             await uow.reports.add(revision)
             await uow.reports.save(superseded)
             await uow.commit()
-        await _enqueue_triage(self._task_queue, revision.id)
+        await enqueue_triage(self._task_queue, revision.id)
         return ReportDetail.for_reporter(revision)
 
 

@@ -4,7 +4,9 @@ The handler reads each file through the ``ReferenceFileReader`` port (the YAML a
 lives with the composition root, because reading files is I/O) and hands it to the
 module's load use case: hazard types, then impact metrics, then places, then (when
 the composition root wires the ``DatasetSeedStep``) the ingestion dataset catalog,
-with or without its synthetic fixture entries. Each module
+with or without its synthetic fixture entries, and last (when it wires the
+``DemoAccountsSeedStep``, outside production only) the development demo accounts,
+their roles and the demo organisation. Each module
 loads in its own unit of work, so the seed is not one atomic transaction; every load
 is idempotent, so re-running after a partial failure completes the work without
 duplicating anything. It depends only on the modules' public facades.
@@ -27,6 +29,10 @@ from yakhnama.modules.hazards.public import LoadReport as HazardTypeLoadReport
 from yakhnama.modules.identity.public import (
     Actor,
     AuthorisationPolicy,
+    SeedAccount,
+    SeedAccounts,
+    SeedAccountsReport,
+    SeedOrganization,
     require_allowed,
 )
 from yakhnama.modules.impacts.public import (
@@ -55,6 +61,9 @@ type LoadPlaces = Callable[[LoadReferencePlaces], Awaitable[PlaceLoadReport]]
 
 type LoadDatasets = Callable[[LoadReferenceDatasets], Awaitable[DatasetLoadReport]]
 """The ingestion catalog load use case, usually ``LoadReferenceDatasetsHandler``."""
+
+type LoadAccounts = Callable[[SeedAccounts], Awaitable[SeedAccountsReport]]
+"""The identity accounts use case, usually ``SeedAccountsHandler``."""
 
 
 class ReferenceFileReader(Protocol):
@@ -153,6 +162,36 @@ class DatasetSeedStep:
         self.include_fixtures = include_fixtures
 
 
+class DemoAccountsSeedStep:
+    """What the seed needs to ensure the development demo accounts.
+
+    Implements: Dependency Injection.
+
+    Attributes:
+        load: The identity accounts use case.
+        organization: The demo organisation.
+        accounts: The demo accounts, with their roles and memberships.
+    """
+
+    def __init__(
+        self,
+        *,
+        load: LoadAccounts,
+        organization: SeedOrganization,
+        accounts: tuple[SeedAccount, ...],
+    ) -> None:
+        """Group the step's dependencies.
+
+        Args:
+            load: The identity accounts use case.
+            organization: The demo organisation.
+            accounts: The demo accounts.
+        """
+        self.load = load
+        self.organization = organization
+        self.accounts = accounts
+
+
 class SeedReferenceData(BaseModel):
     """Load every reference file into its module.
 
@@ -184,6 +223,8 @@ class SeedReport(BaseModel):
         places: Report of the place hierarchy load.
         datasets: Report of the dataset catalog load; ``None`` when the seed was
             built without the dataset step.
+        accounts: Report of the demo accounts step; ``None`` when the seed was
+            built without it (production, or no ``oidc_issuer``).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -193,6 +234,7 @@ class SeedReport(BaseModel):
     impact_metrics: ImpactMetricLoadReport
     places: PlaceLoadReport
     datasets: DatasetLoadReport | None = None
+    accounts: SeedAccountsReport | None = None
 
     @property
     def is_unchanged(self) -> bool:
@@ -202,16 +244,18 @@ class SeedReport(BaseModel):
             and self.impact_metrics.is_unchanged
             and self.places.is_unchanged
             and (self.datasets is None or self.datasets.is_unchanged)
+            and (self.accounts is None or self.accounts.is_unchanged)
         )
 
 
 class SeedReferenceDataHandler:
-    """Seed hazard types, impact metrics, places and datasets, in that order.
+    """Seed hazard types, impact metrics, places, datasets and demo accounts.
 
     Hazard types and impact metrics come first because later phases' records refer
     to them by code; places are independent but loaded after them so a failure in
     the small registries surfaces before the larger hierarchy is touched. The
-    dataset catalog, when wired, comes last: nothing else refers to it.
+    dataset catalog, when wired, comes next: nothing else refers to it. The demo
+    accounts, when wired (development only), come last.
 
     Implements: Command Handler.
     """
@@ -225,6 +269,7 @@ class SeedReferenceDataHandler:
         load_impact_metrics: LoadImpactMetrics,
         load_places: LoadPlaces,
         datasets: DatasetSeedStep | None = None,
+        accounts: DemoAccountsSeedStep | None = None,
     ) -> None:
         """Create the handler.
 
@@ -237,6 +282,8 @@ class SeedReferenceDataHandler:
             load_places: The geography load use case.
             datasets: The dataset catalog step; ``None`` leaves the catalog out
                 (``build_seed_handler`` always wires it).
+            accounts: The demo accounts step; ``None`` leaves them out
+                (``build_seed_handler`` wires it outside production only).
         """
         self._reader = reader
         self._policy = policy
@@ -244,6 +291,7 @@ class SeedReferenceDataHandler:
         self._load_impact_metrics = load_impact_metrics
         self._load_places = load_places
         self._datasets = datasets
+        self._accounts = accounts
 
     async def __call__(self, command: SeedReferenceData) -> SeedReport:
         """Load every reference file.
@@ -286,6 +334,7 @@ class SeedReferenceDataHandler:
             impact_metrics=impact_metrics,
             places=places,
             datasets=await self._load_datasets(command),
+            accounts=await self._load_accounts(command),
         )
 
     async def _load_datasets(
@@ -298,6 +347,20 @@ class SeedReferenceDataHandler:
                 actor=command.actor,
                 file=self._datasets.reader.read_datasets(),
                 include_fixtures=self._datasets.include_fixtures,
+                dry_run=command.dry_run,
+            )
+        )
+
+    async def _load_accounts(
+        self, command: SeedReferenceData
+    ) -> SeedAccountsReport | None:
+        if self._accounts is None:
+            return None
+        return await self._accounts.load(
+            SeedAccounts(
+                actor=command.actor,
+                organization=self._accounts.organization,
+                accounts=self._accounts.accounts,
                 dry_run=command.dry_run,
             )
         )

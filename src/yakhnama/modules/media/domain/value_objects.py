@@ -168,7 +168,7 @@ class MediaAttribution(BaseModel):
     Implements: Value Object.
 
     Attributes:
-        owner_id: The uploading user.
+        owner_id: The uploading user, or the owning guest submission (ADR 0020).
         source_id: The ``provenance`` source the asset is attributed to.
         report_id: The report the asset belongs to, or ``None``.
     """

@@ -20,12 +20,13 @@ from tests.fakes.ids import SequentialIdGenerator
 from tests.fakes.uow import InMemoryUnitOfWork
 from yakhnama.modules.provenance.application.commands import (
     MarkSourceReferenced,
+    RegisterPlatformSource,
     RegisterSource,
 )
 from yakhnama.modules.provenance.application.dto import SourceDetail, SourceSummary
 from yakhnama.modules.provenance.domain.entities import Source
 from yakhnama.modules.provenance.domain.factories import SourceFactory
-from yakhnama.modules.provenance.domain.value_objects import SourceOwner
+from yakhnama.modules.provenance.domain.value_objects import SYSTEM_OWNER, SourceOwner
 from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
@@ -286,6 +287,49 @@ class FakeSourceRegistrar:
                 clock=self._clock,
                 ids=self._ids,
             )
+            .state
+        )
+        self.registered.append(source)
+        return SourceDetail.from_entity(source)
+
+
+class FakePlatformSourceRegistrar:
+    """``PlatformSourceRegistrar`` that builds referenced, ownerless sources.
+
+    Implements: Fake (of Command Handler).
+
+    Attributes:
+        commands: Every command received, in order.
+        registered: Every source built, in order.
+    """
+
+    def __init__(self) -> None:
+        """Create the registrar."""
+        self.commands: list[RegisterPlatformSource] = []
+        self.registered: list[Source] = []
+        self._clock = FrozenClock(FAKE_REGISTRAR_NOW)
+        self._ids = SequentialIdGenerator(seed=7101)
+
+    async def __call__(self, command: RegisterPlatformSource) -> SourceDetail:
+        """Register the source in memory, already referenced.
+
+        Args:
+            command: The registration.
+
+        Returns:
+            The new source's detail view.
+        """
+        self.commands.append(command)
+        source = (
+            SourceFactory()
+            .register(
+                command.source_type,
+                command.details,
+                SYSTEM_OWNER,
+                clock=self._clock,
+                ids=self._ids,
+            )
+            .state.mark_referenced(clock=self._clock, ids=self._ids)
             .state
         )
         self.registered.append(source)

@@ -16,7 +16,7 @@ Patterns: Specification.
 from datetime import datetime
 
 from yakhnama.modules.reports.application.dto import ReportRecord
-from yakhnama.modules.reports.domain.value_objects import ReportStatus
+from yakhnama.modules.reports.domain.value_objects import ReportChannel, ReportStatus
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.privacy import PublicCoordinatePolicy
 from yakhnama.shared_kernel.specification import Specification
@@ -55,6 +55,42 @@ class ReportStatusSpecification(Specification[ReportRecord]):
             ``True`` if the statuses are equal.
         """
         return candidate.status is self._status
+
+
+class ReportChannelSpecification(Specification[ReportRecord]):
+    """Matches reports that reached the platform through one channel.
+
+    ``channel=guest`` is the moderators' guest queue (ADR 0020).
+
+    Implements: Specification.
+
+    Attributes:
+        channel: The channel to match.
+    """
+
+    def __init__(self, channel: ReportChannel) -> None:
+        """Create the specification.
+
+        Args:
+            channel: The channel to match.
+        """
+        self._channel = channel
+
+    @property
+    def channel(self) -> ReportChannel:
+        """Return the channel to match."""
+        return self._channel
+
+    def is_satisfied_by(self, candidate: ReportRecord) -> bool:
+        """Tell whether ``candidate`` came through the channel.
+
+        Args:
+            candidate: The report to test.
+
+        Returns:
+            ``True`` if the channels are equal.
+        """
+        return candidate.channel is self._channel
 
 
 class ReportHazardCodeSpecification(Specification[ReportRecord]):

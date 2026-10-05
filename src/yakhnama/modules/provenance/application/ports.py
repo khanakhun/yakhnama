@@ -15,6 +15,7 @@ from typing import Protocol
 
 from yakhnama.modules.provenance.application.commands import (
     MarkSourceReferenced,
+    RegisterPlatformSource,
     RegisterSource,
 )
 from yakhnama.modules.provenance.application.dto import SourceDetail, SourceSummary
@@ -168,6 +169,27 @@ class SourceRegistrar(Protocol):
 
         Raises:
             PermissionDeniedError: If the actor may not register it.
+        """
+        ...
+
+
+class PlatformSourceRegistrar(Protocol):
+    """Registers a platform-owned, referenced source for another module.
+
+    Bound to ``RegisterPlatformSourceHandler`` in the composition root; used for
+    guest reports and guest uploads, which have no user to own a source.
+
+    Implements: Command Handler (port side).
+    """
+
+    async def __call__(self, command: RegisterPlatformSource) -> SourceDetail:
+        """Register the source and mark it referenced.
+
+        Args:
+            command: The registration.
+
+        Returns:
+            The new source.
         """
         ...
 

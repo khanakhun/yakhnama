@@ -181,7 +181,7 @@ Stop the local services with `poetry run poe down`.
 ### Authentication (development)
 
 `poe up` also starts a local Keycloak with the `yakhnama` realm pre-imported from
-`docker/keycloak/yakhnama-realm.json` (roles, two demo users, dev-only passwords). Set
+`docker/keycloak/yakhnama-realm.json` (roles, four demo users, dev-only passwords). Set
 `YAKHNAMA_OIDC_ISSUER=http://127.0.0.1:8080/realms/yakhnama` in `.env` (adjust the port if
 `KEYCLOAK_HOST_PORT` was changed), then get a bearer token for the demo citizen account:
 
@@ -207,6 +207,18 @@ This resource-owner password flow exists only in this development realm — see
 validation rules and the production-provider caveat, and `docs/architecture/api.md` for
 the `/api/v1` conventions every endpoint follows (errors, pagination, idempotency,
 `ETag`/`If-Match`, rate limiting).
+
+Besides `demo-citizen` and `demo-moderator`, the realm has `demo-trusted-reporter`
+(`citizen`, `trusted_reporter`) and `demo-org-member` (`citizen`, `org_member`), whose
+passwords end in `-dev-only` too; they exist to try assisted reporting. With
+`YAKHNAMA_OIDC_ISSUER` set, `poetry run poe seed` (outside production) mirrors both,
+creates the demo organisation and makes `demo-org-member` a member of it; see
+`docs/architecture/auth.md`, "Demo users".
+
+Guest reporting (reports from people without an account, ADR 0020) is configured by the
+`YAKHNAMA_GUEST_*` settings in `.env.example`; for end-to-end tests lower
+`YAKHNAMA_GUEST_POW_DIFFICULTY_BITS` (for example to 8) and raise
+`YAKHNAMA_GUEST_SUBMISSIONS_PER_HOUR`.
 
 The realm also allows self-registration with a verified email address. In development
 Keycloak sends that mail to Mailpit, whose inbox is at

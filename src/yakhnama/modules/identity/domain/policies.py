@@ -440,6 +440,42 @@ class CanManageOrganization(_DelegatingPolicy):
         return self._organization_id
 
 
+class CanReportOnBehalf(_DelegatingPolicy):
+    """Allows entering a report for a person without an account (assisted reporting).
+
+    Trusted reporters and moderators (admins through the implication order) may
+    assist anyone. Organisation members may assist only when the report is
+    submitted for an organisation they belong to, so the organisation answers for
+    the assistance (**proposed**, maintainer decision of 2026-10-05; ADR 0019).
+
+    Implements: Policy.
+
+    Attributes:
+        organization_id: The organisation the report is submitted for, if any.
+    """
+
+    def __init__(self, organization_id: EntityId | None = None) -> None:
+        """Create the policy.
+
+        ``HasRole(TRUSTED_REPORTER) | CanModerate()``, widened with
+        ``HasRole(ORG_MEMBER) & IsMemberOf(organization_id)`` when an organisation
+        is named.
+
+        Args:
+            organization_id: The organisation the report is submitted for, if any.
+        """
+        rule: ActorPolicy = HasRole(Role.TRUSTED_REPORTER) | CanModerate()
+        if organization_id is not None:
+            rule = rule | (HasRole(Role.ORG_MEMBER) & IsMemberOf(organization_id))
+        super().__init__(rule)
+        self._organization_id = organization_id
+
+    @property
+    def organization_id(self) -> EntityId | None:
+        """Return the organisation the report is submitted for, if any."""
+        return self._organization_id
+
+
 class CanReadVerifiedData(ActorPolicy):
     """Allows everyone, anonymous callers included, to read verified data.
 

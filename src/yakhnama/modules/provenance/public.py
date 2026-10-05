@@ -20,16 +20,19 @@ from yakhnama.modules.provenance.application.authorisation import (
 )
 from yakhnama.modules.provenance.application.commands import (
     MarkSourceReferenced,
+    RegisterPlatformSource,
     RegisterSource,
     UpdateSourceDetails,
 )
 from yakhnama.modules.provenance.application.dto import SourceDetail, SourceSummary
 from yakhnama.modules.provenance.application.handlers import (
     MarkSourceReferencedHandler,
+    RegisterPlatformSourceHandler,
     RegisterSourceHandler,
     UpdateSourceDetailsHandler,
 )
 from yakhnama.modules.provenance.application.ports import (
+    PlatformSourceRegistrar,
     ProvenanceUnitOfWork,
     ProvenanceUnitOfWorkFactory,
     SourceCitationChecker,
@@ -67,8 +70,11 @@ __all__ = [
     "ListSources",
     "MarkSourceReferenced",
     "MarkSourceReferencedHandler",
+    "PlatformSourceRegistrar",
     "ProvenanceUnitOfWork",
     "ProvenanceUnitOfWorkFactory",
+    "RegisterPlatformSource",
+    "RegisterPlatformSourceHandler",
     "RegisterSource",
     "RegisterSourceHandler",
     "Source",

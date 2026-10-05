@@ -3,13 +3,14 @@
 Other modules, the API and the composition root import only this file: the
 commands, queries, DTOs and handlers, the ports the composition root binds
 (including the three answered by other modules), the triage value types an adapter
-builds (``PhotoEvidence``, ``ReportSummaryForTriage``) and the task name the worker
-routes.
+builds (``PhotoEvidence``, ``ReportSummaryForTriage``), the task name the worker
+routes, and the guest submission use cases, DTOs, ports and errors (ADR 0020).
 
 Patterns: Facade.
 """
 
 from yakhnama.modules.reports.application.authorisation import (
+    assisted_submit_policy,
     exact_view_policy,
     is_moderator,
     reporter_policy,
@@ -19,17 +20,41 @@ from yakhnama.modules.reports.application.authorisation import (
     triage_view_policy,
 )
 from yakhnama.modules.reports.application.commands import (
+    CompleteGuestMediaUpload,
+    IssueGuestChallenge,
+    OpenGuestSubmission,
+    RequestGuestMediaUpload,
     ReviseReport,
     RunTriage,
+    SubmitGuestReport,
     SubmitReport,
     WithdrawReport,
 )
 from yakhnama.modules.reports.application.dto import (
+    GuestChallengeGrant,
+    GuestMediaAsset,
+    GuestReportReceipt,
+    GuestSubmissionGrant,
+    GuestSubmissionWindow,
     ReportDetail,
     ReportRecord,
     ReportSummary,
 )
+from yakhnama.modules.reports.application.guest_handlers import (
+    GUEST_SOURCE_CITATION,
+    GUEST_SOURCE_TITLE,
+    CompleteGuestMediaUploadHandler,
+    GuestHandlerDependencies,
+    IssueGuestChallengeHandler,
+    OpenGuestSubmissionHandler,
+    RequestGuestMediaUploadHandler,
+    SubmitGuestReportHandler,
+)
 from yakhnama.modules.reports.application.handlers import (
+    ASSISTED_CITIZEN_SOURCE_CITATION,
+    ASSISTED_CITIZEN_SOURCE_TITLE,
+    ASSISTED_ORGANISATION_SOURCE_CITATION,
+    ASSISTED_ORGANISATION_SOURCE_TITLE,
     CITIZEN_SOURCE_CITATION,
     CITIZEN_SOURCE_TITLE,
     ORGANISATION_SOURCE_CITATION,
@@ -41,6 +66,10 @@ from yakhnama.modules.reports.application.handlers import (
 )
 from yakhnama.modules.reports.application.ports import (
     RUN_TRIAGE_TASK,
+    GuestChallengeSigner,
+    GuestMediaGateway,
+    GuestSecretGenerator,
+    GuestSubmissionRepository,
     MediaOwnershipChecker,
     NearbyReportsFinder,
     PhotoEvidenceProvider,
@@ -48,6 +77,7 @@ from yakhnama.modules.reports.application.ports import (
     ReportRepository,
     ReportsUnitOfWork,
     ReportsUnitOfWorkFactory,
+    SpentChallengeRepository,
 )
 from yakhnama.modules.reports.application.queries import (
     FindNearbyReports,
@@ -58,6 +88,7 @@ from yakhnama.modules.reports.application.query_services import (
     AuthorisedReportQueryService,
 )
 from yakhnama.modules.reports.application.specifications import (
+    ReportChannelSpecification,
     ReportHazardCodeSpecification,
     ReportInBoundingBoxSpecification,
     ReportObservedFromSpecification,
@@ -65,20 +96,39 @@ from yakhnama.modules.reports.application.specifications import (
     ReportReporterSpecification,
     ReportStatusSpecification,
 )
-from yakhnama.modules.reports.domain.entities import Report
 from yakhnama.modules.reports.domain.errors import (
+    GuestCapabilityExpiredError,
+    GuestCapabilityInvalidError,
+    GuestChallengeExpiredError,
+    GuestChallengeInvalidError,
+    GuestChallengeSpentError,
+    GuestMediaLimitError,
+    GuestMediaNotFoundError,
+    GuestProofInvalidError,
+    GuestSubmissionClosedError,
+    GuestSubmissionLimitError,
     ReportImmutableError,
     ReportNotFoundError,
     ReportRevisionUnchangedError,
     ReportWithdrawnError,
+)
+from yakhnama.modules.reports.domain.guest_submissions import (
+    GUEST_MEDIA_MAX,
+    GuestChallenge,
+    GuestSubmission,
+    GuestSubmissionLimits,
 )
 from yakhnama.modules.reports.domain.triage import (
     PhotoEvidence,
     ReportSummaryForTriage,
 )
 from yakhnama.modules.reports.domain.value_objects import (
+    AssistedSubmission,
+    ConsentMethod,
+    GuestImageType,
     HazardGuess,
     ObservationPoint,
+    ReportChannel,
     ReportContent,
     ReportStatus,
     TriageFlag,
@@ -86,22 +136,62 @@ from yakhnama.modules.reports.domain.value_objects import (
 )
 
 __all__ = [
+    "ASSISTED_CITIZEN_SOURCE_CITATION",
+    "ASSISTED_CITIZEN_SOURCE_TITLE",
+    "ASSISTED_ORGANISATION_SOURCE_CITATION",
+    "ASSISTED_ORGANISATION_SOURCE_TITLE",
     "CITIZEN_SOURCE_CITATION",
     "CITIZEN_SOURCE_TITLE",
+    "GUEST_MEDIA_MAX",
+    "GUEST_SOURCE_CITATION",
+    "GUEST_SOURCE_TITLE",
     "ORGANISATION_SOURCE_CITATION",
     "ORGANISATION_SOURCE_TITLE",
     "RUN_TRIAGE_TASK",
+    "AssistedSubmission",
     "AuthorisedReportQueryService",
+    "CompleteGuestMediaUpload",
+    "CompleteGuestMediaUploadHandler",
+    "ConsentMethod",
     "FindNearbyReports",
     "GetReport",
+    "GuestCapabilityExpiredError",
+    "GuestCapabilityInvalidError",
+    "GuestChallenge",
+    "GuestChallengeExpiredError",
+    "GuestChallengeGrant",
+    "GuestChallengeInvalidError",
+    "GuestChallengeSigner",
+    "GuestChallengeSpentError",
+    "GuestHandlerDependencies",
+    "GuestImageType",
+    "GuestMediaAsset",
+    "GuestMediaGateway",
+    "GuestMediaLimitError",
+    "GuestMediaNotFoundError",
+    "GuestProofInvalidError",
+    "GuestReportReceipt",
+    "GuestSecretGenerator",
+    "GuestSubmission",
+    "GuestSubmissionClosedError",
+    "GuestSubmissionGrant",
+    "GuestSubmissionLimitError",
+    "GuestSubmissionLimits",
+    "GuestSubmissionRepository",
+    "GuestSubmissionWindow",
     "HazardGuess",
+    "IssueGuestChallenge",
+    "IssueGuestChallengeHandler",
     "ListReports",
     "MediaOwnershipChecker",
     "NearbyReportsFinder",
     "ObservationPoint",
+    "OpenGuestSubmission",
+    "OpenGuestSubmissionHandler",
     "PhotoEvidence",
     "PhotoEvidenceProvider",
-    "Report",
+    "ReportChannel",
+    "ReportChannelSpecification",
     "ReportContent",
     "ReportDetail",
     "ReportHazardCodeSpecification",
@@ -122,16 +212,22 @@ __all__ = [
     "ReportWithdrawnError",
     "ReportsUnitOfWork",
     "ReportsUnitOfWorkFactory",
+    "RequestGuestMediaUpload",
+    "RequestGuestMediaUploadHandler",
     "ReviseReport",
     "ReviseReportHandler",
     "RunTriage",
     "RunTriageHandler",
+    "SpentChallengeRepository",
+    "SubmitGuestReport",
+    "SubmitGuestReportHandler",
     "SubmitReport",
     "SubmitReportHandler",
     "TriageFlag",
     "TriageResult",
     "WithdrawReport",
     "WithdrawReportHandler",
+    "assisted_submit_policy",
     "exact_view_policy",
     "is_moderator",
     "reporter_policy",

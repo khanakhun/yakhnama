@@ -18,17 +18,25 @@ invented at a call site.
 | ``invalid-idempotency-key`` | 400 | ``Idempotency-Key`` is not a UUID. |
 | ``authentication-failed`` | 401 | No valid bearer token where one is required. |
 | ``permission-denied`` | 403 | The principal may not perform the action. |
+| ``guest-capability-invalid`` | 403 | No or a wrong ``Guest-Capability``. |
+| ``guest-capability-expired`` | 403 | The ``Guest-Capability`` has expired. |
 | ``not-found`` | 404 | The resource or route does not exist. |
 | ``method-not-allowed`` | 405 | The route exists but not for this method. |
 | ``conflict`` | 409 | The request conflicts with the current state. |
 | ``invariant-violation`` | 409 | The change would break an invariant. |
 | ``invalid-transition`` | 409 | The state machine forbids the transition. |
+| ``guest-challenge-spent`` | 409 | The proof-of-work challenge was already used. |
+| ``guest-media-limit`` | 409 | The guest submission already has its photos. |
+| ``guest-submission-closed`` | 409 | The guest submission already carries its report. |
 | ``idempotency-key-reused`` | 409 | The key was used with a different request. |
 | ``idempotency-key-in-use`` | 409 | A request with the same key is still running. |
 | ``precondition-failed`` | 412 | ``If-Match`` does not match the current version. |
 | ``payload-too-large`` | 413 | The body exceeds ``max_request_body_bytes``. |
 | ``validation-error`` | 422 | The data is invalid; see ``errors``. |
 | ``nul-character`` | 422 | A string input contains the NUL character. |
+| ``guest-challenge-invalid`` | 422 | The challenge is malformed or forged. |
+| ``guest-challenge-expired`` | 422 | The challenge has expired. |
+| ``guest-proof-invalid`` | 422 | The nonce does not solve the challenge. |
 | ``precondition-required`` | 428 | A conditional request came without ``If-Match``. |
 | ``rate-limited`` | 429 | Too many requests; see ``Retry-After``. |
 | ``internal-error`` | 500 | An unexpected server error. |
@@ -59,17 +67,25 @@ PROBLEM_TYPES: Final[Mapping[str, str]] = MappingProxyType(
         "invalid-idempotency-key": "Idempotency-Key is not a UUID.",
         "authentication-failed": "No valid bearer token where one is required.",
         "permission-denied": "The principal may not perform the action.",
+        "guest-capability-invalid": "The Guest-Capability is missing or wrong.",
+        "guest-capability-expired": "The Guest-Capability has expired.",
         "not-found": "The resource or route does not exist.",
         "method-not-allowed": "The route exists but not for this method.",
         "conflict": "The request conflicts with the current state.",
         "invariant-violation": "The change would break an invariant.",
         "invalid-transition": "The state machine forbids the transition.",
+        "guest-challenge-spent": "The proof-of-work challenge was already used.",
+        "guest-media-limit": "The guest submission already has its photos.",
+        "guest-submission-closed": "The guest submission already has its report.",
         "idempotency-key-reused": "The key was used with a different request.",
         "idempotency-key-in-use": "A request with the same key is still running.",
         "precondition-failed": "If-Match does not match the current version.",
         "payload-too-large": "The request body is too large.",
         "validation-error": "The data is invalid.",
         "nul-character": "A string input contains the NUL character.",
+        "guest-challenge-invalid": "The challenge is malformed or forged.",
+        "guest-challenge-expired": "The challenge has expired.",
+        "guest-proof-invalid": "The nonce does not solve the challenge.",
         "precondition-required": "A conditional request came without If-Match.",
         "rate-limited": "Too many requests.",
         "internal-error": "An unexpected server error.",

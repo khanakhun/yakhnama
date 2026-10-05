@@ -66,7 +66,21 @@ from yakhnama.modules.provenance.api.router import (
     moderation_router as provenance_moderation_router,
 )
 from yakhnama.modules.provenance.api.router import router as provenance_router
+from yakhnama.modules.reports.api.guest_router import (
+    router as guest_submissions_router,
+)
 from yakhnama.modules.reports.api.router import router as reports_router
+from yakhnama.modules.reports.public import (
+    GuestCapabilityExpiredError,
+    GuestCapabilityInvalidError,
+    GuestChallengeExpiredError,
+    GuestChallengeInvalidError,
+    GuestChallengeSpentError,
+    GuestMediaLimitError,
+    GuestProofInvalidError,
+    GuestSubmissionClosedError,
+    GuestSubmissionLimitError,
+)
 from yakhnama.modules.verification.api.router import (
     moderation_router as verification_moderation_router,
 )
@@ -114,8 +128,14 @@ API_PREFIX = "/api/v1"
 DOCS_PATH: Final = f"{API_PREFIX}/docs"
 OPENAPI_PATH: Final = f"{API_PREFIX}/openapi.json"
 WWW_AUTHENTICATE: Final = "WWW-Authenticate"
-# Responses about a person: never cacheable, even without an Authorization header.
-PRIVATE_PATH_PREFIXES: Final = (f"{API_PREFIX}/me", f"{API_PREFIX}/users")
+# Responses about a person, and guest responses that carry or require a capability:
+# never cacheable, even without an Authorization header.
+PRIVATE_PATH_PREFIXES: Final = (
+    f"{API_PREFIX}/me",
+    f"{API_PREFIX}/users",
+    f"{API_PREFIX}/guest-submissions",
+)
+RETRY_AFTER: Final = "Retry-After"
 BEARER_CHALLENGE: Final = 'Bearer realm="yakhnama"'
 
 # Looked up along the raised error's MRO, so a module's subclass (for example
@@ -150,6 +170,35 @@ ERROR_STATUSES: Final[Mapping[type[YakhnamaError], tuple[HTTPStatus, str]]] = (
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "service-unavailable",
             ),
+            # Guest reporting (ADR 0020): one slug per thing the client can do
+            # something about (ask a new challenge, start again, wait).
+            GuestChallengeInvalidError: (
+                HTTPStatus.UNPROCESSABLE_CONTENT,
+                "guest-challenge-invalid",
+            ),
+            GuestChallengeExpiredError: (
+                HTTPStatus.UNPROCESSABLE_CONTENT,
+                "guest-challenge-expired",
+            ),
+            GuestProofInvalidError: (
+                HTTPStatus.UNPROCESSABLE_CONTENT,
+                "guest-proof-invalid",
+            ),
+            GuestChallengeSpentError: (HTTPStatus.CONFLICT, "guest-challenge-spent"),
+            GuestCapabilityInvalidError: (
+                HTTPStatus.FORBIDDEN,
+                "guest-capability-invalid",
+            ),
+            GuestCapabilityExpiredError: (
+                HTTPStatus.FORBIDDEN,
+                "guest-capability-expired",
+            ),
+            GuestMediaLimitError: (HTTPStatus.CONFLICT, "guest-media-limit"),
+            GuestSubmissionClosedError: (
+                HTTPStatus.CONFLICT,
+                "guest-submission-closed",
+            ),
+            GuestSubmissionLimitError: (HTTPStatus.TOO_MANY_REQUESTS, "rate-limited"),
         }
     )
 )
@@ -174,6 +223,7 @@ API_ROUTERS: Final[tuple[APIRouter, ...]] = (
     moderation_router,
     provenance_router,
     reports_router,
+    guest_submissions_router,
     media_router,
     events_router,
     impact_claims_router,
@@ -221,7 +271,8 @@ async def handle_yakhnama_error(request: Request, error: YakhnamaError) -> JSONR
     The error's ``message`` is shown as ``detail`` because the error contract makes it
     safe for clients; ``details`` are not echoed because they may contain input
     values. An unmapped error is a server bug, so its message is withheld. A 401
-    carries ``WWW-Authenticate: Bearer`` (RFC 6750 §3).
+    carries ``WWW-Authenticate: Bearer`` (RFC 6750 §3); a 429 carries
+    ``Retry-After`` when the error knows it (``GuestSubmissionLimitError``).
 
     Args:
         request: The failed request.
@@ -241,11 +292,11 @@ async def handle_yakhnama_error(request: Request, error: YakhnamaError) -> JSONR
         detail = INTERNAL_ERROR_DETAIL
     else:
         detail = error.message
-    headers = (
-        {WWW_AUTHENTICATE: BEARER_CHALLENGE}
-        if status is HTTPStatus.UNAUTHORIZED
-        else None
-    )
+    headers: dict[str, str] | None = None
+    if status is HTTPStatus.UNAUTHORIZED:
+        headers = {WWW_AUTHENTICATE: BEARER_CHALLENGE}
+    elif isinstance(error, GuestSubmissionLimitError):
+        headers = {RETRY_AFTER: str(error.retry_after_seconds)}
     return problem_response(
         build_problem(
             status, slug, detail=detail, instance=get_request_id(request.scope)

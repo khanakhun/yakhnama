@@ -36,11 +36,15 @@ from yakhnama.modules.identity.application.commands import (
     RenameOrganization,
     RenameSelf,
     RevokeRole,
+    SeedAccount,
+    SeedAccounts,
+    SeedOrganization,
     SuspendUser,
 )
 from yakhnama.modules.identity.application.dto import (
     MemberSummary,
     OrganizationDetail,
+    SeedAccountsReport,
     UserDetail,
 )
 from yakhnama.modules.identity.application.ports import (
@@ -669,3 +673,117 @@ class RemoveMemberHandler(_IdentityHandler):
             ).record_into(uow)
             await uow.memberships.remove(current.id)
             await uow.commit()
+
+
+class SeedAccountsHandler(_IdentityHandler):
+    """Make sure the development accounts, roles and memberships exist.
+
+    Called by the reference-data seed outside production, as the seed's system
+    actor, which has no user record; so, unlike the other handlers, it does not
+    reload the acting user. Users are found by ``(issuer, subject)``, exactly as
+    first sight finds them, so the account's first sign-in reuses the seeded user
+    and its roles (realm roles are copied only at first sight, Q50).
+
+    Implements: Command Handler.
+    """
+
+    async def __call__(self, command: SeedAccounts) -> SeedAccountsReport:
+        """Ensure every account, the organisation and the memberships.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            What was created or granted; nothing on a repeated run.
+
+        Raises:
+            PermissionDeniedError: If the actor is not a platform administrator.
+            OrganizationSlugTakenError: If another organisation holds the slug.
+            UserSuspendedError: If a seeded user is suspended and needs a role or
+                a membership.
+        """
+        require_allowed(IsAdmin(), command.actor, action="seed accounts")
+        async with self._uow_factory() as uow:
+            users: list[tuple[User, SeedAccount]] = []
+            users_created = roles_granted = 0
+            for account in command.accounts:
+                user, is_created, granted = await self._ensure_user(uow, account)
+                users_created += int(is_created)
+                roles_granted += granted
+                users.append((user, account))
+            organization, is_organization_created = await self._ensure_organization(
+                uow, command.organization
+            )
+            members = await uow.memberships.list_for_organization(organization.id)
+            memberships_created = 0
+            for user, account in users:
+                if account.organization_role is None or members.find(user.id):
+                    continue
+                change = MembershipFactory().create(
+                    organization,
+                    user,
+                    account.organization_role,
+                    ids=self._ids,
+                    clock=self._clock,
+                )
+                members = members.add(change).record_into(uow)
+                await uow.memberships.add(members.get(user.id))
+                memberships_created += 1
+            if not command.dry_run:
+                await uow.commit()
+        return SeedAccountsReport(
+            users_created=users_created,
+            roles_granted=roles_granted,
+            is_organization_created=is_organization_created,
+            memberships_created=memberships_created,
+        )
+
+    async def _ensure_user(
+        self, uow: IdentityUnitOfWork, account: SeedAccount
+    ) -> tuple[User, bool, int]:
+        user = await uow.users.get_by_identity(account.identity)
+        if user is None:
+            user = (
+                UserFactory()
+                .mirror(
+                    account.identity,
+                    None,
+                    account.roles,
+                    ids=self._ids,
+                    clock=self._clock,
+                )
+                .record_into(uow)
+            )
+            await uow.users.add(user)
+            return user, True, 0
+        granted = 0
+        for role in sorted(account.roles - user.roles):
+            user = user.grant_role(role, clock=self._clock, ids=self._ids).record_into(
+                uow
+            )
+            await uow.users.save(user)
+            granted += 1
+        return user, False, granted
+
+    async def _ensure_organization(
+        self, uow: IdentityUnitOfWork, seeded: SeedOrganization
+    ) -> tuple[Organization, bool]:
+        organization = await uow.organizations.get(seeded.organization_id)
+        if organization is not None:
+            return organization, False
+        if await uow.organizations.get_by_slug(seeded.slug) is not None:
+            raise OrganizationSlugTakenError.for_slug(seeded.slug)
+        organization = (
+            OrganizationFactory()
+            .create(
+                seeded.slug,
+                seeded.name,
+                seeded.organization_type,
+                ids=self._ids,
+                clock=self._clock,
+                organization_id=seeded.organization_id,
+            )
+            .record_into(uow)
+        )
+        await uow.organizations.add(organization)
+        return organization, True

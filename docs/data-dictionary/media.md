@@ -27,7 +27,7 @@ Source code: `src/yakhnama/modules/media/domain/`.
 | field | type | unit | meaning | provenance | since |
 |-------|------|------|---------|------------|-------|
 | `id` | `UUID` (v7) | — | Stable identity. | Platform `IdGenerator`. | Phase 3 |
-| `owner_id` | `UUID` (v7) | — | The uploading user. | Authenticated actor. | Phase 3 |
+| `owner_id` | `UUID` (v7) | — | The uploading user, or the guest submission that owns a guest's photo (ADR 0020); guest photos are images only (JPEG, PNG, WebP) and their source is a platform-owned `citizen` source titled "Guest media upload". | Authenticated actor, or the guest submission. | Phase 3 (guest: 2026-10) |
 | `report_id` | `UUID` (v7), nullable | — | The report the asset belongs to. | Application, at request. | Phase 3 |
 | `source_id` | `UUID` (v7) | — | The `provenance` source the asset is attributed to. | Application, at request. | Phase 3 |
 | `original_key` | `str`, object key | — | Storage key of the private original: `media/original/<id>` (**proposed** layout, Q-M6). Only the platform writes it, by copying the client's upload from `media/upload/<id>` at completion; no client URL ever covers it. Keys match `^[a-z0-9][a-z0-9/_.-]{3,255}$` and never contain `..`. | Platform. | Phase 3 |

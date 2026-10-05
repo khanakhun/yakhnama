@@ -146,8 +146,13 @@ async def submit_report(
 ) -> ReportDetail:
     """Submit a report; a retry with the same ``client_report_id`` returns it again.
 
+    With ``assisted`` the caller enters the report for a person without an
+    account and records their consent (trusted reporters, moderators, and
+    organisation members reporting for their organisation; others get 403).
+
     Args:
-        body: The client id, the observation and the optional organisation.
+        body: The client id, the observation, the optional organisation and the
+            optional assistance record.
         actor: The authenticated reporter.
         response: Used to set ``Location`` and ``ETag``.
         services: Use cases bound by the composition root.
@@ -163,6 +168,7 @@ async def submit_report(
             client_report_id=body.client_report_id,
             content=body.to_content(),
             organization_id=body.organization_id,
+            assisted=body.assisted,
         )
     )
     response.headers[LOCATION_HEADER] = f"{REPORTS_PATH}/{detail.id}"
@@ -183,7 +189,8 @@ async def list_reports(
 ) -> ReportPage | Response:
     """List reports with rounded positions, as JSON or GeoJSON.
 
-    Moderators see every report; anyone else only their own.
+    Moderators see every report; anyone else only their own. ``channel=guest``
+    is the moderators' queue of reports from people without an account.
 
     Args:
         parameters: Validated filters, format, cursor and limit.
@@ -200,6 +207,7 @@ async def list_reports(
         ListReports(
             actor=actor,
             status=parameters.status,
+            channel=parameters.channel,
             hazard_code=parameters.hazard_code,
             bbox=parameters.bounding_box(),
             observed_from=parameters.observed_from,

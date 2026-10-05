@@ -135,7 +135,7 @@ from yakhnama.modules.identity.infrastructure.queries import (
     SqlAlchemyIdentityQueryService,
 )
 from yakhnama.modules.identity.infrastructure.uow import SqlAlchemyIdentityUnitOfWork
-from yakhnama.modules.identity.public import CanManageReferenceData
+from yakhnama.modules.identity.public import CanManageReferenceData, SeedAccountsHandler
 from yakhnama.modules.impacts.application.handlers import (
     LoadReferenceImpactMetricsHandler,
 )
@@ -207,6 +207,7 @@ from yakhnama.modules.media.public import (
     MimeSniffer,
     ModerateMediaHandler,
     RecordScanResultHandler,
+    RequestGuestUploadHandler,
     RequestUploadHandler,
     StoragePort,
 )
@@ -220,9 +221,14 @@ from yakhnama.modules.provenance.public import (
     AuthorisedSourceQueryService,
     MarkSourceReferencedHandler,
     ProvenanceUnitOfWorkFactory,
+    RegisterPlatformSourceHandler,
     RegisterSourceHandler,
     SourceQueryService,
     SourceRegistrar,
+)
+from yakhnama.modules.reports.infrastructure.adapters.guest import (
+    HmacGuestChallengeSigner,
+    SecretsGuestSecretGenerator,
 )
 from yakhnama.modules.reports.infrastructure.queries import (
     SqlAlchemyNearbyReportsFinder,
@@ -231,11 +237,20 @@ from yakhnama.modules.reports.infrastructure.queries import (
 from yakhnama.modules.reports.infrastructure.uow import SqlAlchemyReportsUnitOfWork
 from yakhnama.modules.reports.public import (
     AuthorisedReportQueryService,
+    CompleteGuestMediaUploadHandler,
+    GuestChallengeSigner,
+    GuestHandlerDependencies,
+    GuestSecretGenerator,
+    GuestSubmissionLimits,
+    IssueGuestChallengeHandler,
     NearbyReportsFinder,
+    OpenGuestSubmissionHandler,
     ReportQueryService,
     ReportsUnitOfWorkFactory,
+    RequestGuestMediaUploadHandler,
     ReviseReportHandler,
     RunTriageHandler,
+    SubmitGuestReportHandler,
     SubmitReportHandler,
     WithdrawReportHandler,
 )
@@ -312,6 +327,7 @@ from yakhnama.platform.wiring.ingestion import ExecuteIngestionRunTaskAdapter
 from yakhnama.platform.wiring.media import ReportSourceAdapter, ScanTaskAdapter
 from yakhnama.platform.wiring.provenance import SourceCitationCheckerAdapter
 from yakhnama.platform.wiring.reports import (
+    GuestMediaGatewayAdapter,
     MediaOwnershipAdapter,
     PhotoEvidenceAdapter,
     RunTriageTaskAdapter,
@@ -320,7 +336,12 @@ from yakhnama.platform.wiring.verification import (
     ReportOwnerAdapter,
     ReviewerEligibilityAdapter,
 )
-from yakhnama.seed.application import DatasetSeedStep, SeedReferenceDataHandler
+from yakhnama.seed.application import (
+    DatasetSeedStep,
+    DemoAccountsSeedStep,
+    SeedReferenceDataHandler,
+)
+from yakhnama.seed.demo import DEMO_ORGANIZATION, demo_accounts
 from yakhnama.seed.infrastructure import YamlReferenceFileReader
 from yakhnama.shared_kernel.clock import Clock, SystemClock
 from yakhnama.shared_kernel.ids import IdGenerator, Uuid7Generator
@@ -387,6 +408,11 @@ class Container:
         revise_report_handler: Revises reports.
         withdraw_report_handler: Withdraws reports.
         report_queries: Authorised report reads.
+        issue_guest_challenge_handler: Issues guest proof-of-work challenges.
+        open_guest_submission_handler: Opens guest submissions.
+        request_guest_media_upload_handler: Grants guest photo uploads.
+        complete_guest_media_upload_handler: Completes guest photo uploads.
+        submit_guest_report_handler: Submits guest reports.
         run_triage_handler: Triages a report; run by ``reports.run_triage``.
         request_upload_handler: Grants presigned uploads.
         complete_upload_handler: Completes uploads.
@@ -483,6 +509,11 @@ class Container:
     revise_report_handler: ReviseReportHandler
     withdraw_report_handler: WithdrawReportHandler
     report_queries: AuthorisedReportQueryService
+    issue_guest_challenge_handler: IssueGuestChallengeHandler
+    open_guest_submission_handler: OpenGuestSubmissionHandler
+    request_guest_media_upload_handler: RequestGuestMediaUploadHandler
+    complete_guest_media_upload_handler: CompleteGuestMediaUploadHandler
+    submit_guest_report_handler: SubmitGuestReportHandler
     run_triage_handler: RunTriageHandler
     request_upload_handler: RequestUploadHandler
     complete_upload_handler: CompleteUploadHandler
@@ -709,6 +740,46 @@ class MediaAdapters:
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class GuestPorts:
+    """What guest reporting needs besides the recording ports (ADR 0020).
+
+    Implements: Composition Root.
+
+    Attributes:
+        signer: Signs and verifies proof-of-work challenges.
+        secrets: Draws salts, capabilities and receipt references.
+        limits: Difficulty, lifetimes and the hourly cap.
+    """
+
+    signer: GuestChallengeSigner
+    secrets: GuestSecretGenerator
+    limits: GuestSubmissionLimits
+
+
+def build_guest_ports(settings: Settings) -> GuestPorts:
+    """Bind the guest ports from the ``guest_*`` settings.
+
+    Args:
+        settings: Supplies the challenge secret, difficulty, lifetimes and cap.
+
+    Returns:
+        The HMAC signer, the ``secrets`` generator and the limits.
+    """
+    return GuestPorts(
+        signer=HmacGuestChallengeSigner(
+            settings.guest_challenge_secret.get_secret_value().encode()
+        ),
+        secrets=SecretsGuestSecretGenerator(),
+        limits=GuestSubmissionLimits(
+            difficulty_bits=settings.guest_pow_difficulty_bits,
+            challenge_ttl=timedelta(seconds=settings.guest_challenge_ttl_seconds),
+            capability_ttl=timedelta(minutes=settings.guest_capability_ttl_minutes),
+            submissions_per_hour=settings.guest_submissions_per_hour,
+        ),
+    )
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
 class RecordingServices:
     """The Phase 3 use cases, bound to their ports and cross-module adapters.
 
@@ -723,6 +794,11 @@ class RecordingServices:
         revise_report_handler: Revises reports.
         withdraw_report_handler: Withdraws reports.
         report_queries: Authorised report reads.
+        issue_guest_challenge_handler: Issues guest challenges.
+        open_guest_submission_handler: Opens guest submissions.
+        request_guest_media_upload_handler: Grants guest photo uploads.
+        complete_guest_media_upload_handler: Completes guest photo uploads.
+        submit_guest_report_handler: Submits guest reports.
         run_triage_handler: Triages a report.
         request_upload_handler: Grants presigned uploads.
         complete_upload_handler: Completes uploads.
@@ -744,6 +820,11 @@ class RecordingServices:
     revise_report_handler: ReviseReportHandler
     withdraw_report_handler: WithdrawReportHandler
     report_queries: AuthorisedReportQueryService
+    issue_guest_challenge_handler: IssueGuestChallengeHandler
+    open_guest_submission_handler: OpenGuestSubmissionHandler
+    request_guest_media_upload_handler: RequestGuestMediaUploadHandler
+    complete_guest_media_upload_handler: CompleteGuestMediaUploadHandler
+    submit_guest_report_handler: SubmitGuestReportHandler
     run_triage_handler: RunTriageHandler
     request_upload_handler: RequestUploadHandler
     complete_upload_handler: CompleteUploadHandler
@@ -861,13 +942,14 @@ def build_media_adapters(settings: Settings, clock: Clock) -> MediaAdapters:
     )
 
 
-def build_recording_services(
+def build_recording_services(  # noqa: PLR0913  # reason: one keyword per group of ports
     *,
     core: CorePorts,
     units: RecordingUnits,
     reads: RecordingReads,
     media: MediaAdapters,
     task_queue: TaskQueue,
+    guest: GuestPorts,
 ) -> RecordingServices:
     """Wire the Phase 3 use cases to their ports and cross-module adapters.
 
@@ -878,14 +960,46 @@ def build_recording_services(
         reads: The Phase 3 read ports.
         media: Storage and the file inspectors.
         task_queue: Schedules triage and scans.
+        guest: The guest reporting signer, secrets and limits.
 
     Returns:
         The use cases, ready to become ``Container`` fields.
     """
     clock, ids, coordinates = core.clock, core.id_generator, core.public_coordinates
     registrar = RegisterSourceHandler(units.provenance, clock, ids)
+    platform_registrar = RegisterPlatformSourceHandler(units.provenance, clock, ids)
     marker = MarkSourceReferencedHandler(units.provenance, clock, ids)
     media_ownership = MediaOwnershipAdapter(reads.media)
+    complete_upload = CompleteUploadHandler(
+        uow_factory=units.media,
+        storage=media.storage,
+        exif_reader=media.exif_reader,
+        mime_sniffer=media.mime_sniffer,
+        task_queue=task_queue,
+        clock=clock,
+        ids=ids,
+    )
+    guest_dependencies = GuestHandlerDependencies(
+        uow_factory=units.reports,
+        signer=guest.signer,
+        secrets=guest.secrets,
+        media=GuestMediaGatewayAdapter(
+            request_upload=RequestGuestUploadHandler(
+                uow_factory=units.media,
+                storage=media.storage,
+                source_registrar=platform_registrar,
+                clock=clock,
+                ids=ids,
+            ),
+            complete_upload=complete_upload,
+        ),
+        media_checker=media_ownership,
+        source_registrar=platform_registrar,
+        task_queue=task_queue,
+        limits=guest.limits,
+        clock=clock,
+        ids=ids,
+    )
     report_owners = ReportOwnerAdapter(reads.reports)
     report_facts = ReportFactsAdapter(reads.reports, coordinates)
     verification_dependencies = VerificationHandlerDependencies(
@@ -925,6 +1039,15 @@ def build_recording_services(
         ),
         withdraw_report_handler=WithdrawReportHandler(units.reports, clock, ids),
         report_queries=AuthorisedReportQueryService(reads.reports, coordinates),
+        issue_guest_challenge_handler=IssueGuestChallengeHandler(guest_dependencies),
+        open_guest_submission_handler=OpenGuestSubmissionHandler(guest_dependencies),
+        request_guest_media_upload_handler=RequestGuestMediaUploadHandler(
+            guest_dependencies
+        ),
+        complete_guest_media_upload_handler=CompleteGuestMediaUploadHandler(
+            guest_dependencies
+        ),
+        submit_guest_report_handler=SubmitGuestReportHandler(guest_dependencies),
         run_triage_handler=RunTriageHandler(
             uow_factory=units.reports,
             nearby_reports=reads.nearby_reports,
@@ -941,15 +1064,7 @@ def build_recording_services(
             clock=clock,
             ids=ids,
         ),
-        complete_upload_handler=CompleteUploadHandler(
-            uow_factory=units.media,
-            storage=media.storage,
-            exif_reader=media.exif_reader,
-            mime_sniffer=media.mime_sniffer,
-            task_queue=task_queue,
-            clock=clock,
-            ids=ids,
-        ),
+        complete_upload_handler=complete_upload,
         moderate_media_handler=ModerateMediaHandler(
             uow_factory=units.media, storage=media.storage, clock=clock, ids=ids
         ),
@@ -1400,7 +1515,12 @@ def build_container(settings: Settings) -> Container:
     reads = build_recording_reads(session_factory, core.public_coordinates)
     media = build_media_adapters(settings, clock)
     services = build_recording_services(
-        core=core, units=units, reads=reads, media=media, task_queue=task_queue
+        core=core,
+        units=units,
+        reads=reads,
+        media=media,
+        task_queue=task_queue,
+        guest=build_guest_ports(settings),
     )
     impact_metric_query_service = SqlAlchemyImpactMetricQueryService(session_factory)
     exchange_ports = build_exchange_ports(
@@ -1492,6 +1612,13 @@ def build_container(settings: Settings) -> Container:
         revise_report_handler=services.revise_report_handler,
         withdraw_report_handler=services.withdraw_report_handler,
         report_queries=services.report_queries,
+        issue_guest_challenge_handler=services.issue_guest_challenge_handler,
+        open_guest_submission_handler=services.open_guest_submission_handler,
+        request_guest_media_upload_handler=services.request_guest_media_upload_handler,
+        complete_guest_media_upload_handler=(
+            services.complete_guest_media_upload_handler
+        ),
+        submit_guest_report_handler=services.submit_guest_report_handler,
         run_triage_handler=services.run_triage_handler,
         request_upload_handler=services.request_upload_handler,
         complete_upload_handler=services.complete_upload_handler,
@@ -1617,6 +1744,30 @@ def includes_fixture_datasets(settings: Settings) -> bool:
     return settings.environment != "production"
 
 
+def build_demo_accounts_step(container: Container) -> DemoAccountsSeedStep | None:
+    """Wire the development demo accounts, or nothing where they do not belong.
+
+    The demo users exist only in the development realm (ADR 0019), and their
+    identity is ``(oidc_issuer, fixed subject)``, so the step needs the issuer.
+
+    Args:
+        container: Supplies the settings, identity unit of work, clock and ids.
+
+    Returns:
+        The step, or ``None`` in production or without ``oidc_issuer``.
+    """
+    settings = container.settings
+    if settings.environment == "production" or settings.oidc_issuer is None:
+        return None
+    return DemoAccountsSeedStep(
+        load=SeedAccountsHandler(
+            container.identity_uow_factory, container.clock, container.id_generator
+        ),
+        organization=DEMO_ORGANIZATION,
+        accounts=demo_accounts(settings.oidc_issuer),
+    )
+
+
 def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
     """Wire the reference-data seed to the container's ports.
 
@@ -1628,6 +1779,7 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
     ``catalog_policy`` (admins) guards on its own; synthetic fixture entries are
     included unless ``environment`` is ``production``, so a development or test
     database can run the fixture ingestion while a real catalog never lists them.
+    The development demo accounts come last (``build_demo_accounts_step``).
 
     Args:
         container: The container whose units of work, clock and ids the loads use.
@@ -1667,6 +1819,7 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
             ),
             include_fixtures=includes_fixture_datasets(container.settings),
         ),
+        accounts=build_demo_accounts_step(container),
     )
 
 

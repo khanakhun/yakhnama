@@ -189,7 +189,12 @@ assisted submission when the reports module is built.
 
 **Blocking:** no
 
-**Status:** open
+**Status:** decided (maintainer, 2026-10-05): both. **Guest reports** without an account,
+with up to three photos, behind a self-hosted proof-of-work check and no third-party
+CAPTCHA (ADR 0020); and **assisted reports**, entered by a trusted reporter, a moderator
+or an organisation member for their organisation on behalf of a person without an
+account, with that person's consent recorded (ADR 0019). Every report now carries a
+`channel` (`account`, `assisted`, `guest`). Follow-up questions: Q218–Q227.
 
 ---
 
@@ -743,6 +748,7 @@ questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
 - **Question:** What idempotency scope applies to an anonymous caller's `POST`?
 - **Why it matters:** `IdempotencyMiddleware` scopes reservations to `Principal.scope_key()`, which only an authenticated caller has.
 - **Proposed default:** None: anonymous `POST`s are rejected with 401 before idempotency would matter, since every creating route requires an account (Q10).
+- **Update (2026-10-05):** Q10 is decided, and the guest routes (`/api/v1/guest-submissions`, ADR 0020) are anonymous `POST`s. `IdempotencyMiddleware` still ignores them. They carry their own retry safety instead: a challenge is single-use (`409 guest-challenge-spent` on a replay), and the report is answered with the same receipt when the same content is sent again. The upload grant is the one step without it (Q224). Proposed: keep `Idempotency-Key` for authenticated callers only.
 - **Blocking:** no
 - **Status:** open (raised in the Phase 2 plan, §7 Q5)
 
@@ -2224,3 +2230,135 @@ entry.
   which may serve the same people without new personal data.
 - **Blocking:** no
 - **Status:** open (raised by self-registration, 2026-09-30)
+
+---
+
+The entries below were raised by the reporting channels (assisted and guest reports,
+branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
+
+## Q218 — Who may report on behalf of a person without an account?
+
+- **Question:** Which roles may submit an assisted report?
+- **Why it matters:** An assisted report puts someone else's observation on record under
+  the assisting person's account; too wide a rule lets anyone attribute words to people
+  who never said them, too narrow a rule leaves people without help.
+- **Proposed default:** `trusted_reporter`, `moderator` and `admin`, and `org_member`
+  holders only for an organisation they are a member of (`CanReportOnBehalf`). A
+  citizen gets `403 permission-denied`.
+- **Blocking:** no
+- **Status:** open (ADR 0019)
+
+## Q219 — Text and versioning of the consent statement
+
+- **Question:** What does the consent statement read to or by the assisted person say,
+  in which languages, and who versions it?
+- **Why it matters:** The report stores only the statement's version
+  (`consent_statement_version`); without an agreed, reviewed text the recorded consent
+  means little.
+- **Proposed default:** The portal holds the statement in its message catalogues (English
+  and Urdu, reviewed by a native speaker, portal Q-W36) and versions it with a date
+  string such as `2026-10-05`; the backend checks only the format.
+- **Blocking:** no (blocks relying on the consent record)
+- **Status:** open (ADR 0019)
+
+## Q220 — Can an assisted observer correct or withdraw their report later?
+
+- **Question:** Should the person on whose behalf a report was entered be able to revise
+  or withdraw it?
+- **Why it matters:** The observer has no account, so only the person who entered the
+  report can change it; an observer who changes their mind depends on them or on a
+  moderator.
+- **Proposed default:** Only the person who entered it may revise or withdraw (the
+  ordinary reporter rule); a request by the observer goes through that person or a
+  moderator. Revisit with the moderator console (Phase 3 of the portal).
+- **Blocking:** no
+- **Status:** open (ADR 0019)
+
+## Q221 — Do assisted and guest reports weigh differently in verification?
+
+- **Question:** Should the channel change how moderators or the best-figure policy weigh
+  a report?
+- **Why it matters:** A guest report is unauthenticated; an assisted report is a claim of
+  a claim. Treating them like account reports may overweight them; discounting them may
+  silence exactly the people the channels exist for.
+- **Proposed default:** No automatic weighting. The channel is shown to moderators, the
+  source title says "Assisted ..." or "Guest ...", and only a human verifies (unchanged).
+- **Blocking:** no
+- **Status:** open
+
+## Q222 — Proof-of-work difficulty and lifetimes
+
+- **Question:** What difficulty, challenge lifetime and capability lifetime should guest
+  reporting use?
+- **Why it matters:** Each extra bit doubles the work for a low-end phone and for an
+  abuser alike; a short capability lifetime cuts off a slow guest uploading photos on a
+  weak connection.
+- **Proposed default:** 16 leading zero bits (at least 12 in production), challenges
+  valid 10 minutes, capabilities 30 minutes (`guest_*` settings). End-to-end tests may
+  lower the difficulty to 8.
+- **Blocking:** no
+- **Status:** open (ADR 0020)
+
+## Q223 — The global hourly cap on guest submissions
+
+- **Question:** How many guest submissions may be opened per rolling hour, and what
+  happens to honest guests when a flood reaches the cap?
+- **Why it matters:** Behind the portal all guests share one address, so the cap is what
+  keeps a flood out of the moderators' queue, and also what makes honest guests wait
+  (`429` with `Retry-After`, up to an hour) during one.
+- **Proposed default:** 200 per hour (`guest_submissions_per_hour`), an alert when it is
+  reached, and a per-client limit at the reverse proxy in front of the portal in
+  production (portal Q-W9) so one client cannot use the cap up alone. Guests can still
+  report through someone who has an account (assisted reporting).
+- **Blocking:** no (blocks production guest reporting without the proxy limit)
+- **Status:** open (ADR 0020)
+
+## Q224 — A lost upload-grant response uses up one of the three photos
+
+- **Question:** Should a guest photo count against the limit when the grant is issued, or
+  only when the upload completes?
+- **Why it matters:** On a weak connection a lost response to
+  `POST /guest-submissions/{id}/media` still uses a slot; three lost responses leave a
+  guest unable to attach any photo.
+- **Proposed default:** Count grants (simple, and it bounds the storage a submission can
+  use). Revisit with an idempotency key scoped to the submission if the portal sees lost
+  grants in practice.
+- **Blocking:** no
+- **Status:** open (ADR 0020)
+
+## Q225 — Finding a guest report by its reference
+
+- **Question:** How do moderators or support staff find the report behind a reference a
+  guest quotes (`YK-XXXX-XXXX`)?
+- **Why it matters:** The reference is the guest's only handle on their report; today no
+  route reads by it (it is stored on the guest submission, not on the report).
+- **Proposed default:** A moderator-only lookup by reference in the moderator console
+  (portal Phase 3), backed by the unique index on `guest_submissions.reference`.
+- **Blocking:** no
+- **Status:** open
+
+## Q226 — Retention of guest submissions and spent challenges
+
+- **Question:** How long are guest submissions (capability digest, fingerprint,
+  reference, granted photo ids) and spent challenges kept?
+- **Why it matters:** They hold no personal data, but they are records nobody reads once
+  the capability has expired, except the link from a report to its reference.
+- **Proposed default:** Spent challenges are deleted once expired (each new submission
+  purges them). Guest submissions are kept with their report; submissions that never
+  carried a report may be deleted a week after expiry by a scheduled task (not built
+  yet).
+- **Blocking:** no
+- **Status:** open
+
+## Q227 — Development demo accounts depend on fixed realm user ids
+
+- **Question:** Is it acceptable that the seed mirrors `demo-trusted-reporter` and
+  `demo-org-member` under fixed Keycloak user ids taken from the realm file?
+- **Why it matters:** If the running realm's users have other ids (created through the
+  admin API without a partial import), the seed creates users that never sign in and
+  the real accounts get no membership.
+- **Proposed default:** Yes, for development only: the ids are fixed in the realm file,
+  a unit test keeps the seed and the realm in step, and `docs/architecture/auth.md`
+  explains the partial import that keeps them. Never seeded in production.
+- **Blocking:** no
+- **Status:** open (ADR 0019)

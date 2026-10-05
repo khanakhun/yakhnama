@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.domain.value_objects import (
+    PUBLISHABLE_MIME_TYPES,
     MimeType,
     ModerationReason,
     ModerationStatus,
@@ -51,6 +52,56 @@ class CompleteUpload(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     actor: Actor
+    asset_id: EntityId
+
+
+class RequestGuestUpload(BaseModel):
+    """Ask for a presigned upload of one photo owned by a guest submission.
+
+    Internal: no endpoint accepts it. The reports module's guest use case sends
+    it through its ``GuestMediaGateway`` port after checking the guest's
+    capability and photo limit (ADR 0020). The asset is owned by the submission,
+    not by a user, and only images (whose public copy can be stripped of
+    metadata) are accepted.
+
+    Implements: Command.
+
+    Attributes:
+        owner_id: The guest submission that will own the asset.
+        mime_type: The declared image type; checked again against the file's
+            content at completion.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    owner_id: EntityId
+    mime_type: MimeType
+
+    @model_validator(mode="after")
+    def _images_only(self) -> Self:
+        if self.mime_type not in PUBLISHABLE_MIME_TYPES:
+            message = "a guest may upload only JPEG, PNG or WebP images"
+            raise ValueError(message)
+        return self
+
+
+class CompleteGuestUpload(BaseModel):
+    """Tell the platform the photo behind a guest submission's asset was uploaded.
+
+    Internal, like ``RequestGuestUpload``: the guest use case has checked the
+    capability; ``CompleteUploadHandler`` checks that the submission owns the
+    asset.
+
+    Implements: Command.
+
+    Attributes:
+        owner_id: The guest submission.
+        asset_id: The asset the upload URL was granted for.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    owner_id: EntityId
     asset_id: EntityId
 
 

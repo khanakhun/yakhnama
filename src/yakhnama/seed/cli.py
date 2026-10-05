@@ -183,6 +183,8 @@ def log_report(report: SeedReport) -> None:
             for skipped in report.datasets.skipped_with_reason
         )
         summaries["datasets"] = _datasets_summary(report.datasets)
+    if report.accounts is not None:
+        summaries["demo_accounts"] = report.accounts.model_dump()
     for file_key, code, reason in skipped_changes:
         logger.warning("seed_change_skipped", file=file_key, code=code, reason=reason)
     logger.info(

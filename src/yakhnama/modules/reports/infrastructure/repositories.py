@@ -1,4 +1,4 @@
-"""SQLAlchemy adapter of the ``ReportRepository`` port.
+"""SQLAlchemy adapters of the ``ReportRepository`` and guest submission ports.
 
 Writes go straight to the unit of work's transaction, so a later read in the same
 unit of work sees them and a rollback discards them. Inserts run inside a savepoint
@@ -14,23 +14,42 @@ to tell a missing report (``ReportNotFoundError``) from a concurrent change
 
 There is no delete: reports are never removed (``AGENTS.md`` §5).
 
+``SqlAlchemyGuestSubmissionRepository`` follows the same rules for guest submissions
+(a unique violation on ``reference`` or ``report_id`` is a conflict), and
+``SqlAlchemySpentChallengeRepository`` inserts one row per redeemed challenge, whose
+primary key turns a replay into ``GuestChallengeSpentError`` even when two
+redemptions race.
+
 Patterns: Repository (adapter side).
 """
 
-from sqlalchemy import select, update
+from datetime import datetime
+
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yakhnama.modules.reports.application.dto import GuestSubmissionWindow
 from yakhnama.modules.reports.domain.entities import Report
-from yakhnama.modules.reports.domain.errors import ReportNotFoundError
+from yakhnama.modules.reports.domain.errors import (
+    GuestChallengeSpentError,
+    ReportNotFoundError,
+)
+from yakhnama.modules.reports.domain.guest_submissions import GuestSubmission
 from yakhnama.modules.reports.infrastructure.mappers import (
+    guest_submission_to_values,
     report_to_row,
     report_to_values,
+    row_to_guest_submission,
     row_to_report,
 )
-from yakhnama.modules.reports.infrastructure.orm import ReportRow
+from yakhnama.modules.reports.infrastructure.orm import (
+    GuestChallengeRow,
+    GuestSubmissionRow,
+    ReportRow,
+)
 from yakhnama.platform.db import is_unique_violation
-from yakhnama.shared_kernel.errors import ConflictError
+from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
 
 
@@ -132,3 +151,200 @@ class SqlAlchemyReportRepository:
                 "stored_version": stored,
             },
         )
+
+
+class SqlAlchemyGuestSubmissionRepository:
+    """PostgreSQL-backed implementation of ``GuestSubmissionRepository``.
+
+    Implements: Repository (port ``GuestSubmissionRepository``).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Create the repository.
+
+        Args:
+            session: The unit of work's session.
+        """
+        self._session = session
+
+    async def get(self, submission_id: EntityId) -> GuestSubmission | None:
+        """Return the submission with ``submission_id``.
+
+        Args:
+            submission_id: The submission's id.
+
+        Returns:
+            The aggregate, or ``None``.
+        """
+        row = (
+            await self._session.execute(
+                select(GuestSubmissionRow).where(GuestSubmissionRow.id == submission_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        self._session.expunge(row)
+        return row_to_guest_submission(row)
+
+    async def add(self, submission: GuestSubmission) -> None:
+        """Insert a new submission.
+
+        Args:
+            submission: The new aggregate at version 1.
+
+        Raises:
+            ConflictError: If the id is taken.
+        """
+        row = GuestSubmissionRow(
+            id=submission.id, **guest_submission_to_values(submission)
+        )
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError as error:
+            if not is_unique_violation(error):
+                raise
+            message = f"guest submission {submission.id} exists"
+            raise ConflictError(
+                message, details={"submission_id": str(submission.id)}
+            ) from error
+        self._session.expunge(row)
+
+    async def save(self, submission: GuestSubmission) -> None:
+        """Update a stored submission, checking optimistic concurrency.
+
+        Args:
+            submission: The new state; its ``version`` is one more than stored.
+
+        Raises:
+            NotFoundError: If no submission with that id exists.
+            ConflictError: If it was changed concurrently, or the reference or
+                report is already another submission's.
+        """
+        statement = (
+            update(GuestSubmissionRow)
+            .where(
+                GuestSubmissionRow.id == submission.id,
+                GuestSubmissionRow.version == submission.version - 1,
+            )
+            .values(guest_submission_to_values(submission))
+            .returning(GuestSubmissionRow.id)
+            .execution_options(synchronize_session=False)
+        )
+        try:
+            async with self._session.begin_nested():
+                updated = (await self._session.execute(statement)).scalar_one_or_none()
+        except IntegrityError as error:
+            if not is_unique_violation(error):
+                raise
+            message = "the guest reference or report is already used"
+            raise ConflictError(
+                message, details={"submission_id": str(submission.id)}
+            ) from error
+        if updated is not None:
+            return
+        stored = await self._session.scalar(
+            select(GuestSubmissionRow.version).where(
+                GuestSubmissionRow.id == submission.id
+            )
+        )
+        if stored is None:
+            message = f"guest submission {submission.id} does not exist"
+            raise NotFoundError(message, details={"submission_id": str(submission.id)})
+        message = f"guest submission {submission.id} was changed concurrently"
+        raise ConflictError(
+            message,
+            details={
+                "submission_id": str(submission.id),
+                "expected_version": submission.version - 1,
+                "stored_version": stored,
+            },
+        )
+
+    async def count_opened_since(self, since: datetime) -> GuestSubmissionWindow:
+        """Count the submissions opened at or after ``since``.
+
+        Args:
+            since: Start of the window, UTC.
+
+        Returns:
+            The count and the oldest opening time in the window.
+        """
+        count, oldest = (
+            await self._session.execute(
+                select(
+                    func.count(GuestSubmissionRow.id),
+                    func.min(GuestSubmissionRow.created_at),
+                ).where(GuestSubmissionRow.created_at >= since)
+            )
+        ).one()
+        return GuestSubmissionWindow(count=count, oldest_opened_at=oldest)
+
+    async def is_reference_taken(self, reference: str) -> bool:
+        """Tell whether a stored submission carries ``reference``.
+
+        Args:
+            reference: A candidate reference.
+
+        Returns:
+            ``True`` if it is taken.
+        """
+        found = await self._session.scalar(
+            select(GuestSubmissionRow.id).where(
+                GuestSubmissionRow.reference == reference
+            )
+        )
+        return found is not None
+
+
+class SqlAlchemySpentChallengeRepository:
+    """PostgreSQL-backed implementation of ``SpentChallengeRepository``.
+
+    Implements: Repository (port ``SpentChallengeRepository``).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Create the repository.
+
+        Args:
+            session: The unit of work's session.
+        """
+        self._session = session
+
+    async def spend(self, salt: str, expires_at: datetime) -> None:
+        """Insert the redeemed challenge; its primary key refuses a replay.
+
+        Args:
+            salt: The challenge's salt.
+            expires_at: When the challenge expires.
+
+        Raises:
+            GuestChallengeSpentError: If it was redeemed before.
+        """
+        row = GuestChallengeRow(salt=salt, expires_at=expires_at)
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError as error:
+            if not is_unique_violation(error):
+                raise
+            raise GuestChallengeSpentError.create() from error
+        self._session.expunge(row)
+
+    async def purge_expired(self, now: datetime) -> int:
+        """Delete redeemed challenges that have expired.
+
+        Args:
+            now: The current instant.
+
+        Returns:
+            How many rows were deleted.
+        """
+        result = await self._session.execute(
+            delete(GuestChallengeRow)
+            .where(GuestChallengeRow.expires_at < now)
+            .returning(GuestChallengeRow.salt)
+        )
+        return len(result.all())

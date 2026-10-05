@@ -7,16 +7,34 @@ API fills it from ``If-Match`` and the handler raises ``PreconditionFailedError`
 Patterns: Command.
 """
 
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated, Final
+
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from yakhnama.modules.identity.public import Actor
+from yakhnama.modules.reports.domain.guest_submissions import ProofNonce
 from yakhnama.modules.reports.domain.value_objects import (
+    AssistedSubmission,
     ClientReportId,
+    GuestImageType,
     ReportContent,
     ReportVersion,
     WithdrawalReason,
 )
 from yakhnama.shared_kernel.ids import EntityId
+
+CHALLENGE_TEXT_MAX_LENGTH: Final = 512
+CAPABILITY_TEXT_MAX_LENGTH: Final = 256
+
+ChallengeText = Annotated[
+    str, StringConstraints(min_length=1, max_length=CHALLENGE_TEXT_MAX_LENGTH)
+]
+"""A signed challenge as the client returns it; verified by ``GuestChallengeSigner``."""
+
+CapabilityText = Annotated[
+    str, StringConstraints(max_length=CAPABILITY_TEXT_MAX_LENGTH)
+]
+"""A capability as presented; only its digest is ever compared, never its format."""
 
 
 class SubmitReport(BaseModel):
@@ -31,6 +49,8 @@ class SubmitReport(BaseModel):
         content: What the reporter observed.
         organization_id: The organisation the reporter reports for, if any; the
             reporter must belong to it.
+        assisted: Set when the actor enters the report for a person without an
+            account, with that person's consent (ADR 0019).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -39,6 +59,7 @@ class SubmitReport(BaseModel):
     client_report_id: ClientReportId
     content: ReportContent
     organization_id: EntityId | None = None
+    assisted: AssistedSubmission | None = None
 
 
 class ReviseReport(BaseModel):
@@ -97,3 +118,83 @@ class RunTriage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     report_id: EntityId
+
+
+class IssueGuestChallenge(BaseModel):
+    """Issue a signed proof-of-work challenge to an anonymous caller (ADR 0020).
+
+    Implements: Command.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class OpenGuestSubmission(BaseModel):
+    """Redeem a solved challenge for one guest submission and its capability.
+
+    Implements: Command.
+
+    Attributes:
+        challenge: The signed challenge, exactly as issued.
+        nonce: The guest's answer to it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    challenge: ChallengeText
+    nonce: ProofNonce
+
+
+class RequestGuestMediaUpload(BaseModel):
+    """Ask for a presigned upload of one photo for a guest submission.
+
+    Implements: Command.
+
+    Attributes:
+        submission_id: The guest submission.
+        capability: The capability the guest presented, or ``None``.
+        mime_type: The declared image type.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    submission_id: EntityId
+    capability: CapabilityText | None
+    mime_type: GuestImageType
+
+
+class CompleteGuestMediaUpload(BaseModel):
+    """Tell the platform a guest's photo was uploaded.
+
+    Implements: Command.
+
+    Attributes:
+        submission_id: The guest submission.
+        capability: The capability the guest presented, or ``None``.
+        asset_id: The asset the upload was granted for.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    submission_id: EntityId
+    capability: CapabilityText | None
+    asset_id: EntityId
+
+
+class SubmitGuestReport(BaseModel):
+    """Submit the one report of a guest submission; a retry returns its receipt.
+
+    Implements: Command.
+
+    Attributes:
+        submission_id: The guest submission.
+        capability: The capability the guest presented, or ``None``.
+        content: What the guest observed; ``media_ids`` must be photos granted
+            to this submission.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    submission_id: EntityId
+    capability: CapabilityText | None
+    content: ReportContent

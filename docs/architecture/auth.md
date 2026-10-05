@@ -71,16 +71,30 @@ module-granted roles.
 
 ### Demo users
 
-Two users exist only for local development and manual testing, with dev-only passwords
+Four users exist only for local development and manual testing, with dev-only passwords
 that are **not secrets** (they unlock nothing but a local, disposable container):
 
 | Username | Password | Roles |
 |----------|----------|-------|
 | `demo-citizen` | `demo-citizen-dev-only` | `citizen` |
 | `demo-moderator` | `demo-moderator-dev-only` | `citizen`, `moderator` |
+| `demo-trusted-reporter` | `demo-trusted-reporter-dev-only` | `citizen`, `trusted_reporter` |
+| `demo-org-member` | `demo-org-member-dev-only` | `citizen`, `org_member`; member of the demo organisation |
 
-Both have a placeholder address on the reserved `.invalid` domain
-(`demo-citizen@example.invalid`, `demo-moderator@example.invalid`) with
+`demo-trusted-reporter` and `demo-org-member` exist for assisted reporting (ADR 0019).
+The realm gives them fixed user ids (`7e0a1c52-3b8d-4f6e-9a21-5c0de0000001` and
+`...0002`), which Keycloak puts in the token's `sub`. The reference-data seed
+(`poetry run poe seed`, outside production and only with `YAKHNAMA_OIDC_ISSUER` set)
+mirrors both under that issuer before their first sign-in, with their roles, creates
+the **demo organisation** `Demo organisation (development only, not real)` (slug
+`demo-organisation-dev`, fixed id `0199b2a0-0000-7000-8000-0000000000de`) and makes
+`demo-org-member` a member (`yakhnama.seed.demo`). Realm roles are copied only at first
+sight (Q50), so seeding first and signing in afterwards gives the same roles as
+signing in first; the seed only adds missing roles and never removes one. Running the
+seed again changes nothing.
+
+All four have a placeholder address on the reserved `.invalid` domain
+(`demo-citizen@example.invalid`, `demo-moderator@example.invalid`, ...) with
 `emailVerified: true`, so the realm's "email required" rule (see "Sign-up and social
 sign-in") never stops them at sign-in and no mail is ever sent for them. The realm's user
 profile is customised (the `components` section of the realm export) to drop the default
@@ -100,6 +114,12 @@ user `KEYCLOAK_ADMIN_USER`) or the admin REST API
 (`POST /admin/realms/yakhnama/clients` with the client's object from the realm file).
 Keycloak stores a client's `description` in a 255-character column; a longer one fails
 both the import and the admin API with a database error, so keep it short.
+
+Users are added the same way. The admin API's `POST /admin/realms/yakhnama/users`
+ignores a given `id`, so to keep the demo users' fixed ids (the seed depends on them)
+use a **partial import**: `POST /admin/realms/yakhnama/partialImport` with
+`{"ifResourceExists": "SKIP", "users": [...]}`, the two user objects copied from the
+realm file. Then run the seed.
 
 ## Obtaining a token
 

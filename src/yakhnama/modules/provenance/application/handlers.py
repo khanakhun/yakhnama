@@ -16,6 +16,7 @@ from yakhnama.modules.provenance.application.authorisation import (
 )
 from yakhnama.modules.provenance.application.commands import (
     MarkSourceReferenced,
+    RegisterPlatformSource,
     RegisterSource,
     UpdateSourceDetails,
 )
@@ -27,7 +28,7 @@ from yakhnama.modules.provenance.application.ports import (
 from yakhnama.modules.provenance.domain.entities import Source
 from yakhnama.modules.provenance.domain.errors import SourceNotFoundError
 from yakhnama.modules.provenance.domain.factories import SourceFactory
-from yakhnama.modules.provenance.domain.value_objects import SourceOwner
+from yakhnama.modules.provenance.domain.value_objects import SYSTEM_OWNER, SourceOwner
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import PreconditionFailedError
 from yakhnama.shared_kernel.ids import EntityId, IdGenerator
@@ -197,5 +198,48 @@ class MarkSourceReferencedHandler(_ProvenanceHandler):
             if change.events:
                 source = change.record_into(uow)
                 await uow.sources.save(source)
+            await uow.commit()
+        return SourceDetail.from_entity(source)
+
+
+class RegisterPlatformSourceHandler(_ProvenanceHandler):
+    """Register a platform-owned source and freeze it at once (ADR 0020).
+
+    The source has no owner (``SYSTEM_OWNER``), so only moderators could ever
+    edit it, and nobody needs to: its details are fixed text the platform wrote.
+    It is marked referenced in the same unit of work because the caller registers
+    it only for a fact it is about to record; if recording that fact then fails,
+    the frozen source cites nothing, which is as harmless as the unreferenced
+    source an interrupted ``SubmitReport`` leaves.
+
+    Implements: Command Handler.
+    """
+
+    async def __call__(self, command: RegisterPlatformSource) -> SourceDetail:
+        """Register and reference the source.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            The new, referenced source.
+        """
+        async with self._uow_factory() as uow:
+            registered = (
+                SourceFactory()
+                .register(
+                    command.source_type,
+                    command.details,
+                    SYSTEM_OWNER,
+                    clock=self._clock,
+                    ids=self._ids,
+                )
+                .record_into(uow)
+            )
+            await uow.sources.add(registered)
+            source = registered.mark_referenced(
+                clock=self._clock, ids=self._ids
+            ).record_into(uow)
+            await uow.sources.save(source)
             await uow.commit()
         return SourceDetail.from_entity(source)

@@ -30,7 +30,7 @@ from yakhnama.modules.identity.domain.value_objects import (
 )
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.events import AggregateChange
-from yakhnama.shared_kernel.ids import IdGenerator
+from yakhnama.shared_kernel.ids import EntityId, IdGenerator
 
 
 class UserFactory:
@@ -94,7 +94,7 @@ class OrganizationFactory:
     Implements: Factory.
     """
 
-    def create(
+    def create(  # noqa: PLR0913  # reason: the fixed id is an optional keyword of the same creation
         self,
         slug: str,
         name: str,
@@ -102,6 +102,7 @@ class OrganizationFactory:
         *,
         ids: IdGenerator,
         clock: Clock,
+        organization_id: EntityId | None = None,
     ) -> AggregateChange[Organization]:
         """Create an active organisation at version 1 and ``OrganizationCreated``.
 
@@ -112,8 +113,10 @@ class OrganizationFactory:
             slug: URL-safe handle.
             name: Display name.
             organization_type: The kind of organisation.
-            ids: Source of the organisation id and the event id.
+            ids: Source of the organisation id (unless given) and the event id.
             clock: Source of every timestamp.
+            organization_id: A fixed id, for organisations the seed creates and
+                other data refers to; a new id from ``ids`` when ``None``.
 
         Returns:
             The new organisation and ``OrganizationCreated``.
@@ -123,7 +126,7 @@ class OrganizationFactory:
         """
         now = clock.now()
         organization = Organization(
-            id=ids.new_id(),
+            id=ids.new_id() if organization_id is None else organization_id,
             slug=slug,
             name=name,
             organization_type=organization_type,

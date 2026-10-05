@@ -6,6 +6,9 @@
   reporter's completed uploads, for the triage chain.
 - ``RunTriageTaskAdapter``: the ``reports.run_triage`` task handler; it turns the
   task payload into ``RunTriage`` and calls ``RunTriageHandler``.
+- ``GuestMediaGatewayAdapter`` (``GuestMediaGateway``): a guest's photo uploads,
+  owned by the guest submission, through the media module's guest commands
+  (ADR 0020).
 
 Both ports read ``media.public.MediaQueryService.list_assets``, the internal read
 model with owners and EXIF. The ownership rule is applied here, not by an actor
@@ -17,8 +20,23 @@ Patterns: Adapter.
 
 from collections.abc import Sequence
 
-from yakhnama.modules.media.public import MediaQueryService, UploadStatus
-from yakhnama.modules.reports.public import PhotoEvidence, RunTriage, RunTriageHandler
+from yakhnama.modules.media.public import (
+    CompleteGuestUpload,
+    CompleteUploadHandler,
+    MediaQueryService,
+    MimeType,
+    RequestGuestUpload,
+    RequestGuestUploadHandler,
+    UploadGrant,
+    UploadStatus,
+)
+from yakhnama.modules.reports.public import (
+    GuestImageType,
+    GuestMediaAsset,
+    PhotoEvidence,
+    RunTriage,
+    RunTriageHandler,
+)
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.tasks import ScheduledTask
 
@@ -140,3 +158,65 @@ class RunTriageTaskAdapter:
             ReportNotFoundError: If the report does not exist.
         """
         await self._handler(RunTriage.model_validate(dict(task.payload)))
+
+
+class GuestMediaGatewayAdapter:
+    """``GuestMediaGateway`` over the media module's guest upload commands.
+
+    Implements: Adapter.
+    """
+
+    def __init__(
+        self,
+        *,
+        request_upload: RequestGuestUploadHandler,
+        complete_upload: CompleteUploadHandler,
+    ) -> None:
+        """Create the adapter.
+
+        Args:
+            request_upload: The media guest upload-grant use case.
+            complete_upload: The media upload-completion use case.
+        """
+        self._request_upload = request_upload
+        self._complete_upload = complete_upload
+
+    async def request_upload(
+        self, owner_id: EntityId, mime_type: GuestImageType
+    ) -> UploadGrant:
+        """Create an asset owned by the guest submission and presign its upload.
+
+        Args:
+            owner_id: The guest submission.
+            mime_type: The declared image type.
+
+        Returns:
+            The media module's upload grant.
+        """
+        return await self._request_upload(
+            RequestGuestUpload(owner_id=owner_id, mime_type=MimeType(mime_type))
+        )
+
+    async def complete_upload(
+        self, owner_id: EntityId, asset_id: EntityId
+    ) -> GuestMediaAsset:
+        """Complete the guest's upload and describe the photo without links.
+
+        Args:
+            owner_id: The guest submission.
+            asset_id: The asset.
+
+        Returns:
+            The completed photo, or the submission's earlier identical one.
+        """
+        detail = await self._complete_upload(
+            CompleteGuestUpload(owner_id=owner_id, asset_id=asset_id)
+        )
+        return GuestMediaAsset.model_validate(
+            {
+                "id": detail.id,
+                "mime_type": detail.mime_type.value,
+                "byte_size": detail.byte_size,
+                "upload_status": detail.upload_status,
+            }
+        )

@@ -1,7 +1,13 @@
 """Who may submit, correct, withdraw and read reports (**proposed** rules).
 
 - **Submit.** Any authenticated user; submitting *for* an organisation also needs
-  membership of it.
+  membership of it. Submitting *on behalf of* a person without an account
+  (assisted reporting, ADR 0019) also needs ``CanReportOnBehalf``: trusted
+  reporters, moderators, and organisation members reporting for their own
+  organisation.
+- **Guest reports** have no user at all: the guest submission's capability is
+  checked by the guest use cases (ADR 0020), and no policy below ever matches a
+  guest report's reporter, so nobody can revise or withdraw one.
 - **Revise and withdraw.** The reporter only (``IsSelf``): a report is one person's
   observation, and a moderator's view of it belongs in verification, not in the
   report.
@@ -21,6 +27,7 @@ from yakhnama.modules.identity.public import (
     Actor,
     ActorPolicy,
     CanModerate,
+    CanReportOnBehalf,
     IsAuthenticated,
     IsMemberOf,
     IsSelf,
@@ -31,6 +38,7 @@ from yakhnama.shared_kernel.errors import PermissionDeniedError
 from yakhnama.shared_kernel.ids import EntityId
 
 __all__ = [
+    "assisted_submit_policy",
     "exact_view_policy",
     "is_moderator",
     "reporter_policy",
@@ -56,6 +64,18 @@ def submit_policy(organization_id: EntityId | None) -> ActorPolicy:
     return IsAuthenticated() & IsMemberOf(organization_id)
 
 
+def assisted_submit_policy(organization_id: EntityId | None) -> ActorPolicy:
+    """Return who may submit a report on behalf of a person without an account.
+
+    Args:
+        organization_id: The organisation reported for, if any.
+
+    Returns:
+        ``CanReportOnBehalf(organization_id)``.
+    """
+    return CanReportOnBehalf(organization_id)
+
+
 def reporter_policy(reporter_id: EntityId) -> ActorPolicy:
     """Return who may revise or withdraw a report: its reporter.
 
@@ -69,7 +89,10 @@ def reporter_policy(reporter_id: EntityId) -> ActorPolicy:
 
 
 def exact_view_policy(record: ReportRecord) -> ActorPolicy:
-    """Return who may see a report with its exact position.
+    """Return who may see a report with its exact position and assistance record.
+
+    The private note and consent record of an assisted report follow the same
+    rule as the exact position: the person who entered it and moderators.
 
     Args:
         record: The report.

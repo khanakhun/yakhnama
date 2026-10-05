@@ -52,6 +52,8 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 | [0016] | Idempotency keys stored in PostgreSQL with a 72-hour TTL | accepted |
 | [0017] | Rate limiting behind a port with in-memory and Redis adapters | accepted |
 | [0018] | Safe-text rules in the shared kernel | proposed |
+| [0019] | Reporting channels and assisted reporting with recorded consent | proposed |
+| [0020] | Guest submissions with a proof-of-work challenge and a capability | proposed |
 
 [0001]: 0001-modular-monolith-with-hexagonal-layers.md
 [0002]: 0002-postgresql-with-postgis.md
@@ -71,3 +73,5 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 [0016]: 0016-idempotency-keys-in-postgresql.md
 [0017]: 0017-rate-limiting-behind-a-port.md
 [0018]: 0018-safe-text-rules-in-the-shared-kernel.md
+[0019]: 0019-reporting-channels-and-assisted-consent.md
+[0020]: 0020-guest-submissions-with-proof-of-work.md

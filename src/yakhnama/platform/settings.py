@@ -53,6 +53,14 @@ DEVELOPMENT_DATABASE_URL: Final = PostgresDsn(
 DEVELOPMENT_STORAGE_ENDPOINT_URL: Final = "http://127.0.0.1:9000"
 DEVELOPMENT_STORAGE_ACCESS_KEY_ID: Final = "minioadmin"
 DEVELOPMENT_STORAGE_SECRET: Final = "minioadmin-dev-only"  # noqa: S105  # reason: the public development credential of docker-compose.yml, refused in production
+# The development key that signs guest proof-of-work challenges (ADR 0020); public,
+# refused in production like the storage secret above.
+DEVELOPMENT_GUEST_CHALLENGE_SECRET: Final = (
+    "guest-challenge-secret-dev-only-not-for-production"  # noqa: S105  # reason: public dev value
+)
+GUEST_CHALLENGE_SECRET_MIN_LENGTH: Final = 32
+# Proposed floor for production: below 12 bits a proof costs a bot almost nothing.
+PRODUCTION_MIN_GUEST_DIFFICULTY_BITS: Final = 12
 # S3 bucket naming rules: 3-63 lower-case letters, digits, dots and hyphens.
 BUCKET_NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
 
@@ -247,6 +255,18 @@ class Settings(BaseSettings):
         clamav_host: Host of the clamd daemon for the ``clamav`` scanner.
         clamav_port: clamd's TCP port.
         clamav_timeout_seconds: Upper bound for one whole scan.
+        guest_challenge_secret: The key that signs guest proof-of-work challenges
+            (ADR 0020); a ``SecretStr``, at least 32 characters. Changing it
+            invalidates the challenges in flight.
+        guest_pow_difficulty_bits: Leading zero bits a guest's proof of work
+            needs (1-32; at least 12 in production). Each bit doubles the
+            expected work; 16 is a few seconds on a low-end phone.
+        guest_challenge_ttl_seconds: How long a challenge may be solved and
+            redeemed.
+        guest_capability_ttl_minutes: How long a guest submission's capability
+            works.
+        guest_submissions_per_hour: Most guest submissions opened in any rolling
+            hour, by all guests together.
     """
 
     model_config = SettingsConfigDict(
@@ -381,6 +401,17 @@ class Settings(BaseSettings):
     # Proposed: a 50 MiB file streams to a local clamd in seconds; a minute leaves
     # room for a loaded daemon without holding a worker indefinitely.
     clamav_timeout_seconds: float = Field(default=60.0, ge=1.0, le=600.0)
+
+    # Guest reporting (ADR 0020). Every value is a proposed operational default.
+    guest_challenge_secret: SecretStr = Field(
+        default=SecretStr(DEVELOPMENT_GUEST_CHALLENGE_SECRET),
+        min_length=GUEST_CHALLENGE_SECRET_MIN_LENGTH,
+        max_length=256,
+    )
+    guest_pow_difficulty_bits: int = Field(default=16, ge=1, le=32)
+    guest_challenge_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    guest_capability_ttl_minutes: int = Field(default=30, ge=5, le=240)
+    guest_submissions_per_hour: int = Field(default=200, ge=1, le=100_000)
 
     @field_validator("database_url", mode="after")
     @classmethod
@@ -579,6 +610,19 @@ PRODUCTION_RULES: Final[tuple[tuple[Callable[[Settings], bool], str], ...]] = (
             and not settings.storage_endpoint_url.startswith("https://")
         ),
         "storage_endpoint_url must use https",
+    ),
+    (
+        lambda settings: (
+            settings.guest_challenge_secret.get_secret_value()
+            == DEVELOPMENT_GUEST_CHALLENGE_SECRET
+        ),
+        "guest_challenge_secret must not be the development default",
+    ),
+    (
+        lambda settings: (
+            settings.guest_pow_difficulty_bits < PRODUCTION_MIN_GUEST_DIFFICULTY_BITS
+        ),
+        "guest_pow_difficulty_bits must be at least 12",
     ),
 )
 

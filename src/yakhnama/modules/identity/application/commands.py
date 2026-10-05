@@ -252,3 +252,68 @@ class RenameSelf(BaseModel):
     actor: Actor
     display_name: DisplayName | None
     expected_version: RecordVersion | None = None
+
+
+class SeedAccount(BaseModel):
+    """One account the development seed makes sure exists (``SeedAccounts``).
+
+    Implements: Command.
+
+    Attributes:
+        identity: The account's ``(issuer, subject)`` at the identity provider, so
+            its first sign-in finds this user instead of mirroring a new one.
+        roles: Platform roles the account holds; ``citizen`` is always added.
+        organization_role: Its role in the seeded organisation, or ``None`` for
+            no membership.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    identity: ExternalIdentity
+    roles: frozenset[Role] = Field(default=frozenset(), max_length=len(Role))
+    organization_role: OrganizationRole | None = None
+
+
+class SeedOrganization(BaseModel):
+    """The one organisation the development seed makes sure exists.
+
+    Implements: Command.
+
+    Attributes:
+        organization_id: Its fixed id (UUIDv7), so other data and tests can name it.
+        slug: URL-safe handle.
+        name: Display name; it must say that the organisation is not real.
+        organization_type: The kind of organisation.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    organization_id: EntityId
+    slug: OrganizationSlug
+    name: OrganizationName
+    organization_type: OrganizationType
+
+
+class SeedAccounts(BaseModel):
+    """Make sure the development accounts, their roles and memberships exist.
+
+    Run by the reference-data seed outside production only. Every step is
+    idempotent: an existing user keeps its id and gains only missing roles, an
+    existing organisation is left as it is, and an existing membership is kept.
+
+    Implements: Command.
+
+    Attributes:
+        actor: Who asks; must be a platform administrator (the seed's system
+            actor).
+        organization: The organisation to ensure.
+        accounts: The accounts to ensure, at most 20.
+        dry_run: Compute the report, then roll everything back.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    organization: SeedOrganization
+    accounts: tuple[SeedAccount, ...] = Field(min_length=1, max_length=20)
+    dry_run: bool = False

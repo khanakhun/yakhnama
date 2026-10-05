@@ -39,6 +39,9 @@ def _safe_production_values() -> dict[str, Any]:
         "clamav_host": "clamd.internal",
         "redis_url": RedisDsn("redis://cache.internal:6379/0"),
         "trusted_hosts": ["api.yakhnama.org"],
+        "guest_challenge_secret": SecretStr(
+            "a-rotated-guest-challenge-signing-key-0001"
+        ),
     }
 
 

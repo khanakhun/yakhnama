@@ -11,6 +11,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.reports.application.dto import ReportRecord
 from yakhnama.modules.reports.application.specifications import (
+    ReportChannelSpecification,
     ReportHazardCodeSpecification,
     ReportInBoundingBoxSpecification,
     ReportObservedFromSpecification,
@@ -20,6 +21,7 @@ from yakhnama.modules.reports.application.specifications import (
 from yakhnama.modules.reports.domain.triage import NEARBY_REPORTS_MAX
 from yakhnama.modules.reports.domain.value_objects import (
     GuessedHazardCode,
+    ReportChannel,
     ReportStatus,
 )
 from yakhnama.shared_kernel.ids import EntityId
@@ -53,6 +55,7 @@ class ListReports(BaseModel):
     Attributes:
         actor: Who asks; non-moderators only ever see their own reports.
         status: Only reports in this status, if set.
+        channel: Only reports that came through this channel, if set.
         hazard_code: Only reports whose reporter guessed this hazard type, if set.
         bbox: Only reports whose *rounded* position lies in this box, if set.
         observed_from: Only reports observed at or after this instant, if set.
@@ -64,6 +67,7 @@ class ListReports(BaseModel):
 
     actor: Actor
     status: ReportStatus | None = None
+    channel: ReportChannel | None = None
     hazard_code: GuessedHazardCode | None = None
     bbox: BoundingBox | None = None
     observed_from: AwareDatetime | None = None
@@ -96,6 +100,8 @@ class ListReports(BaseModel):
         filters: list[Specification[ReportRecord]] = []
         if self.status is not None:
             filters.append(ReportStatusSpecification(self.status))
+        if self.channel is not None:
+            filters.append(ReportChannelSpecification(self.channel))
         if self.hazard_code is not None:
             filters.append(ReportHazardCodeSpecification(self.hazard_code))
         if self.bbox is not None:

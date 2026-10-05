@@ -107,6 +107,7 @@ from tests.fakes.reports import (
     FakeNearbyReportsFinder,
     InMemoryReportQueryService,
     InMemoryReportsUnitOfWork,
+    SequentialGuestSecretGenerator,
 )
 from tests.fakes.tasks import RecordingTaskQueue
 from tests.fakes.uow import InMemoryUnitOfWorkFactory
@@ -135,6 +136,7 @@ from yakhnama.platform.container import (
     ExchangePorts,
     ExchangeServices,
     ExchangeWorkerPorts,
+    GuestPorts,
     IngestionPorts,
     IngestionServices,
     MediaAdapters,
@@ -143,6 +145,7 @@ from yakhnama.platform.container import (
     RecordingUnits,
     build_container,
     build_exchange_services,
+    build_guest_ports,
     build_ingestion_services,
     build_recording_services,
 )
@@ -485,6 +488,7 @@ def build_recording_services_over_fakes(
     stores: RecordingStores,
     core: CorePorts,
     impacts: InMemoryImpactsUnitOfWork,
+    guest: GuestPorts,
 ) -> tuple[RecordingUnits, RecordingReads, MediaAdapters, RecordingServices]:
     """Wire the Phase 3 use cases with the production builder over the fakes.
 
@@ -492,6 +496,8 @@ def build_recording_services_over_fakes(
         stores: The Phase 3 stores and adapter fakes.
         core: The kernel and Phase 1 and 2 ports, over the fakes.
         impacts: The impacts unit of work (claims share it with the metrics).
+        guest: The guest reporting ports (the real HMAC signer, a predictable
+            secret generator).
 
     Returns:
         The unit-of-work factories, read ports, media adapters and use cases.
@@ -530,6 +536,7 @@ def build_recording_services_over_fakes(
         reads=reads,
         media=media,
         task_queue=stores.task_queue,
+        guest=guest,
     )
     return units, reads, media, services
 
@@ -583,6 +590,13 @@ def lay_recording_over(  # noqa: PLR0913  # reason: one argument per group laid 
         revise_report_handler=services.revise_report_handler,
         withdraw_report_handler=services.withdraw_report_handler,
         report_queries=services.report_queries,
+        issue_guest_challenge_handler=services.issue_guest_challenge_handler,
+        open_guest_submission_handler=services.open_guest_submission_handler,
+        request_guest_media_upload_handler=services.request_guest_media_upload_handler,
+        complete_guest_media_upload_handler=(
+            services.complete_guest_media_upload_handler
+        ),
+        submit_guest_report_handler=services.submit_guest_report_handler,
         run_triage_handler=services.run_triage_handler,
         request_upload_handler=services.request_upload_handler,
         complete_upload_handler=services.complete_upload_handler,
@@ -682,8 +696,11 @@ def build_test_app(  # noqa: PLR0913  # reason: one optional seed per fake repos
         identity=identity,
         settings=resolved_settings,
     )
+    guest = dataclasses.replace(
+        build_guest_ports(resolved_settings), secrets=SequentialGuestSecretGenerator()
+    )
     units, reads, media, services = build_recording_services_over_fakes(
-        stores=stores, core=core, impacts=impacts
+        stores=stores, core=core, impacts=impacts, guest=guest
     )
     container = lay_recording_over(
         container,

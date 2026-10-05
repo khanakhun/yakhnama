@@ -261,6 +261,38 @@
         }
       ],
       "realmRoles": ["citizen", "moderator"]
+    },
+    {
+      "id": "7e0a1c52-3b8d-4f6e-9a21-5c0de0000001",
+      "username": "demo-trusted-reporter",
+      "email": "demo-trusted-reporter@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo-trusted-reporter-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["citizen", "trusted_reporter"]
+    },
+    {
+      "id": "7e0a1c52-3b8d-4f6e-9a21-5c0de0000002",
+      "username": "demo-org-member",
+      "email": "demo-org-member@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo-org-member-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["citizen", "org_member"]
     }
   ]
 }

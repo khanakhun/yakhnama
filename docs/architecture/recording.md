@@ -121,6 +121,33 @@ Phase 3 plan: `docs/plans/phase-3.md`.
   copy and never appears in an event, a log or an API response
   (`../data-dictionary/media.md`, "Personal data").
 
+## Reporting channels
+
+Every report says how it reached the platform (`Report.channel`, ADR 0019 and 0020):
+
+| Channel | Who submits | Reporter (`reporter_id`) | Source registered | Can revise or withdraw |
+|---------|-------------|--------------------------|-------------------|------------------------|
+| `account` | The observer, with their account | The observer | `citizen` (or `organisation`), owned by the observer | The observer |
+| `assisted` | A trusted reporter, a moderator, or an organisation member for their organisation, on behalf of a person without an account | The person who entered it | `citizen`/`organisation`, owned by that person, titled "Assisted community report" / "Assisted organisation report" | The person who entered it |
+| `guest` | A person without an account, after a proof-of-work check | The guest submission (an opaque access record, never shown) | `citizen`, owned by the platform, titled "Guest community report" | Nobody |
+
+- **Assisted reports** record how the assisted person consented (`verbal` or
+  `written`), which consent statement version they agreed to, and an optional private
+  note. The record never identifies the assisted person. It is shown only with the
+  exact view (the person who entered it and moderators) and every revision keeps it.
+- **Guest reports** come through `/api/v1/guest-submissions` (see
+  [`api.md`](api.md), "Guest submissions"): a signed SHA-256 proof-of-work challenge,
+  then a submission with a 256-bit capability stored only as its digest, up to three
+  photos owned by the submission, and one report with a receipt reference
+  (`YK-XXXX-XXXX`). A global hourly cap limits new submissions. Guest reports are
+  triaged like every other report; moderators list them with
+  `GET /reports?channel=guest`.
+- **Privacy.** A guest report's `reporter_id` is `null` in every API view. Guest photos
+  are owned by the submission, so no user, not even a moderator through the uploader
+  path, gets the original's download link other than through moderation. The
+  capability is never logged, never in a URL, and every guest response is
+  `Cache-Control: no-store`.
+
 ## The gate flow
 
 ```mermaid

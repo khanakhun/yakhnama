@@ -25,6 +25,9 @@ from yakhnama.modules.identity.application.commands import (
     RenameOrganization,
     RenameSelf,
     RevokeRole,
+    SeedAccount,
+    SeedAccounts,
+    SeedOrganization,
     SuspendUser,
 )
 from yakhnama.modules.identity.application.dto import (
@@ -33,6 +36,7 @@ from yakhnama.modules.identity.application.dto import (
     MemberSummary,
     OrganizationDetail,
     OrganizationSummary,
+    SeedAccountsReport,
     UserDetail,
 )
 from yakhnama.modules.identity.application.handlers import (
@@ -46,6 +50,7 @@ from yakhnama.modules.identity.application.handlers import (
     RenameOrganizationHandler,
     RenameSelfHandler,
     RevokeRoleHandler,
+    SeedAccountsHandler,
     SuspendUserHandler,
 )
 from yakhnama.modules.identity.application.ports import (
@@ -67,6 +72,7 @@ from yakhnama.modules.identity.domain.policies import (
     CanManageReferenceData,
     CanModerate,
     CanReadVerifiedData,
+    CanReportOnBehalf,
     HasRole,
     IsAdmin,
     IsAuthenticated,
@@ -100,6 +106,7 @@ __all__ = [
     "CanManageReferenceData",
     "CanModerate",
     "CanReadVerifiedData",
+    "CanReportOnBehalf",
     "ChangeMemberRole",
     "ChangeMemberRoleHandler",
     "CreateOrganization",
@@ -142,6 +149,11 @@ __all__ = [
     "RevokeRole",
     "RevokeRoleHandler",
     "Role",
+    "SeedAccount",
+    "SeedAccounts",
+    "SeedAccountsHandler",
+    "SeedAccountsReport",
+    "SeedOrganization",
     "SuspendUser",
     "SuspendUserHandler",
     "UserDetail",

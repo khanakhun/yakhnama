@@ -100,6 +100,7 @@ class ReportFactory:
             organization_id=report.organization_id,
             source_id=report.source_id,
             media_count=len(report.media_ids),
+            channel=report.channel,
         )
         return AggregateChange[Report](state=report, events=(event,))
 

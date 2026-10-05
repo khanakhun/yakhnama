@@ -288,3 +288,33 @@ class MemberSummary(BaseModel):
             since=membership.created_at,
             version=membership.version,
         )
+
+
+class SeedAccountsReport(BaseModel):
+    """What one ``SeedAccounts`` run changed.
+
+    Implements: DTO.
+
+    Attributes:
+        users_created: Accounts mirrored by the seed.
+        roles_granted: Roles added to accounts that already existed.
+        is_organization_created: Whether the organisation was created.
+        memberships_created: Memberships added.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    users_created: int = Field(ge=0)
+    roles_granted: int = Field(ge=0)
+    is_organization_created: bool
+    memberships_created: int = Field(ge=0)
+
+    @property
+    def is_unchanged(self) -> bool:
+        """Return ``True`` if the run created or granted nothing."""
+        return not (
+            self.users_created
+            or self.roles_granted
+            or self.is_organization_created
+            or self.memberships_created
+        )

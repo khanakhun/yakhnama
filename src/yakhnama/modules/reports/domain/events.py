@@ -18,6 +18,7 @@ from yakhnama.modules.reports.domain.value_objects import (
     MEDIA_PER_REPORT_MAX,
     REPORT_AGGREGATE_TYPE,
     TRIAGE_FLAGS_MAX,
+    ReportChannel,
     ReportStatus,
     ReportVersion,
     RevisionNumber,
@@ -51,10 +52,12 @@ class ReportSubmitted(ReportEvent):
     Implements: Domain Events.
 
     Attributes:
-        reporter_id: The submitting user.
+        reporter_id: The submitting user, or the guest submission.
         organization_id: The organisation reported for, or ``None``.
         source_id: The provenance record of the report.
         media_count: How many media assets are attached.
+        channel: How the report reached the platform; ``account`` for events
+            recorded before channels existed.
     """
 
     event_type: ClassVar[str] = "reports.report_submitted"
@@ -63,6 +66,7 @@ class ReportSubmitted(ReportEvent):
     organization_id: EntityId | None
     source_id: EntityId
     media_count: MediaCount
+    channel: ReportChannel = ReportChannel.ACCOUNT
 
 
 class ReportRevised(ReportEvent):
@@ -78,6 +82,7 @@ class ReportRevised(ReportEvent):
         organization_id: The organisation reported for, or ``None``.
         source_id: The provenance record of the report.
         media_count: How many media assets are attached.
+        channel: The channel inherited from the corrected report.
     """
 
     event_type: ClassVar[str] = "reports.report_revised"
@@ -87,6 +92,7 @@ class ReportRevised(ReportEvent):
     organization_id: EntityId | None
     source_id: EntityId
     media_count: MediaCount
+    channel: ReportChannel = ReportChannel.ACCOUNT
 
 
 class ReportSuperseded(ReportEvent):

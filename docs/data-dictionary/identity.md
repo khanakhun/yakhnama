@@ -148,7 +148,17 @@ default is to deny: anonymous actors hold no roles or memberships, so only
 | `CanManageReferenceData` | `admin` |
 | `CanModerate` | `moderator` or `admin` |
 | `CanManageOrganization(organization_id)` | `admin`, or an admin of that organisation |
+| `CanReportOnBehalf(organization_id)` | `trusted_reporter`, `moderator` or `admin`; and, when an organisation is named, `org_member` holders who are members of it (assisted reporting, ADR 0019) |
 | `CanReadVerifiedData` | everyone, including anonymous callers (open dataset; Q10 in `docs/open-questions.md`) |
+
+## Seeded development accounts
+
+`SeedAccounts` (handler `SeedAccountsHandler`, `IsAdmin`) makes sure a fixed set of
+accounts, their roles, one organisation with a fixed id and the accounts' memberships
+exist. Only the reference-data seed calls it, outside production and only when
+`oidc_issuer` is set (`yakhnama.seed.demo`, ADR 0019): users are mirrored under
+`(oidc_issuer, the realm's fixed user id)`, so the first sign-in finds them, and an
+existing user gains only missing roles. Running it again changes nothing.
 
 ## Events
 

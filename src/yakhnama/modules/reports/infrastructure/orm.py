@@ -10,6 +10,13 @@ array of UUID strings in the reporter's order and ``triage`` a JSONB object hold
 exactly ``TriageResult.model_dump(mode="json")``; both are validated back through the
 domain on every read.
 
+``channel`` says how a report reached the platform (``account``, ``guest``,
+``assisted``; ADR 0019); the three ``assisted_*`` columns hold the consent record
+of an assisted report and are set exactly for that channel (checked by
+``assisted_matches_channel``). ``guest_submissions`` and ``guest_challenges`` hold
+the guest channel's access records (ADR 0020): a submission's capability is stored
+only as its SHA-256 digest, and a spent challenge only as its salt and expiry.
+
 The revision chain is kept inside the table: ``supersedes_id`` and
 ``superseded_by_id`` reference ``reports.id`` (``ON DELETE RESTRICT``, and reports are
 never deleted), and ``supersedes_id`` is unique, so at most one revision can ever
@@ -25,7 +32,7 @@ from typing import Final
 from uuid import UUID
 
 from geoalchemy2 import Geometry, WKBElement
-from sqlalchemy import CheckConstraint, Float, ForeignKey, Index, Integer, String
+from sqlalchemy import CheckConstraint, Float, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,6 +42,8 @@ WGS84_SRID: Final = 4326
 """EPSG code of every stored geometry (ADR 0002)."""
 
 REPORTS_TABLE: Final = "reports"
+GUEST_SUBMISSIONS_TABLE: Final = "guest_submissions"
+GUEST_CHALLENGES_TABLE: Final = "guest_challenges"
 
 
 class ReportRow(Base):
@@ -67,6 +76,10 @@ class ReportRow(Base):
         version: Optimistic-concurrency version, compared on every update.
         created_at: When the record was created, UTC.
         updated_at: When the record last changed, UTC.
+        channel: ``ReportChannel`` value; ``account`` for rows older than it.
+        assisted_consent_method: ``ConsentMethod`` of an assisted report.
+        assisted_consent_statement_version: The consent statement's version.
+        assisted_note: The assisting person's private note, if any.
     """
 
     __tablename__ = REPORTS_TABLE
@@ -74,6 +87,16 @@ class ReportRow(Base):
         CheckConstraint(
             "(hazard_code IS NULL) = (hazard_confidence IS NULL)",
             name="hazard_guess_complete",
+        ),
+        CheckConstraint(
+            "channel IN ('account', 'guest', 'assisted')", name="channel_known"
+        ),
+        CheckConstraint(
+            "(channel = 'assisted') = (assisted_consent_method IS NOT NULL) "
+            "AND (assisted_consent_method IS NULL) = "
+            "(assisted_consent_statement_version IS NULL) "
+            "AND (assisted_consent_method IS NOT NULL OR assisted_note IS NULL)",
+            name="assisted_matches_channel",
         ),
         Index("ix_reports_observation_gist", "observation", postgresql_using="gist"),
         # Serves the newest-first keyset listing (read backwards).
@@ -113,3 +136,72 @@ class ReportRow(Base):
     version: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
+    channel: Mapped[str] = mapped_column(
+        String(16), server_default=text("'account'"), index=True
+    )
+    assisted_consent_method: Mapped[str | None] = mapped_column(String(16))
+    # CONSENT_STATEMENT_VERSION_PATTERN and ASSISTANCE_NOTE_MAX_LENGTH.
+    assisted_consent_statement_version: Mapped[str | None] = mapped_column(String(32))
+    assisted_note: Mapped[str | None] = mapped_column(String(500))
+
+
+class GuestSubmissionRow(Base):
+    """Row model of the ``guest_submissions`` table: one guest's access record.
+
+    Implements: Adapter (ORM row model of ``SqlAlchemyGuestSubmissionRepository``).
+
+    Attributes:
+        id: Primary key, the submission id (UUIDv7); the guest report's reporter.
+        capability_digest: SHA-256 of the capability, hexadecimal.
+        expires_at: When the capability stops working, UTC.
+        media_ids: Granted photo asset ids, as a JSON array of strings.
+        report_id: The guest report, once submitted; unique.
+        reference: The receipt code, once submitted; unique.
+        content_fingerprint: SHA-256 of the submitted content.
+        submitted_at: When the report was submitted, UTC.
+        version: Optimistic-concurrency version.
+        created_at: When the submission was opened, UTC; counted by the cap.
+        updated_at: When it last changed, UTC.
+    """
+
+    __tablename__ = GUEST_SUBMISSIONS_TABLE
+    __table_args__ = (
+        CheckConstraint(
+            "(report_id IS NULL) = (reference IS NULL) "
+            "AND (report_id IS NULL) = (content_fingerprint IS NULL) "
+            "AND (report_id IS NULL) = (submitted_at IS NULL)",
+            name="closed_fields_together",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    capability_digest: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime]
+    media_ids: Mapped[list[str]] = mapped_column(JSONB)
+    report_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reports.id", ondelete="RESTRICT"), unique=True
+    )
+    reference: Mapped[str | None] = mapped_column(String(12), unique=True)
+    content_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    submitted_at: Mapped[datetime | None]
+    version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    updated_at: Mapped[datetime]
+
+
+class GuestChallengeRow(Base):
+    """Row model of the ``guest_challenges`` table: one redeemed challenge.
+
+    Kept only until the challenge expires; after that it could open nothing.
+
+    Implements: Adapter (ORM row model of ``SqlAlchemySpentChallengeRepository``).
+
+    Attributes:
+        salt: Primary key, the challenge's random salt.
+        expires_at: When the challenge expired or expires, UTC.
+    """
+
+    __tablename__ = GUEST_CHALLENGES_TABLE
+
+    salt: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)

@@ -72,19 +72,27 @@ outside FastAPI's own exception handling (`platform/http.py`, `platform/idempote
 | `invalid-idempotency-key` | 400 | `Idempotency-Key` is not a UUID. |
 | `authentication-failed` | 401 | No valid bearer token where one is required. |
 | `permission-denied` | 403 | The principal may not perform the action. |
+| `guest-capability-invalid` | 403 | No `Guest-Capability`, a wrong one, or one for another submission. |
+| `guest-capability-expired` | 403 | The `Guest-Capability` has expired; start a new guest report. |
 | `not-found` | 404 | The resource or route does not exist. |
 | `method-not-allowed` | 405 | The route exists but not for this method. |
 | `conflict` | 409 | The request conflicts with the current state. |
 | `invariant-violation` | 409 | The change would break an invariant. |
 | `invalid-transition` | 409 | The state machine forbids the transition. |
+| `guest-challenge-spent` | 409 | The proof-of-work challenge already opened a submission. |
+| `guest-media-limit` | 409 | The guest submission already has its three photos. |
+| `guest-submission-closed` | 409 | The guest submission already carries its report. |
 | `idempotency-key-reused` | 409 | The key was used with a different request. |
 | `idempotency-key-in-use` | 409 | A request with the same key is still running. |
 | `precondition-failed` | 412 | `If-Match` does not match the current version. |
 | `payload-too-large` | 413 | The body exceeds `max_request_body_bytes`. |
 | `validation-error` | 422 | The data is invalid; see `errors`. |
 | `nul-character` | 422 | A string input contains the NUL character. |
+| `guest-challenge-invalid` | 422 | The challenge is malformed or not signed by the platform. |
+| `guest-challenge-expired` | 422 | The challenge has expired; request a new one. |
+| `guest-proof-invalid` | 422 | The nonce does not solve the challenge. |
 | `precondition-required` | 428 | A conditional request came without `If-Match`. |
-| `rate-limited` | 429 | Too many requests; see `Retry-After`. |
+| `rate-limited` | 429 | Too many requests (per client, or the global guest cap); see `Retry-After`. |
 | `internal-error` | 500 | An unexpected server error. |
 | `service-unavailable` | 503 | A dependency (the identity provider) is down. |
 | `http-error` | any | Any other HTTP error raised by the framework. |
@@ -308,6 +316,80 @@ Auth column as above. `M` marks a route under `/api/v1/moderation`, requiring
 | `GET` | `/api/v1/sources` | anon | Cursor pagination; optional `source_type` filter. |
 | `GET` | `/api/v1/sources/{source_id}` | anon | `ETag`. |
 | `POST` | `/api/v1/moderation/sources` | auth (policy, M) | Registers a `government`/`news`/`satellite`/`research`/`dataset` source (citizen and organisation sources are registered by the platform itself at report submission); `Idempotency-Key` optional; `201`, `Location`, `ETag`. |
+
+## Reporting channels and guest submissions
+
+Added for the web portal's reporting phase (portal plan `docs/plans/phase-2.md`,
+ADR 0019 and ADR 0020). See [`recording.md`](recording.md), "Reporting channels", for
+the whole flow.
+
+### Channels on reports
+
+Every report carries `channel`: `account`, `assisted` or `guest`, in `ReportDetail`,
+`ReportSummary` and the GeoJSON feature properties. Reports stored before channels
+existed are `account`. `GET /reports?channel=guest` is the moderators' guest queue
+(non-moderators only ever list their own reports, so the filter narrows those).
+Revisions keep the channel of the report they correct.
+
+`POST /reports` accepts an optional `assisted` object (`consent_method`: `verbal` or
+`written`; `consent_statement_version`: `^[a-z0-9][a-z0-9._-]{0,31}$`; optional
+`note`, safe text up to 500 characters). It is allowed for trusted reporters,
+moderators, and organisation members who submit for an organisation they belong to
+(`organization_id`); anyone else gets `403 permission-denied`, and an `assisted`
+object without its consent fields is `422`. `ReportDetail.assisted` is shown only
+alongside exact coordinates (the person who entered the report and moderators) and is
+`null` otherwise. `ReviseReportRequest` does not take `assisted`: a revision keeps the
+consent record unchanged. `ReportDetail.reporter_id` is `null` for a guest report.
+
+### Guest submissions
+
+A person without an account reports through five anonymous calls. Calls 3 to 5
+present the submission's capability in the **`Guest-Capability` request header**
+(never in the URL or body). None of them needs a bearer token; one that is sent and
+rejected is still `401 authentication-failed`, as everywhere. Every response under
+`/api/v1/guest-submissions` carries `Cache-Control: no-store`. A wrong or missing capability, or an unknown submission id,
+is `403 guest-capability-invalid` (the three are not told apart, so ids cannot be
+probed); an expired one is `403 guest-capability-expired`. 403 rather than 401 on
+purpose: the request carries no bearer token, and a client must not treat the answer
+as an expired session.
+
+1. `POST /guest-submissions/challenges` → `201 GuestChallengeGrant`
+   (`challenge`, `algorithm: "SHA-256"`, `salt`, `difficulty_bits`, `expires_at`).
+   Find a decimal `nonce` (at most 20 digits) such that `SHA-256(salt + nonce)`
+   (UTF-8, nonce appended) starts with `difficulty_bits` zero bits.
+2. `POST /guest-submissions` with `{challenge, nonce}` → `201 GuestSubmissionGrant`
+   (`submission_id`, `capability`, `expires_at`, `max_media: 3`). The capability is
+   shown only here. Errors: `422 guest-challenge-invalid`, `guest-challenge-expired`,
+   `guest-proof-invalid`; `409 guest-challenge-spent` on a replay; `429 rate-limited`
+   with `Retry-After` when the global hourly cap on new guest submissions is reached.
+3. `POST /guest-submissions/{id}/media` with `{mime_type}` (`image/jpeg`, `image/png`
+   or `image/webp`) → `201 UploadGrant`, the same shape as an account upload; `PUT`
+   the file to `upload_url` with exactly the returned headers. A fourth photo is
+   `409 guest-media-limit`.
+4. `POST /guest-submissions/{id}/media/{asset_id}/complete` → `200 GuestMediaAsset`
+   (`id`, `mime_type`, `byte_size`, `upload_status`; no download links). An asset not
+   granted to this submission is `404 not-found`.
+5. `POST /guest-submissions/{id}/report` with the report content (the fields of
+   `POST /reports` without `client_report_id`, `organization_id` and `assisted`; at
+   most three `media_ids`, all this submission's) → `201 GuestReportReceipt`
+   (`reference` such as `YK-7KQM-3HXA`, `submitted_at`). A retry with the same
+   content returns the same receipt; different content is
+   `409 guest-submission-closed`, as is any upload after the report.
+
+The guest routes stay under the anonymous per-client rate limit. Behind the web
+portal every guest shares the portal's address, so that limit cannot tell guests
+apart; the global hourly cap and a per-client limit at the reverse proxy are what
+protect the moderators' queue (ADR 0020).
+
+### Route table (reporting channels)
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `POST` | `/api/v1/guest-submissions/challenges` | anon | Signed proof-of-work challenge; nothing stored; `201`. |
+| `POST` | `/api/v1/guest-submissions` | anon | Redeems a solved challenge once; global hourly cap; `201`. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/media` | `Guest-Capability` | Up to three image upload grants; `201`. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/media/{asset_id}/complete` | `Guest-Capability` | Completes one granted photo. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/report` | `Guest-Capability` | The one report; retry-safe receipt; `201`. |
 
 ## Phase 4 additions
 

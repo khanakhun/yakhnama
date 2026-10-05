@@ -22,13 +22,20 @@ A report holds two kinds of personal data: the reporter's **position**
   ids, counts, statuses and flag kinds only.
 - Triage may *flag* a phone number, email address or CNIC number in a description,
   but never repeats it and never redacts it: the report is the reporter's own record.
+- An assisted report's `assisted.note` is the assisting person's private note: shown
+  only with the exact view (the person who entered the report and moderators), never
+  in a listing, an event or a log. The consent record never identifies the assisted
+  person (ADR 0019).
+- A guest report's reporter is the guest submission; it is never shown (`reporter_id`
+  is `null` in every API view). The guest's capability is stored only as its SHA-256
+  digest (ADR 0020).
 
 ## Report (aggregate root)
 
 | field | type | unit | meaning | provenance | since |
 |-------|------|------|---------|------------|-------|
 | `id` | `UUID` (v7) | — | Identity of this revision. For revision 1 it is the **client-generated** id (`ClientReportId`), so a retried submission carries the same id and `SubmitReport` is idempotent on it. The timestamp inside the id is the client's and is never used as a time. A revision gets a new id from the platform. | Reporting client (revision 1); platform `IdGenerator` (later revisions, Q-R8). | Phase 3 |
-| `reporter_id` | `UUID` (v7) | — | The user who reported. Every revision keeps it. | Authenticated actor. | Phase 3 |
+| `reporter_id` | `UUID` (v7) | — | The principal accountable for the report: the user who entered it (`account`, `assisted`) or the guest submission that carried it (`guest`). Every revision keeps it. Shown as `null` for a guest report. | Authenticated actor, or the guest submission (ADR 0020). | Phase 3 (guest: 2026-10) |
 | `organization_id` | `UUID` (v7), nullable | — | The organisation the user reported for. | Reporter's choice among their memberships (checked by the application). | Phase 3 |
 | `source_id` | `UUID` (v7) | — | The `provenance` source record the report is attributed to. Every revision keeps it (Q-R13). | Application, at submission. | Phase 3 |
 | `observed_at` | `DateWithPrecision` | UTC + precision | When the reporter observed it, with how precisely that is known. Not checked against `submitted_at` (Q-R10). | Reporter. | Phase 3 |
@@ -50,6 +57,10 @@ A report holds two kinds of personal data: the reporter's **position**
 | `version` | `int`, 1–2³¹−1 | count | Optimistic-concurrency version, +1 per change with an effect. | Platform. | Phase 3 |
 | `created_at` | `datetime` (UTC) | UTC | When this record was created. | Platform `Clock`. | Phase 3 |
 | `updated_at` | `datetime` (UTC) | UTC | When this record last changed; never before `created_at`. | Platform `Clock`. | Phase 3 |
+| `channel` | `ReportChannel` | — | How the report reached the platform: `account`, `assisted` or `guest`. Every revision keeps it. `account` for reports stored before channels existed. | Platform, from the route and the `assisted` block. | 2026-10 (ADR 0019) |
+| `assisted.consent_method` | `ConsentMethod`, nullable | — | How the assisted person consented: `verbal` or `written`. Set exactly for `assisted`. | Assisting person. | 2026-10 |
+| `assisted.consent_statement_version` | `str`, `^[a-z0-9][a-z0-9._-]{0,31}$`, nullable | — | Version of the consent statement read to or by the assisted person; the statement's text lives with the client (portal message catalogues). | Assisting person's client. | 2026-10 |
+| `assisted.note` | `str`, safe text 1–500 with line breaks, nullable | — | Private note by the assisting person. **Personal data**: exact view only. | Assisting person. | 2026-10 |
 
 ### ReportStatus
 
@@ -107,8 +118,8 @@ reason, coordinate or accuracy.
 
 | event type | when | extra payload |
 |------------|------|---------------|
-| `reports.report_submitted` | A report was submitted (revision 1). | `reporter_id`, `organization_id`, `source_id`, `media_count` |
-| `reports.report_revised` | A new revision was submitted; `aggregate_id` is the new one. | `supersedes_id`, `reporter_id`, `organization_id`, `source_id`, `media_count` |
+| `reports.report_submitted` | A report was submitted (revision 1). | `reporter_id`, `organization_id`, `source_id`, `media_count`, `channel` |
+| `reports.report_revised` | A new revision was submitted; `aggregate_id` is the new one. | `supersedes_id`, `reporter_id`, `organization_id`, `source_id`, `media_count`, `channel` |
 | `reports.report_superseded` | A revision was replaced by the next one. | `superseded_by_id` |
 | `reports.report_withdrawn` | The reporter withdrew a report. | `previous_status` |
 | `reports.report_triaged` | A triage result was attached. | `flag_kinds` |
@@ -124,6 +135,46 @@ reason, coordinate or accuracy.
 | `ReportNotSubmittedError` | invalid transition | Revising, superseding or triaging a draft. |
 | `ReportRevisionUnchangedError` | validation | A revision's content equals the current content. |
 | `ReportSupersessionMismatchError` | invariant violation | `mark_superseded` with a report that is not the next revision by the same reporter. |
+| `GuestChallengeInvalidError` | validation (`guest-challenge-invalid`) | The challenge is malformed or not signed with the platform's key. |
+| `GuestChallengeExpiredError` | validation (`guest-challenge-expired`) | The challenge was redeemed after `expires_at`. |
+| `GuestProofInvalidError` | validation (`guest-proof-invalid`) | The nonce does not give the required leading zero bits. |
+| `GuestChallengeSpentError` | conflict (`guest-challenge-spent`) | The challenge already opened a submission. |
+| `GuestCapabilityInvalidError` | permission denied (`guest-capability-invalid`) | No capability, a wrong one, or an unknown submission. |
+| `GuestCapabilityExpiredError` | permission denied (`guest-capability-expired`) | The capability has expired. |
+| `GuestMediaLimitError` | conflict (`guest-media-limit`) | A fourth photo upload was requested. |
+| `GuestSubmissionClosedError` | conflict (`guest-submission-closed`) | An upload or a different report after the report. |
+| `GuestMediaNotFoundError` | not found | Completing an asset not granted to the submission. |
+| `GuestSubmissionLimitError` | 429 (`rate-limited`) | The global hourly cap on new guest submissions is reached; carries `retry_after_seconds`. |
+
+## Guest submissions (ADR 0020)
+
+### GuestSubmission (aggregate root)
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `id` | `UUID` (v7) | — | The submission; the guest report's reporter and the owner of its photos. | Platform `IdGenerator`. | 2026-10 |
+| `capability_digest` | `str`, 64 hex | — | SHA-256 of the capability handed to the guest once. The capability itself (256 random bits) is never stored. | Platform (`secrets`). | 2026-10 |
+| `expires_at` | `datetime` (UTC) | UTC | When the capability stops working: opening time + `guest_capability_ttl_minutes` (default 30, **proposed**). | Platform `Clock`. | 2026-10 |
+| `media_ids` | list of `UUID` (v7), 0–3, unique | — | Photo assets granted to the submission (maintainer decision: at most 3). | Media module. | 2026-10 |
+| `report_id` | `UUID` (v7), nullable, unique | — | The guest report, once submitted. | Platform. | 2026-10 |
+| `reference` | `str`, `YK-XXXX-XXXX`, nullable, unique | — | Receipt code the guest can quote: two groups of four from `ABCDEFGHJKMNPQRSTVWXYZ23456789` (no look-alikes), about 39 bits. | Platform (`secrets`). | 2026-10 |
+| `content_fingerprint` | `str`, 64 hex, nullable | — | SHA-256 of the submitted content's canonical JSON, to answer a retry with the same receipt. | Platform. | 2026-10 |
+| `submitted_at` | `datetime` (UTC), nullable | UTC | When the report was submitted. `report_id`, `reference`, `content_fingerprint` and `submitted_at` are set together. | Platform `Clock`. | 2026-10 |
+| `version` | `int` | count | Optimistic-concurrency version. | Platform. | 2026-10 |
+| `created_at`, `updated_at` | `datetime` (UTC) | UTC | Opening and last change; `created_at` is what the hourly cap counts. | Platform `Clock`. | 2026-10 |
+
+### Proof-of-work challenge (not stored until redeemed)
+
+| field | type | meaning |
+|-------|------|---------|
+| `salt` | `str`, URL-safe base64, 16–64 characters | 128 random bits per challenge. |
+| `difficulty_bits` | `int`, 1–32 | Leading zero bits `SHA-256(salt + nonce)` needs; `guest_pow_difficulty_bits` (default 16, at least 12 in production, **proposed**). |
+| `expires_at` | `datetime` (UTC), whole seconds | Issue time + `guest_challenge_ttl_seconds` (default 600, **proposed**). |
+| `challenge` (token) | `v1.<salt>.<bits>.<expiry>.<HMAC-SHA256>` | Signed with `guest_challenge_secret`; opaque to clients. |
+
+`guest_challenges` keeps a redeemed challenge's `salt` (primary key) and `expires_at`
+until it expires, so a challenge opens at most one submission; expired rows are
+deleted whenever a submission is opened.
 
 ## Persistence
 
@@ -142,6 +193,13 @@ database level, backing `ReportSupersessionMismatchError`. `supersedes_id` and
 are never deleted anyway). Reporter, organisation and source ids carry no
 foreign key, because they belong to other modules.
 
+Migration `0019_reporting_channels` adds `channel` (`NOT NULL`, server default
+`account`, indexed for the guest queue), the three `assisted_*` columns with the
+checks `channel_known` and `assisted_matches_channel`, and the tables
+`guest_submissions` (`report_id` references `reports.id`, `ON DELETE RESTRICT`;
+`reference` and `report_id` unique; `created_at` indexed for the hourly cap) and
+`guest_challenges` (`expires_at` indexed for the purge).
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |
@@ -159,3 +217,6 @@ foreign key, because they belong to other modules.
 | Q-R11 | Does a new triage run replace the previous result? | Yes; the aggregate keeps the latest result, and every run stays in the outbox and audit log through `ReportTriaged`. | no |
 | Q-R12 | `hazard_guess.hazard_code` and `place_hint` mirror the `hazards` and `geography` code formats because a domain layer may import only the kernel (`AGENTS.md` §2.1). Should the code formats move into `shared_kernel`? | Keep the mirrors, guarded by unit tests that compare them with the originals; the application checks existence through the facades. | no |
 | Q-R13 | Does every revision keep the original's reporter, organisation and source? | Yes; a revision is a correction by the same reporter, not a new source. | no |
+
+The reporting channels and guest submissions added their questions to the central
+log, `docs/open-questions.md` Q218–Q229.

@@ -63,6 +63,8 @@ APPLICATION_TABLES_AT_HEAD: Final = frozenset(
         "raster_assets",
         "export_jobs",
         "import_jobs",
+        "guest_submissions",
+        "guest_challenges",
     }
 )
 EXTENSIONS: Final = frozenset({"postgis", "pg_trgm", "unaccent"})
@@ -315,3 +317,54 @@ def test_migration_0018_labels_reports_exports_and_sidecars_reversibly(
         _EVENTS_JOB: ("public", None, None),
     }
     assert downgraded[_REPORTS_JOB] == (None, None, False)
+
+
+_REPORT_ROW: Final = (
+    "INSERT INTO reports (id, reporter_id, source_id, observed_at, "
+    "observed_at_precision, observation, description, original_language, media_ids, "
+    "status, revision, submitted_at, version, created_at, updated_at) VALUES "
+    "('01890000-0000-7000-8000-0000000000b1', '01890000-0000-7000-8000-0000000000b2', "
+    "'01890000-0000-7000-8000-0000000000b3', '2026-09-01T00:00:00Z', 'exact', "
+    "ST_SetSRID(ST_MakePoint(74.3, 35.9), 4326), 'Synthetic test report.', 'en', "
+    "'[]', 'submitted', 1, '2026-09-01T00:00:00Z', 1, '2026-09-01T00:00:00Z', "
+    "'2026-09-01T00:00:00Z')"
+)
+
+
+async def _fetch_report_channels(database_url: str) -> list[object]:
+    """Return the ``channel`` of every report, or ``[]`` without the column."""
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            columns = {
+                column["name"]
+                for column in await connection.run_sync(
+                    lambda sync: inspect(sync).get_columns("reports")
+                )
+            }
+            if "channel" not in columns:
+                return []
+            result = await connection.execute(text("SELECT channel FROM reports"))
+            return list(result.scalars().all())
+    finally:
+        await engine.dispose()
+
+
+def test_migration_0019_labels_existing_reports_account_reversibly(
+    alembic_config: Config, postgis_url: str
+) -> None:
+    command.upgrade(alembic_config, "0018")
+    asyncio.run(_execute(postgis_url, _REPORT_ROW))
+
+    command.upgrade(alembic_config, "0019")
+    upgraded = asyncio.run(_fetch_report_channels(postgis_url))
+    tables = _application_tables(postgis_url)
+    command.downgrade(alembic_config, "0018")
+    downgraded = asyncio.run(_fetch_report_channels(postgis_url))
+    downgraded_tables = _application_tables(postgis_url)
+    asyncio.run(_execute(postgis_url, "DELETE FROM reports"))
+
+    assert upgraded == ["account"]
+    assert {"guest_submissions", "guest_challenges"} <= tables
+    assert downgraded == []
+    assert not {"guest_submissions", "guest_challenges"} & downgraded_tables

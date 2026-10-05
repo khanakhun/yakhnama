@@ -18,7 +18,13 @@ from shapely.geometry import Point as ShapelyPoint
 
 from yakhnama.modules.reports.application.dto import ReportRecord
 from yakhnama.modules.reports.domain.entities import Report
-from yakhnama.modules.reports.infrastructure.orm import WGS84_SRID, ReportRow
+from yakhnama.modules.reports.domain.guest_submissions import GuestSubmission
+from yakhnama.modules.reports.domain.value_objects import AssistedSubmission
+from yakhnama.modules.reports.infrastructure.orm import (
+    WGS84_SRID,
+    GuestSubmissionRow,
+    ReportRow,
+)
 from yakhnama.platform.db import dump_json_column
 from yakhnama.shared_kernel.value_objects import Coordinates, DateWithPrecision
 
@@ -82,6 +88,7 @@ def report_to_values(report: Report) -> dict[str, object]:
         Column name to value, for inserts and versioned updates alike.
     """
     guess = report.hazard_guess
+    assisted = report.assisted
     return {
         "reporter_id": report.reporter_id,
         "organization_id": report.organization_id,
@@ -110,6 +117,14 @@ def report_to_values(report: Report) -> dict[str, object]:
         "version": report.version,
         "created_at": report.created_at,
         "updated_at": report.updated_at,
+        "channel": report.channel.value,
+        "assisted_consent_method": (
+            None if assisted is None else assisted.consent_method.value
+        ),
+        "assisted_consent_statement_version": (
+            None if assisted is None else assisted.consent_statement_version
+        ),
+        "assisted_note": None if assisted is None else assisted.note,
     }
 
 
@@ -130,6 +145,18 @@ def _observation(coordinates: Coordinates, accuracy_metres: float | None) -> obj
         "coordinates": coordinates,
         "accuracy": None if accuracy_metres is None else {"value": accuracy_metres},
     }
+
+
+def _assisted(row: ReportRow) -> AssistedSubmission | None:
+    if row.assisted_consent_method is None:
+        return None
+    return AssistedSubmission.model_validate(
+        {
+            "consent_method": row.assisted_consent_method,
+            "consent_statement_version": row.assisted_consent_statement_version,
+            "note": row.assisted_note,
+        }
+    )
 
 
 def _common_fields(row: ReportRow) -> dict[str, object]:
@@ -162,6 +189,8 @@ def _common_fields(row: ReportRow) -> dict[str, object]:
         "submitted_at": row.submitted_at,
         "version": row.version,
         "created_at": row.created_at,
+        "channel": row.channel,
+        "assisted": _assisted(row),
     }
 
 
@@ -219,4 +248,53 @@ def row_to_rounded_record(row: ReportRow, rounded: Coordinates) -> ReportRecord:
     """
     return ReportRecord.model_validate(
         {**_common_fields(row), "observation": _observation(rounded, None)}
+    )
+
+
+def guest_submission_to_values(submission: GuestSubmission) -> dict[str, object]:
+    """Return every column value of a guest submission except the primary key.
+
+    Args:
+        submission: The aggregate.
+
+    Returns:
+        Column name to value.
+    """
+    return {
+        "capability_digest": submission.capability_digest,
+        "expires_at": submission.expires_at,
+        "media_ids": [str(media_id) for media_id in submission.media_ids],
+        "report_id": submission.report_id,
+        "reference": submission.reference,
+        "content_fingerprint": submission.content_fingerprint,
+        "submitted_at": submission.submitted_at,
+        "version": submission.version,
+        "created_at": submission.created_at,
+        "updated_at": submission.updated_at,
+    }
+
+
+def row_to_guest_submission(row: GuestSubmissionRow) -> GuestSubmission:
+    """Rebuild a guest submission from its row.
+
+    Args:
+        row: A fully loaded row of ``guest_submissions``.
+
+    Returns:
+        The validated ``GuestSubmission``.
+    """
+    return GuestSubmission.model_validate(
+        {
+            "id": row.id,
+            "capability_digest": row.capability_digest,
+            "expires_at": row.expires_at,
+            "media_ids": tuple(UUID(media_id) for media_id in row.media_ids),
+            "report_id": row.report_id,
+            "reference": row.reference,
+            "content_fingerprint": row.content_fingerprint,
+            "submitted_at": row.submitted_at,
+            "version": row.version,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
     )

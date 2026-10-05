@@ -67,6 +67,7 @@ from sqlalchemy.orm import defer
 from yakhnama.modules.reports.application.dto import ReportRecord
 from yakhnama.modules.reports.application.queries import FindNearbyReports
 from yakhnama.modules.reports.application.specifications import (
+    ReportChannelSpecification,
     ReportHazardCodeSpecification,
     ReportInBoundingBoxSpecification,
     ReportObservedFromSpecification,
@@ -192,26 +193,31 @@ def _in_rounded_bbox(
 def _report_leaf_condition(
     specification: Specification[ReportRecord],
 ) -> ColumnElement[bool]:
-    """Compile one of the six report leaves.
+    """Compile one of the seven report leaves.
 
     Raises:
         TypeError: If the leaf has no SQL translation.
     """
+    condition: ColumnElement[bool]
     match specification:
         case ReportStatusSpecification():
-            return ReportRow.status == specification.status.value
+            condition = ReportRow.status == specification.status.value
+        case ReportChannelSpecification():
+            condition = ReportRow.channel == specification.channel.value
         case ReportHazardCodeSpecification():
-            return ReportRow.hazard_code == specification.hazard_code
+            condition = ReportRow.hazard_code == specification.hazard_code
         case ReportInBoundingBoxSpecification():
-            return _in_rounded_bbox(specification)
+            condition = _in_rounded_bbox(specification)
         case ReportObservedFromSpecification():
-            return ReportRow.observed_at >= specification.instant
+            condition = ReportRow.observed_at >= specification.instant
         case ReportObservedToSpecification():
-            return ReportRow.observed_at <= specification.instant
+            condition = ReportRow.observed_at <= specification.instant
         case ReportReporterSpecification():
-            return ReportRow.reporter_id == specification.reporter_id
-    message = f"no SQL translation for {type(specification).__name__}"
-    raise TypeError(message)
+            condition = ReportRow.reporter_id == specification.reporter_id
+        case _:
+            message = f"no SQL translation for {type(specification).__name__}"
+            raise TypeError(message)
+    return condition
 
 
 class ReportSpecificationCompiler:
