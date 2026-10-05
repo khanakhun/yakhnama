@@ -177,6 +177,21 @@ codes, null when unlinked) and `properties.source_districts` (the two COD-AB cod
 top-level `attribution` (`BoundaryAttribution`), null with an empty `features` list while
 no boundaries are loaded. For COD-AB PAK v01: 29 features, 2 209 positions, 48 863 bytes.
 
+Response headers (documented in OpenAPI on the `200` and the `304`): `ETag`, a strong tag
+naming the current snapshot's `id` (absent while none is loaded), and `Cache-Control`,
+`public, max-age=86400` for a snapshot, `public, max-age=300` while none is loaded,
+`no-store` when the request carried a bearer token. A request whose `If-None-Match`
+names the current snapshot gets `304` without the edges being read.
+
+### Coverage check (load only, not stored)
+
+Before a load stores anything, the region's polygons are validated as a coverage with a
+gap width of 5e-4° (the outline clearance, **proposed**, Q233). The load report carries
+`is_coverage_valid` and `invalid_coverage_districts` (the COD-AB codes of the districts
+whose outlines overlap a neighbour, miss its vertices, or leave a narrower gap). An
+invalid coverage is refused (exit code 1) unless `--allow-invalid-coverage` is passed; a
+`--dry-run` only reports it. COD-AB PAK v01 is valid.
+
 ## Storage-only columns (`place_names` table)
 
 Most columns of the `places` and `place_names` tables hold the fields above one to one

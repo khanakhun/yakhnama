@@ -3,6 +3,10 @@
 - Date: 2026-10-05
 - Status: proposed
 - Deciders: lead agent, maintainer
+- Amended: 2026-10-05, after review: the database now also checks that a guest report
+  names no organisation and that the consent method and statement version have the
+  domain's values (migration `0021`); the channel index serves the non-account queues
+  only; consent fields and the note are redacted from logs.
 
 ## Context and problem statement
 
@@ -48,12 +52,15 @@ rules (revise and withdraw by the reporter only) meaningful.
 - **Channel.** `ReportChannel` is `account`, `assisted` or `guest`, stored on every
   revision (`reports.channel`, default `account` for older rows) and carried by
   `ReportSubmitted` and `ReportRevised`. It is part of `ReportAttribution`, so every
-  revision inherits it. `GET /reports?channel=...` filters by it.
+  revision inherits it. `GET /reports?channel=...` filters by it, served for the
+  moderators' guest and assisted queues by a partial index over the non-account
+  channels. A guest report never names an organisation (database check).
 - **Assisted record.** `AssistedSubmission`: `consent_method` (`verbal`, `written`),
   `consent_statement_version` (`^[a-z0-9][a-z0-9._-]{0,31}$`; the statement text is
   versioned by the client, the portal's message catalogues), and an optional private
-  `note` (safe text, at most 500 characters). It is set exactly for the `assisted`
-  channel (a domain invariant and a database check). A revision keeps it unchanged;
+  `note` (safe text, at most 500 characters, stored as plain text, never logged). It is
+  set exactly for the `assisted` channel (a domain invariant and a database check, which
+  also checks the method and the version's format). A revision keeps it unchanged;
   `ReviseReportRequest` does not accept it.
 - **Who may assist.** `CanReportOnBehalf(organization_id)` in the identity module:
   `HasRole(trusted_reporter) | CanModerate()`, widened with
@@ -70,7 +77,8 @@ rules (revise and withdraw by the reporter only) meaningful.
   example colleagues in the organisation, who see the rounded view).
 - **Demo data.** The development realm has `demo-trusted-reporter` and
   `demo-org-member`; the seed creates a demo organisation with a fixed id and the
-  membership, outside production only (`yakhnama.seed.demo`).
+  membership, in the `development` and `test` environments only (an allow-list, so a
+  future environment never gets them; `yakhnama.seed.demo`).
 
 **What is needed to move this ADR to `accepted`:**
 

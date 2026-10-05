@@ -92,7 +92,7 @@ outside FastAPI's own exception handling (`platform/http.py`, `platform/idempote
 | `guest-challenge-expired` | 422 | The challenge has expired; request a new one. |
 | `guest-proof-invalid` | 422 | The nonce does not solve the challenge. |
 | `precondition-required` | 428 | A conditional request came without `If-Match`. |
-| `rate-limited` | 429 | Too many requests (per client, or the global guest cap); see `Retry-After`. |
+| `rate-limited` | 429 | Too many requests (per client, or a global hourly guest cap); see `Retry-After`. |
 | `internal-error` | 500 | An unexpected server error. |
 | `service-unavailable` | 503 | A dependency (the identity provider) is down. |
 | `http-error` | any | Any other HTTP error raised by the framework. |
@@ -300,7 +300,7 @@ Auth column as above. `M` marks a route under `/api/v1/moderation`, requiring
 | `GET` | `/api/v1/reports/{report_id}` | auth | Exact view for the reporter and moderators; rounded, no accuracy, for organisation members; `ETag`. |
 | `POST` | `/api/v1/reports/{report_id}/revisions` | auth | Reporter only (`IsSelf`); required `If-Match`; `201`, `Location`, `ETag`. |
 | `POST` | `/api/v1/reports/{report_id}/withdrawal` | auth | Reporter only; required `If-Match`; `ETag`. |
-| `POST` | `/api/v1/media` | auth | Presigned upload grant before the report exists; `Idempotency-Key` optional; `201`, `Location`. |
+| `POST` | `/api/v1/media` | auth | Presigned upload grant before the report exists; body `{mime_type, byte_size}` (`byte_size` required, 1 to 50 MiB, `422` otherwise, signed as `Content-Length`: `PUT` exactly that many bytes); `Idempotency-Key` optional; `201`, `Location`. |
 | `POST` | `/api/v1/reports/{report_id}/media` | auth | Presigned upload grant for the caller's own report; same as above. |
 | `POST` | `/api/v1/media/{asset_id}/complete` | auth | Uploader only; safe to repeat; `ETag`. |
 | `GET` | `/api/v1/media/{asset_id}` | anon | See "Media visibility" above; `ETag`. |
@@ -371,40 +371,51 @@ as an expired session.
 1. `POST /guest-submissions/challenges` → `201 GuestChallengeGrant`
    (`challenge`, `algorithm: "SHA-256"`, `salt`, `difficulty_bits`, `expires_at`).
    Find a decimal `nonce` (at most 20 digits) such that `SHA-256(salt + nonce)`
-   (UTF-8, nonce appended) starts with `difficulty_bits` zero bits.
+   (UTF-8, nonce appended) starts with `difficulty_bits` zero bits. The difficulty
+   rises with the submissions opened in the last hour (18 to 22 bits by default), so a
+   client must read `difficulty_bits` from every grant, never assume it.
 2. `POST /guest-submissions` with `{challenge, nonce}` → `201 GuestSubmissionGrant`
    (`submission_id`, `capability`, `expires_at`, `max_media: 3`). The capability is
    shown only here. Errors: `422 guest-challenge-invalid`, `guest-challenge-expired`,
    `guest-proof-invalid`; `409 guest-challenge-spent` on a replay; `429 rate-limited`
-   with `Retry-After` when the global hourly cap on new guest submissions is reached.
-3. `POST /guest-submissions/{id}/media` with `{mime_type}` (`image/jpeg`, `image/png`
-   or `image/webp`) → `201 UploadGrant`, the same shape as an account upload; `PUT`
-   the file to `upload_url` with exactly the returned headers. A fourth photo is
-   `409 guest-media-limit`.
+   with `Retry-After` when the hourly cap on opened submissions, or the one on filed
+   guest reports, is reached.
+3. `POST /guest-submissions/{id}/media` with `{mime_type, byte_size}` (`image/jpeg`,
+   `image/png` or `image/webp`; `byte_size` required, the file's exact size, 1 to
+   50 MiB) → `201 UploadGrant`, the same shape as an account upload. `PUT` exactly
+   `byte_size` bytes to `upload_url` with the returned headers before `expires_at`
+   (five minutes): the URL signs `Content-Type` and `Content-Length`, so any other
+   type or length is refused by storage (403). A browser sets `Content-Length` from
+   the body itself. A fourth photo is `409 guest-media-limit`; its slot is checked
+   before anything is created.
 4. `POST /guest-submissions/{id}/media/{asset_id}/complete` → `200 GuestMediaAsset`
-   (`id`, `mime_type`, `byte_size`, `upload_status`; no download links). An asset not
-   granted to this submission is `404 not-found`.
+   (`id`, `mime_type`, `byte_size`, `upload_status`; no download links). Allowed until
+   the capability expires, also after the report was submitted (such a photo is not
+   added to the report). An asset not granted to this submission is `404 not-found`.
 5. `POST /guest-submissions/{id}/report` with the report content (the fields of
    `POST /reports` without `client_report_id`, `organization_id` and `assisted`; at
    most three `media_ids`, all this submission's) → `201 GuestReportReceipt`
    (`reference` such as `YK-7KQM-3HXA`, `submitted_at`). A retry with the same
-   content returns the same receipt; different content is
-   `409 guest-submission-closed`, as is any upload after the report.
+   content returns the same receipt, also up to 24 hours after the capability expired
+   (`guest_receipt_grace_seconds`); different content is
+   `409 guest-submission-closed`, as is any upload after the report. When the hourly
+   cap on filed guest reports is reached, `429 rate-limited` with `Retry-After`.
 
-The guest routes stay under the anonymous per-client rate limit. Behind the web
-portal every guest shares the portal's address, so that limit cannot tell guests
-apart; the global hourly cap and a per-client limit at the reverse proxy are what
-protect the moderators' queue (ADR 0020).
+Every 429 of these routes documents `Retry-After` in OpenAPI. The guest routes stay
+under the anonymous per-client rate limit. Behind the web portal every guest shares the
+portal's address, so that limit cannot tell guests apart; the two global hourly caps
+(counted under a database lock each) and, in production, a per-client limit at the
+reverse proxy are what protect the moderators' queue (ADR 0020, Q223).
 
 ### Route table (reporting channels)
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `POST` | `/api/v1/guest-submissions/challenges` | anon | Signed proof-of-work challenge; nothing stored; `201`. |
-| `POST` | `/api/v1/guest-submissions` | anon | Redeems a solved challenge once; global hourly cap; `201`. |
-| `POST` | `/api/v1/guest-submissions/{submission_id}/media` | `Guest-Capability` | Up to three image upload grants; `201`. |
-| `POST` | `/api/v1/guest-submissions/{submission_id}/media/{asset_id}/complete` | `Guest-Capability` | Completes one granted photo. |
-| `POST` | `/api/v1/guest-submissions/{submission_id}/report` | `Guest-Capability` | The one report; retry-safe receipt; `201`. |
+| `POST` | `/api/v1/guest-submissions` | anon | Redeems a solved challenge once; hourly caps (`429` + `Retry-After`); `201`. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/media` | `Guest-Capability` | Up to three image upload grants; body `{mime_type, byte_size}`; `201`. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/media/{asset_id}/complete` | `Guest-Capability` | Completes one granted photo, until the capability expires. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/report` | `Guest-Capability` | The one report; retry-safe receipt (24 h after expiry); reports cap; `201`. |
 
 ## Phase 4 additions
 

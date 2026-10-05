@@ -38,7 +38,7 @@ Source code: `src/yakhnama/modules/media/domain/`.
 | `exif.taken_at` | `DateWithPrecision`, nullable | UTC + precision | EXIF capture time. | EXIF reader adapter, from the original. | Phase 3 |
 | `exif.location` | `Coordinates` (WGS84), nullable | degrees | EXIF GPS position. **Private**. | EXIF reader adapter, from the original. | Phase 3 |
 | `exif.camera` | `str`, safe single-line text 1–120, nullable | — | EXIF camera make and model. | EXIF reader adapter, from the original. | Phase 3 |
-| `upload_status` | `UploadStatus` | — | `requested`, `completed` or `failed`. | Platform. | Phase 3 |
+| `upload_status` | `UploadStatus` | — | `requested`, `completed` or `failed`. An upload still `requested` `media_upload_sweep_after_seconds` (default 2 hours) after its grant is marked `failed` by `media.sweep_stale_uploads`. | Platform. | Phase 3 |
 | `scan_status` | `ScanStatus` | — | Malware scanner verdict: `pending`, `clean`, `infected`, `unavailable`. Only `clean` allows publication. | `MalwareScanner` port. | Phase 3 |
 | `moderation_status` | `ModerationStatus` | — | `pending`, `approved`, `rejected`, `quarantined`. | Moderator (and the platform, for an infected scan). | Phase 3 |
 | `sensitivity` | `SensitivityFlag` | — | `none`, `injured_or_deceased`, `identifiable_people`, `other` (**proposed** values, Q-M4). | Moderator. | Phase 3 |
@@ -119,7 +119,14 @@ searched spatially, only read back for triage and moderation. Deduplication
 `(owner_id, sha256)` restricted to `upload_status = 'completed'`, so a
 `requested` or `failed` upload with no digest yet never appears in the lookup.
 `report_id` is indexed for a report's assets. Owner, report and source ids
-carry no foreign key, because they belong to other modules.
+carry no foreign key, because they belong to other modules. Migration `0024` adds the
+partial index `ix_media_assets_created_at_requested` on `created_at` over requested
+uploads, for the stale-upload sweep.
+
+An upload grant takes the file's exact `byte_size` (1 to 52 428 800 bytes); it is not
+stored on the asset, but signed into the presigned `PUT` as `Content-Length`, so the
+stored object can only have that size. A guest photo's asset id is the one its reserved
+slot names (ADR 0020).
 
 ## Open questions raised by this module
 

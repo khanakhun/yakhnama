@@ -200,7 +200,7 @@ with up to three photos, behind a self-hosted proof-of-work check and no third-p
 CAPTCHA (ADR 0020); and **assisted reports**, entered by a trusted reporter, a moderator
 or an organisation member for their organisation on behalf of a person without an
 account, with that person's consent recorded (ADR 0019). Every report now carries a
-`channel` (`account`, `assisted`, `guest`). Follow-up questions: Q218–Q227.
+`channel` (`account`, `assisted`, `guest`). Follow-up questions: Q218–Q228.
 
 ---
 
@@ -2305,30 +2305,48 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
 - **Blocking:** no
 - **Status:** open
 
-## Q222 — Proof-of-work difficulty and lifetimes
+## Q222 — Proof-of-work difficulty, its curve and the lifetimes
 
-- **Question:** What difficulty, challenge lifetime and capability lifetime should guest
-  reporting use?
+- **Question:** What base difficulty, adaptive curve, challenge lifetime and capability
+  lifetime should guest reporting use?
 - **Why it matters:** Each extra bit doubles the work for a low-end phone and for an
   abuser alike; a short capability lifetime cuts off a slow guest uploading photos on a
-  weak connection.
-- **Proposed default:** 16 leading zero bits (at least 12 in production), challenges
-  valid 10 minutes, capabilities 30 minutes (`guest_*` settings). End-to-end tests may
-  lower the difficulty to 8.
+  weak connection. A fixed, cheap difficulty let one client use up the hourly cap
+  (security review 2026-10-05, H1).
+- **Proposed default:** A base of 18 leading zero bits (at least 18 in production;
+  development and tests may go lower, end-to-end tests use 8), plus one bit for every
+  200 submissions opened in the last hour, never above 22 bits
+  (`guest_pow_difficulty_bits`, `guest_pow_difficulty_step`,
+  `guest_pow_difficulty_max_bits`). The difficulty is signed into each challenge. A Moto
+  G4 computing SHA-256 with WebCrypto in a worker does about 30 000 to 50 000 hashes a
+  second, so on average 18 bits take 5 to 9 s, 20 bits 21 to 35 s and 22 bits 85 to
+  140 s; the work is a geometric draw, so one guest in twenty needs about three times the
+  average. Challenges are valid 10 minutes, capabilities 30 minutes
+  (`guest_capability_ttl_seconds = 1800`; the setting is in seconds now, like every
+  other guest lifetime).
 - **Blocking:** no
 - **Status:** open (ADR 0020)
 
-## Q223 — The global hourly cap on guest submissions
+## Q223 — The hourly caps on guest submissions and per-client limiting
 
-- **Question:** How many guest submissions may be opened per rolling hour, and what
-  happens to honest guests when a flood reaches the cap?
-- **Why it matters:** Behind the portal all guests share one address, so the cap is what
-  keeps a flood out of the moderators' queue, and also what makes honest guests wait
-  (`429` with `Retry-After`, up to an hour) during one.
-- **Proposed default:** 200 per hour (`guest_submissions_per_hour`), an alert when it is
-  reached, and a per-client limit at the reverse proxy in front of the portal in
-  production (portal Q-W9) so one client cannot use the cap up alone. Guests can still
-  report through someone who has an account (assisted reporting).
+- **Question:** How many guest submissions may be opened, and how many guest reports
+  filed, per rolling hour; what happens to honest guests when a flood reaches a cap; and
+  how is one client kept from using a cap up alone?
+- **Why it matters:** Behind the portal all guests share one address, so the caps are
+  what keep a flood out of the moderators' queue, and also what makes honest guests wait
+  (`429` with `Retry-After`, up to an hour) during one. Proof of work alone does not
+  stop a determined client with hardware.
+- **Proposed default:** Two caps, each counted under its own database lock so
+  concurrent requests cannot overshoot it: 200 guest reports filed per hour
+  (`guest_reports_per_hour`, what protects the moderators) and 2 000 submissions opened
+  per hour (`guest_submissions_per_hour`, ten times as many, so a flood of opened but
+  unused submissions does not lock honest guests out of reporting); opening a
+  submission is refused early when the reports cap is reached. An alert when a cap is
+  reached. **Per-client limiting is not built here:** it needs the portal's trusted-proxy
+  work (portal Q-W9, so the API can trust a client address the portal forwards) and, in
+  production, a per-client limit at the reverse proxy in front of the portal. A
+  portal-signed client key was considered and deferred. Guests can still report
+  through someone who has an account (assisted reporting).
 - **Blocking:** no (blocks production guest reporting without the proxy limit)
 - **Status:** open (ADR 0020)
 
@@ -2339,9 +2357,12 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
 - **Why it matters:** On a weak connection a lost response to
   `POST /guest-submissions/{id}/media` still uses a slot; three lost responses leave a
   guest unable to attach any photo.
-- **Proposed default:** Count grants (simple, and it bounds the storage a submission can
-  use). Revisit with an idempotency key scoped to the submission if the portal sees lost
-  grants in practice.
+- **Proposed default:** Count grants: the slot is reserved (a version-checked save)
+  before the media module creates the asset, so a fourth photo creates nothing and
+  parallel requests cannot leave orphan assets or sources. A grant that fails on the
+  server (storage down) gives its slot back; only a response lost on the way to the
+  client keeps it. Revisit with an idempotency key scoped to the submission if the
+  portal sees lost grants in practice.
 - **Blocking:** no
 - **Status:** open (ADR 0020)
 
@@ -2359,15 +2380,19 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
 ## Q226 — Retention of guest submissions and spent challenges
 
 - **Question:** How long are guest submissions (capability digest, fingerprint,
-  reference, granted photo ids) and spent challenges kept?
+  reference, reserved source id, photo ids) and spent challenges kept?
 - **Why it matters:** They hold no personal data, but they are records nobody reads once
   the capability has expired, except the link from a report to its reference.
-- **Proposed default:** Spent challenges are deleted once expired (each new submission
-  purges them). Guest submissions are kept with their report; submissions that never
-  carried a report may be deleted a week after expiry by a scheduled task (not built
-  yet).
+- **Proposed default (implemented):** The periodic task `reports.purge_guest_records`
+  (every 15 minutes, `guest_purge_interval_seconds`) deletes spent challenges five
+  minutes after they expired, by the database's clock (the clock the redemption checks
+  as well), and guest submissions that never filed a report 24 hours after their
+  capability expired (`guest_receipt_grace_seconds`, the same grace in which a retry is
+  still answered). Filed submissions are kept for as long as their report: the report
+  names the submission as its reporter and the reference is the guest's only handle
+  (Q225).
 - **Blocking:** no
-- **Status:** open
+- **Status:** open (ADR 0020)
 
 ## Q227 — Development demo accounts depend on fixed realm user ids
 
@@ -2381,6 +2406,24 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
   explains the partial import that keeps them. Never seeded in production.
 - **Blocking:** no
 - **Status:** open (ADR 0019)
+
+## Q228 — Guest photos completed after the report was filed
+
+- **Question:** What happens to a guest photo whose upload completes after the report was
+  submitted, so that the report does not list it?
+- **Why it matters:** On a weak connection the portal may submit the report while a photo
+  is still uploading. Refusing the completion would leave an orphan upload; accepting it
+  keeps a private photo that no report shows.
+- **Proposed default:** Completion is allowed until the capability expires; the photo is
+  kept as a private original (EXIF stripped only from public copies, which it never
+  gets), is not added to the filed report, and is never published, because media are
+  moderated through their report. It follows the retention of other unattached uploads
+  (the duplicate originals and reportless uploads of Q-M20). Uploads that never complete
+  are failed and their objects deleted by `media.sweep_stale_uploads` two hours after
+  the grant (`media_upload_sweep_after_seconds`), and the bucket's lifecycle rule
+  expires anything left under `media/upload/` after a day.
+- **Blocking:** no
+- **Status:** open (ADR 0020)
 
 ## Q230 — Four COD-AB districts have no gazetteer place
 
@@ -2428,10 +2471,21 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
 
 - **Question:** Are the shared-edge parameters right: snap 1e-5° (about 1 m),
   Douglas-Peucker simplification 5e-4° (about 50 m), clearance from the region's outline
-  5e-4°, shortest drawn part 1e-3° (about 100 m), coordinates rounded to 5 decimals?
+  5e-4°, shortest drawn part 1e-3° (about 100 m), coordinates rounded to 5 decimals, and
+  a coverage check that refuses gaps between districts narrower than the clearance?
 - **Why it matters:** They set the payload (48 863 bytes for COD-AB v01), how closely lines
-  follow the data, and how far each line stops short of the outline.
+  follow the data, how far each line stops short of the outline, and which data a load
+  refuses to publish without `--allow-invalid-coverage`.
 - **Proposed default:** As listed (`ShapelySharedEdgeCalculator` defaults, ADR 0021).
+  COD-AB v01 passes the coverage check with the 5e-4° gap width.
+- **Note (2026-10-05, review):** the edges, and so the snapshot fingerprint, are computed
+  by GEOS through Shapely. A Shapely or GEOS upgrade can change the computed lines in the
+  last decimal (intersection, line merging and simplification are not specified to the
+  bit), so reloading the same archive after an upgrade may add a new snapshot with an
+  equivalent map. That is harmless (clients revalidate through the `ETag`), but a reload
+  after a dependency upgrade should be expected to publish; the load report's
+  `is_edge_set_created` says whether it did. GEOS 3.13.1 (Shapely 2.1.2) produced the
+  current numbers.
 - **Blocking:** no
 - **Status:** open (raised by the district boundary load, 2026-10-05)
 

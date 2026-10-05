@@ -139,9 +139,16 @@ Every report says how it reached the platform (`Report.channel`, ADR 0019 and 00
   [`api.md`](api.md), "Guest submissions"): a signed SHA-256 proof-of-work challenge,
   then a submission with a 256-bit capability stored only as its digest, up to three
   photos owned by the submission, and one report with a receipt reference
-  (`YK-XXXX-XXXX`). A global hourly cap limits new submissions. Guest reports are
+  (`YK-XXXX-XXXX`). Photo slots and the report are reserved on the submission before
+  any asset, source or report is created, so parallel requests leave no orphans. Two
+  hourly caps (submissions opened, reports filed), each counted under a database lock,
+  and a difficulty that rises with the hour's load limit floods. Guest reports are
   triaged like every other report; moderators list them with
   `GET /reports?channel=guest`.
+- **Clean-up.** `reports.purge_guest_records` forgets spent challenges and unfiled
+  submissions; `media.sweep_stale_uploads` fails uploads that never completed and
+  deletes their objects; the private bucket's lifecycle rule expires `media/upload/`
+  after a day (`docker-compose.yml`; production must set the same rule).
 - **Privacy.** A guest report's `reporter_id` is `null` in every API view. Guest photos
   are owned by the submission, so no user, not even a moderator through the uploader
   path, gets the original's download link other than through moderation. The

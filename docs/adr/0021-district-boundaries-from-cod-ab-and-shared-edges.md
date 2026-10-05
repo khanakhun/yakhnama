@@ -3,6 +3,12 @@
 - Date: 2026-10-05
 - Status: proposed
 - Deciders: lead agent, maintainer
+- Amended: 2026-10-05 after review: the load checks the districts' coverage and
+  refuses to publish an invalid one unless `--allow-invalid-coverage` is passed; the
+  outline is closed with mitre joins so the clearance holds at sharp notches; the
+  loader and the edge computation run in worker threads; a `304` is answered from the
+  snapshot id without loading edges; the route's `ETag` and `Cache-Control` headers are
+  documented in OpenAPI.
 
 ## Context and problem statement
 
@@ -58,7 +64,9 @@ snapshot and served as GeoJSON lines.**
   https, caps the archive and member sizes, and reads only the region's features.
   `retrieved_at` is the cached file's modification time. The download runs only from
   `poetry run poe load-boundaries`; tests use `httpx.MockTransport` and a synthetic
-  fixture.
+  fixture. File operations, hashing and parsing (JSON, Shapely, Pydantic) run in worker
+  threads (`asyncio.to_thread`), as does the edge computation, so a load never blocks
+  the event loop of the process running it.
 - **Matching.** `match_district_boundaries` reports, never resolves: districts the
   table leaves unlinked, districts the table lacks, rows whose district the file lacks,
   linked places the gazetteer lacks or has retired, gazetteer districts of the region
@@ -81,10 +89,19 @@ snapshot and served as GeoJSON lines.**
   the outlines, merge into lines, simplify with Douglas-Peucker at 5e-4° (~50 m; end
   points are fixed, so edges still meet), then **remove everything within 5e-4° of the
   region's outline** (the boundary of the union of all region districts, linked or
-  not, closed over gaps under 1e-5°), round to 5 decimals and drop parts shorter than
-  1e-3° (~100 m). The cut comes last, so the guarantee holds for exactly what is
-  published; each line ends about 50 m short of the outline. All values are
-  **proposed** (Q233).
+  not, closed over gaps under 1e-5° with mitre joins, so every corner of the outline,
+  the tips of sharp notches included, stays where the data has it), round to 5
+  decimals and drop parts shorter than 1e-3° (~100 m). The cut comes last, so the
+  guarantee holds for exactly what is published; each line ends about 50 m short of the
+  outline. All values are **proposed** (Q233).
+- **Coverage check.** Before anything is stored, the calculator validates the region's
+  polygons as a coverage (Shapely `coverage_invalid_edges`, GEOS `CoverageValidator`)
+  with a gap width equal to the clearance: overlaps, unmatched vertices on shared
+  edges, and gaps between districts narrower than 5e-4° are digitising errors that lose
+  stretches of shared edges. A load from an invalid coverage is refused
+  (`BoundaryCoverageInvalidError`, exit code 1, the offending COD-AB codes in its
+  details) unless the operator passes `--allow-invalid-coverage`; a `--dry-run` reports
+  it without refusing. Wider gaps are unmapped land, not errors. COD-AB v01 passes.
 - **Snapshot.** The edges, with their gazetteer codes (`null` for an unlinked
   district, Q234), the centroids above and the attribution become a `DistrictEdgeSet`
   in `district_edge_sets`, `district_edges` and `district_centroids` (migration
@@ -97,7 +114,9 @@ snapshot and served as GeoJSON lines.**
   [pcode, pcode]}` and a top-level `attribution` (`source`, `source_url`, `licence`,
   `licence_url`, `dataset_version`, `retrieved_at`), fully typed in OpenAPI through
   `response_class` (`GeoJsonResponse`). `Cache-Control: public, max-age=86400`, a strong
-  `ETag` naming the snapshot, `304` on a matching `If-None-Match`. With no snapshot:
+  `ETag` naming the snapshot, `304` on a matching `If-None-Match`, decided from the
+  current snapshot's id alone (one indexed row), before any edge is read. Both headers
+  are documented on the `200` and `304` responses in OpenAPI. With no snapshot:
   `200`, empty `features`, `attribution: null`, `max-age=300`, no `ETag` (Q235).
 
 The real archive (COD-AB PAK v01, valid on 2022-09-09) gives 14 districts, 10 linked,
@@ -121,6 +140,9 @@ The real archive (COD-AB PAK v01, valid on 2022-09-09) gives 14 districts, 10 li
 - Bad, because lines stop about 50 m short of the outline, and per-edge simplification
   could in theory make two neighbouring edges cross near a junction.
 - Bad, because CC BY-IGO data now sits beside CC BY 4.0 data (ADR 0010, Q236).
+- Bad, because a release with digitising errors cannot be published without an explicit
+  operator override, and the computed lines (so the snapshot fingerprint) depend on the
+  GEOS version: a dependency upgrade may publish a new, equivalent snapshot (Q233).
 
 ## Pros and cons of the options
 

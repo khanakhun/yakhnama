@@ -24,8 +24,11 @@ A report holds two kinds of personal data: the reporter's **position**
   but never repeats it and never redacts it: the report is the reporter's own record.
 - An assisted report's `assisted.note` is the assisting person's private note: shown
   only with the exact view (the person who entered the report and moderators), never
-  in a listing, an event or a log. The consent record never identifies the assisted
-  person (ADR 0019).
+  in a listing, an event or a log (log redaction drops keys ending in `note` and
+  containing `consent`). It is stored as **plain text** in `reports.assisted_note`, not
+  encrypted: it is protected by the database's access control like the exact position,
+  so it must not hold more than the assisting person needs (Q219). The consent record
+  never identifies the assisted person (ADR 0019).
 - A guest report's reporter is the guest submission; it is never shown (`reporter_id`
   is `null` in every API view). The guest's capability is stored only as its SHA-256
   digest (ADR 0020).
@@ -60,7 +63,7 @@ A report holds two kinds of personal data: the reporter's **position**
 | `channel` | `ReportChannel` | — | How the report reached the platform: `account`, `assisted` or `guest`. Every revision keeps it. `account` for reports stored before channels existed. | Platform, from the route and the `assisted` block. | 2026-10 (ADR 0019) |
 | `assisted.consent_method` | `ConsentMethod`, nullable | — | How the assisted person consented: `verbal` or `written`. Set exactly for `assisted`. | Assisting person. | 2026-10 |
 | `assisted.consent_statement_version` | `str`, `^[a-z0-9][a-z0-9._-]{0,31}$`, nullable | — | Version of the consent statement read to or by the assisted person; the statement's text lives with the client (portal message catalogues). | Assisting person's client. | 2026-10 |
-| `assisted.note` | `str`, safe text 1–500 with line breaks, nullable | — | Private note by the assisting person. **Personal data**: exact view only. | Assisting person. | 2026-10 |
+| `assisted.note` | `str`, safe text 1–500 with line breaks, nullable | — | Private note by the assisting person. **Personal data**: exact view only; stored as plain text (not encrypted). | Assisting person. | 2026-10 |
 
 ### ReportStatus
 
@@ -142,39 +145,50 @@ reason, coordinate or accuracy.
 | `GuestCapabilityInvalidError` | permission denied (`guest-capability-invalid`) | No capability, a wrong one, or an unknown submission. |
 | `GuestCapabilityExpiredError` | permission denied (`guest-capability-expired`) | The capability has expired. |
 | `GuestMediaLimitError` | conflict (`guest-media-limit`) | A fourth photo upload was requested. |
-| `GuestSubmissionClosedError` | conflict (`guest-submission-closed`) | An upload or a different report after the report. |
+| `GuestSubmissionClosedError` | conflict (`guest-submission-closed`) | An upload or a different report after the report was reserved. |
 | `GuestMediaNotFoundError` | not found | Completing an asset not granted to the submission. |
-| `GuestSubmissionLimitError` | 429 (`rate-limited`) | The global hourly cap on new guest submissions is reached; carries `retry_after_seconds`. |
+| `GuestSubmissionLimitError` | 429 (`rate-limited`) | An hourly cap is reached: submissions opened, or guest reports submitted; carries `retry_after_seconds` (the `Retry-After` header). |
 
 ## Guest submissions (ADR 0020)
 
 ### GuestSubmission (aggregate root)
 
+A submission is **open** (photos may be reserved), then **reserved** (the report's
+fingerprint, source id and submission time are recorded before the source or the report
+exists), then **filed** (report id and reference). Every change is a version-checked
+save, so of two concurrent requests exactly one wins and the other reloads.
+
 | field | type | unit | meaning | provenance | since |
 |-------|------|------|---------|------------|-------|
 | `id` | `UUID` (v7) | — | The submission; the guest report's reporter and the owner of its photos. | Platform `IdGenerator`. | 2026-10 |
 | `capability_digest` | `str`, 64 hex | — | SHA-256 of the capability handed to the guest once. The capability itself (256 random bits) is never stored. | Platform (`secrets`). | 2026-10 |
-| `expires_at` | `datetime` (UTC) | UTC | When the capability stops working: opening time + `guest_capability_ttl_minutes` (default 30, **proposed**). | Platform `Clock`. | 2026-10 |
-| `media_ids` | list of `UUID` (v7), 0–3, unique | — | Photo assets granted to the submission (maintainer decision: at most 3). | Media module. | 2026-10 |
-| `report_id` | `UUID` (v7), nullable, unique | — | The guest report, once submitted. | Platform. | 2026-10 |
-| `reference` | `str`, `YK-XXXX-XXXX`, nullable, unique | — | Receipt code the guest can quote: two groups of four from `ABCDEFGHJKMNPQRSTVWXYZ23456789` (no look-alikes), about 39 bits. | Platform (`secrets`). | 2026-10 |
-| `content_fingerprint` | `str`, 64 hex, nullable | — | SHA-256 of the submitted content's canonical JSON, to answer a retry with the same receipt. | Platform. | 2026-10 |
-| `submitted_at` | `datetime` (UTC), nullable | UTC | When the report was submitted. `report_id`, `reference`, `content_fingerprint` and `submitted_at` are set together. | Platform `Clock`. | 2026-10 |
-| `version` | `int` | count | Optimistic-concurrency version. | Platform. | 2026-10 |
-| `created_at`, `updated_at` | `datetime` (UTC) | UTC | Opening and last change; `created_at` is what the hourly cap counts. | Platform `Clock`. | 2026-10 |
+| `expires_at` | `datetime` (UTC) | UTC | When the capability stops working: opening time + `guest_capability_ttl_seconds` (default 1800, **proposed**). A retry of the submitted report is still answered for `guest_receipt_grace_seconds` (default 86 400) after it. | Platform `Clock`. | 2026-10 |
+| `media_ids` | list of `UUID` (v7), 0–3, unique | — | Photo slots reserved for the submission, each naming the asset the media module then creates with that id (maintainer decision: at most 3). A slot whose grant failed on the server is given back. | Platform `IdGenerator`. | 2026-10 |
+| `content_fingerprint` | `str`, 64 hex, nullable | — | SHA-256 of the submitted content's canonical JSON, to answer a retry with the same receipt. Set by the reservation. | Platform. | 2026-10 |
+| `source_id` | `UUID` (v7), nullable | — | The platform source the report cites, chosen by the reservation before the source is registered (idempotently, under this id). | Platform `IdGenerator`. | 2026-10 (migration `0021`) |
+| `submitted_at` | `datetime` (UTC), nullable | UTC | When the report was submitted (reserved); counted by the hourly reports cap. `content_fingerprint`, `source_id` and `submitted_at` are set together. | Platform `Clock`. | 2026-10 |
+| `report_id` | `UUID` (v7), nullable, unique | — | The guest report, once filed. | Platform. | 2026-10 |
+| `reference` | `str`, `YK-XXXX-XXXX`, nullable, unique | — | Receipt code the guest can quote: two groups of four from `ABCDEFGHJKMNPQRSTVWXYZ23456789` (no look-alikes), about 39 bits. Set with `report_id`, only after the reservation. | Platform (`secrets`). | 2026-10 |
+| `version` | `int`, ≥ 1 | count | Optimistic-concurrency version. | Platform. | 2026-10 |
+| `created_at`, `updated_at` | `datetime` (UTC) | UTC | Opening and last change; `created_at` is what the hourly opened cap counts. | Platform `Clock`. | 2026-10 |
+
+**Retention** (Q226, **proposed**): a submission that never filed a report is deleted by
+`reports.purge_guest_records` once its capability expired more than
+`guest_receipt_grace_seconds` ago; a filed submission is kept with its report.
 
 ### Proof-of-work challenge (not stored until redeemed)
 
 | field | type | meaning |
 |-------|------|---------|
 | `salt` | `str`, URL-safe base64, 16–64 characters | 128 random bits per challenge. |
-| `difficulty_bits` | `int`, 1–32 | Leading zero bits `SHA-256(salt + nonce)` needs; `guest_pow_difficulty_bits` (default 16, at least 12 in production, **proposed**). |
+| `difficulty_bits` | `int`, 1–22 issued (1–32 accepted) | Leading zero bits `SHA-256(salt + nonce)` needs: `guest_pow_difficulty_bits` (default 18, at least 18 in production) plus one per `guest_pow_difficulty_step` (default 200) submissions opened in the last hour, at most `guest_pow_difficulty_max_bits` (22). **Proposed** (Q222). |
 | `expires_at` | `datetime` (UTC), whole seconds | Issue time + `guest_challenge_ttl_seconds` (default 600, **proposed**). |
 | `challenge` (token) | `v1.<salt>.<bits>.<expiry>.<HMAC-SHA256>` | Signed with `guest_challenge_secret`; opaque to clients. |
 
-`guest_challenges` keeps a redeemed challenge's `salt` (primary key) and `expires_at`
-until it expires, so a challenge opens at most one submission; expired rows are
-deleted whenever a submission is opened.
+`guest_challenges` keeps a redeemed challenge's `salt` (primary key) and `expires_at`,
+so a challenge opens at most one submission. The insert refuses a challenge that has
+expired by the database's clock, and `reports.purge_guest_records` deletes rows five
+minutes after they expired by the same clock.
 
 ## Persistence
 
@@ -194,11 +208,27 @@ are never deleted anyway). Reporter, organisation and source ids carry no
 foreign key, because they belong to other modules.
 
 Migration `0019_reporting_channels` adds `channel` (`NOT NULL`, server default
-`account`, indexed for the guest queue), the three `assisted_*` columns with the
-checks `channel_known` and `assisted_matches_channel`, and the tables
-`guest_submissions` (`report_id` references `reports.id`, `ON DELETE RESTRICT`;
-`reference` and `report_id` unique; `created_at` indexed for the hourly cap) and
-`guest_challenges` (`expires_at` indexed for the purge).
+`account`), the three `assisted_*` columns with the checks `channel_known` and
+`assisted_matches_channel`, and the tables `guest_submissions` (`report_id` references
+`reports.id`, `ON DELETE RESTRICT`; `reference` and `report_id` unique; `created_at`
+indexed for the hourly cap) and `guest_challenges` (`expires_at` indexed for the
+purge). **Its downgrade loses data**: guest and assisted reports keep their rows but
+lose their channel and consent record (the earlier schema cannot hold them), and the
+guest submissions with their receipt references are dropped.
+
+Migration `0021_guest_reservations_and_report_checks` adds the checks
+`guest_without_organisation` (a guest report names no organisation),
+`assisted_consent_method_known` (`verbal` or `written`) and
+`assisted_statement_version_format`, replaces the plain `channel` index with the partial
+index `ix_reports_channel_created_at_id_not_account` on `(channel, created_at, id)`
+over the non-account channels (the moderators' guest and assisted queues), and expands
+`guest_submissions`: `source_id`, indexes on `submitted_at` (reports cap) and
+`expires_at` (retention), and the checks `filed_after_reserved`,
+`media_ids_at_most_three`, `version_positive`, `times_ordered` and
+`capability_digest_format` in place of `closed_fields_together`. `0022` backfills
+`source_id` of filed submissions from their report; `0023` adds
+`reserved_fields_together`. Downgrading `0021` fails while a submission is reserved but
+not yet filed (seconds per report in flight).
 
 ## Open questions raised by this module
 
@@ -219,4 +249,4 @@ checks `channel_known` and `assisted_matches_channel`, and the tables
 | Q-R13 | Does every revision keep the original's reporter, organisation and source? | Yes; a revision is a correction by the same reporter, not a new source. | no |
 
 The reporting channels and guest submissions added their questions to the central
-log, `docs/open-questions.md` Q218–Q229.
+log, `docs/open-questions.md` Q218–Q228.

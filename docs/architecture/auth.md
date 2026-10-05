@@ -84,7 +84,7 @@ that are **not secrets** (they unlock nothing but a local, disposable container)
 `demo-trusted-reporter` and `demo-org-member` exist for assisted reporting (ADR 0019).
 The realm gives them fixed user ids (`7e0a1c52-3b8d-4f6e-9a21-5c0de0000001` and
 `...0002`), which Keycloak puts in the token's `sub`. The reference-data seed
-(`poetry run poe seed`, outside production and only with `YAKHNAMA_OIDC_ISSUER` set)
+(`poetry run poe seed`, in the `development` and `test` environments only and only with `YAKHNAMA_OIDC_ISSUER` set)
 mirrors both under that issuer before their first sign-in, with their roles, creates
 the **demo organisation** `Demo organisation (development only, not real)` (slug
 `demo-organisation-dev`, fixed id `0199b2a0-0000-7000-8000-0000000000de`) and makes

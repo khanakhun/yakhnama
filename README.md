@@ -161,6 +161,7 @@ Load them once after `poe seed`, and again whenever
 ```bash
 poetry run poe load-boundaries --dry-run   # download (once), match and report, roll back
 poetry run poe load-boundaries                # store footprints and publish the shared edges
+poetry run poe load-boundaries --allow-invalid-coverage   # publish despite overlaps or slivers (after review)
 ```
 
 The first run downloads the pinned archive (about 29 MB) into
@@ -237,8 +238,11 @@ creates the demo organisation and makes `demo-org-member` a member of it; see
 
 Guest reporting (reports from people without an account, ADR 0020) is configured by the
 `YAKHNAMA_GUEST_*` settings in `.env.example`; for end-to-end tests lower
-`YAKHNAMA_GUEST_POW_DIFFICULTY_BITS` (for example to 8) and raise
-`YAKHNAMA_GUEST_SUBMISSIONS_PER_HOUR`.
+`YAKHNAMA_GUEST_POW_DIFFICULTY_BITS` (for example to 8) and raise both
+`YAKHNAMA_GUEST_SUBMISSIONS_PER_HOUR` and `YAKHNAMA_GUEST_REPORTS_PER_HOUR`. The
+capability lifetime is now `YAKHNAMA_GUEST_CAPABILITY_TTL_SECONDS`; a `.env` file that
+still sets `YAKHNAMA_GUEST_CAPABILITY_TTL_MINUTES` is refused at startup, so rename it.
+The scheduler also runs `reports.purge_guest_records` and `media.sweep_stale_uploads`.
 
 The realm also allows self-registration with a verified email address. In development
 Keycloak sends that mail to Mailpit, whose inbox is at
