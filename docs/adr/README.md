@@ -54,6 +54,7 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 | [0018] | Safe-text rules in the shared kernel | proposed |
 | [0019] | Reporting channels and assisted reporting with recorded consent | proposed |
 | [0020] | Guest submissions with a proof-of-work challenge and a capability | proposed |
+| [0021] | District boundaries from OCHA COD-AB, published only as shared edges | proposed |
 
 [0001]: 0001-modular-monolith-with-hexagonal-layers.md
 [0002]: 0002-postgresql-with-postgis.md
@@ -75,3 +76,4 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 [0018]: 0018-safe-text-rules-in-the-shared-kernel.md
 [0019]: 0019-reporting-channels-and-assisted-consent.md
 [0020]: 0020-guest-submissions-with-proof-of-work.md
+[0021]: 0021-district-boundaries-from-cod-ab-and-shared-edges.md

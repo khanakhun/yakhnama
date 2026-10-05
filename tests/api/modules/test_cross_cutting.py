@@ -22,6 +22,7 @@ ANONYMOUS_OPERATIONS: Final = frozenset(
         ("get", "/api/v1/impact-metrics/{code}"),
         ("get", "/api/v1/places"),
         ("get", "/api/v1/places/{place_id}"),
+        ("get", "/api/v1/boundaries/district-edges"),
         ("get", "/api/v1/organizations/{organization_id}"),
         # Phase 3: the public record and its provenance.
         ("get", "/api/v1/events"),

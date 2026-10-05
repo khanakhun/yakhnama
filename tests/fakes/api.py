@@ -69,6 +69,7 @@ from tests.fakes.exchange import (
     InMemoryExchangeUnitOfWork,
 )
 from tests.fakes.geography import (
+    InMemoryDistrictEdgeQueryService,
     InMemoryGeographyUnitOfWork,
     InMemoryPlaceQueryService,
 )
@@ -676,6 +677,9 @@ def build_test_app(  # noqa: PLR0913  # reason: one optional seed per fake repos
             impacts.impact_metrics
         ),
         place_query_service=InMemoryPlaceQueryService(geography.places),
+        district_edge_query_service=InMemoryDistrictEdgeQueryService(
+            geography.district_edge_sets
+        ),
         identity_query_service=InMemoryIdentityQueryService(identity),
     )
     stores = RecordingStores(

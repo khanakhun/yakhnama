@@ -315,6 +315,57 @@
         "title": "BestFigure",
         "type": "object"
       },
+      "BoundaryAttribution": {
+        "additionalProperties": false,
+        "description": "How boundary-derived data must be credited wherever it is shown.\n\nImplements: Value Object.\n\nAttributes:\n    source: Who made the data and where it was obtained.\n    source_url: The dataset's page.\n    licence: The licence's name, for example ``CC BY-IGO 3.0``.\n    licence_url: The licence's legal text.\n    dataset_version: The dataset's own version and validity date.\n    retrieved_at: When the file was downloaded, UTC.",
+        "properties": {
+          "dataset_version": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Dataset Version",
+            "type": "string"
+          },
+          "licence": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Licence",
+            "type": "string"
+          },
+          "licence_url": {
+            "maxLength": 2048,
+            "minLength": 9,
+            "title": "Licence Url",
+            "type": "string"
+          },
+          "retrieved_at": {
+            "format": "date-time",
+            "title": "Retrieved At",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "source_url": {
+            "maxLength": 2048,
+            "minLength": 9,
+            "title": "Source Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "source_url",
+          "licence",
+          "licence_url",
+          "dataset_version",
+          "retrieved_at"
+        ],
+        "title": "BoundaryAttribution",
+        "type": "object"
+      },
       "BoundingBox": {
         "additionalProperties": false,
         "description": "An axis-aligned WGS84 rectangle, edges included.\n\nBoxes crossing the antimeridian (180°) are rejected rather than modelled, because\nno Gilgit-Baltistan use case needs them yet and a half-supported wrap-around would\nsilently return wrong search results; this is an open question for the maintainer.\n\nImplements: Value Object.\n\nAttributes:\n    min_longitude: Western edge.\n    min_latitude: Southern edge.\n    max_longitude: Eastern edge, never west of ``min_longitude``.\n    max_latitude: Northern edge, never south of ``min_latitude``.",
@@ -1363,6 +1414,138 @@
           "name"
         ],
         "title": "DesInventarField",
+        "type": "object"
+      },
+      "DistrictEdgeFeature": {
+        "additionalProperties": false,
+        "description": "One shared edge as a GeoJSON ``Feature`` (RFC 7946).\n\nImplements: DTO.\n\nAttributes:\n    type: Always ``Feature``.\n    geometry: A LineString or MultiLineString; never a polygon.\n    properties: Which districts the edge separates.",
+        "properties": {
+          "geometry": {
+            "discriminator": {
+              "mapping": {
+                "LineString": "#/components/schemas/LineString",
+                "MultiLineString": "#/components/schemas/MultiLineString"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LineString"
+              },
+              {
+                "$ref": "#/components/schemas/MultiLineString"
+              }
+            ],
+            "title": "Geometry"
+          },
+          "properties": {
+            "$ref": "#/components/schemas/DistrictEdgeProperties"
+          },
+          "type": {
+            "const": "Feature",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "geometry",
+          "properties"
+        ],
+        "title": "DistrictEdgeFeature",
+        "type": "object"
+      },
+      "DistrictEdgeFeatureCollection": {
+        "additionalProperties": false,
+        "description": "Every shared district edge as a GeoJSON ``FeatureCollection``.\n\n``attribution`` is a foreign member (RFC 7946 §6.1) every consumer must show\nwith the lines; it is ``null`` only when no boundaries are loaded, and then\n``features`` is empty.\n\nImplements: DTO.\n\nAttributes:\n    type: Always ``FeatureCollection``.\n    features: One feature per pair of districts that share an edge.\n    attribution: The source, licence and version of the data.",
+        "properties": {
+          "attribution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoundaryAttribution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/DistrictEdgeFeature"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "type": {
+            "const": "FeatureCollection",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "features",
+          "attribution"
+        ],
+        "title": "DistrictEdgeFeatureCollection",
+        "type": "object"
+      },
+      "DistrictEdgeProperties": {
+        "additionalProperties": false,
+        "description": "The ``properties`` of one shared-edge feature.\n\nImplements: DTO.\n\nAttributes:\n    districts: The gazetteer codes of the two districts, ``null`` for a\n        district the gazetteer does not have yet.\n    source_districts: The same two districts' codes in the boundary dataset,\n        in the same order.",
+        "properties": {
+          "districts": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "anyOf": [
+                  {
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{1,63}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{1,63}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            ],
+            "title": "Districts",
+            "type": "array"
+          },
+          "source_districts": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$",
+                "type": "string"
+              },
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$",
+                "type": "string"
+              }
+            ],
+            "title": "Source Districts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "districts",
+          "source_districts"
+        ],
+        "title": "DistrictEdgeProperties",
         "type": "object"
       },
       "EventDetail": {
@@ -3886,6 +4069,89 @@
         "title": "LicenceStatement",
         "type": "object"
       },
+      "LineString": {
+        "description": "LineString Model",
+        "properties": {
+          "bbox": {
+            "anyOf": [
+              {
+                "maxItems": 4,
+                "minItems": 4,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "maxItems": 6,
+                "minItems": 6,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox"
+          },
+          "coordinates": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Position2D"
+                },
+                {
+                  "$ref": "#/components/schemas/Position3D"
+                }
+              ]
+            },
+            "minItems": 2,
+            "title": "Coordinates",
+            "type": "array"
+          },
+          "type": {
+            "const": "LineString",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "title": "LineString",
+        "type": "object"
+      },
       "LinkReportRequest": {
         "additionalProperties": false,
         "description": "Body of ``POST /api/v1/moderation/events/{event_id}/reports``.\n\nImplements: API Schema.\n\nAttributes:\n    report_id: The report to link.\n    role: ``primary``, ``supporting`` (the default) or ``contradicting``.",
@@ -4517,6 +4783,92 @@
           "price_year"
         ],
         "title": "MonetaryValue",
+        "type": "object"
+      },
+      "MultiLineString": {
+        "description": "MultiLineString Model",
+        "properties": {
+          "bbox": {
+            "anyOf": [
+              {
+                "maxItems": 4,
+                "minItems": 4,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "maxItems": 6,
+                "minItems": 6,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox"
+          },
+          "coordinates": {
+            "items": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Position2D"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Position3D"
+                  }
+                ]
+              },
+              "minItems": 2,
+              "type": "array"
+            },
+            "title": "Coordinates",
+            "type": "array"
+          },
+          "type": {
+            "const": "MultiLineString",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "title": "MultiLineString",
         "type": "object"
       },
       "MultiPolygon": {
@@ -8887,6 +9239,68 @@
         "summary": "Catalogue Raster Asset",
         "tags": [
           "admin"
+        ]
+      }
+    },
+    "/api/v1/boundaries/district-edges": {
+      "get": {
+        "description": "Return the lines Gilgit-Baltistan districts share, as GeoJSON.\n\nOnly edges shared by two districts are returned; the region's outer edge,\nwhich traces international borders and the Line of Control, never is. Draw\nthe lines with the ``attribution``. While no boundaries are loaded the\ncollection is empty and ``attribution`` is ``null``.\n\nArgs:\n    services: Query services bound by the composition root.\n    if_none_match: A cached ``ETag``; when it is current the answer is ``304``.\n\nReturns:\n    The ``FeatureCollection``, or an empty ``304``.",
+        "operationId": "get_district_edges_api_v1_boundaries_district_edges_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/geo+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DistrictEdgeFeatureCollection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "304": {
+            "description": "The representation named by If-None-Match is current"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
+          }
+        },
+        "summary": "Get District Edges",
+        "tags": [
+          "geography"
         ]
       }
     },

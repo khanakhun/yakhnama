@@ -174,6 +174,20 @@ its centroid `Point`, or `null` when the place has none — never a placeholder 
 route a single `Feature`. The GeoJSON form of the list route carries its next page only in
 the `Link` header, since a `FeatureCollection` has no room for `next_cursor`.
 
+## District edges: GeoJSON lines only
+
+`GET /api/v1/boundaries/district-edges` (ADR 0021) is anonymous and GeoJSON only
+(`application/geo+json`, typed in OpenAPI as `DistrictEdgeFeatureCollection`). It
+returns the lines two Gilgit-Baltistan districts share, as `LineString` or
+`MultiLineString` features with `properties.districts` (gazetteer codes, `null` for a
+district not yet in the gazetteer) and `properties.source_districts` (COD-AB codes), and a
+top-level `attribution` the consumer must show. It never returns a polygon or any part of
+the region's outer edge (Line of Control and international borders). Responses carry
+`Cache-Control: public, max-age=86400` and a strong `ETag` naming the snapshot; a
+matching `If-None-Match` (weak comparison) answers `304`. With no boundaries loaded the
+answer is `200` with no features, `attribution: null` and `max-age=300`. A request with a
+bearer token still gets `Cache-Control: no-store` from the security headers middleware.
+
 ## Rate limiting
 
 `platform/ratelimit/` (ADR 0017), applied by `RateLimitMiddleware` after principal
@@ -213,6 +227,7 @@ checked by an identity policy (`docs/data-dictionary/identity.md`, "Policies").
 | `GET` | `/api/v1/impact-metrics/{code}` | anon | `ETag`. |
 | `GET` | `/api/v1/places` | anon | Cursor pagination; GeoJSON negotiation. |
 | `GET` | `/api/v1/places/{place_id}` | anon | `ETag`; GeoJSON negotiation. |
+| `GET` | `/api/v1/boundaries/district-edges` | anon | GeoJSON lines only (ADR 0021); `ETag`, `304`, `Cache-Control: public, max-age=86400`. |
 | `GET` | `/api/v1/me` | auth | Mirrors the user on first sight; `ETag`. |
 | `PATCH` | `/api/v1/me` | auth | Required `If-Match`; `IsSelf` implicitly (only the caller). |
 | `POST` | `/api/v1/organizations` | auth | `Idempotency-Key` optional; `201`, `Location`, `ETag`. Authorisation: any authenticated user (Q58). |

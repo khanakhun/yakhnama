@@ -30,7 +30,13 @@ for Pakistan, via HDX (Humanitarian Data Exchange).
 
 **Blocking:** no
 
-**Status:** open
+**Status:** answered (maintainer decision, 2026-10-05) and implemented. OCHA COD-AB for
+Pakistan via HDX (dataset `cod-ab-pak`, licence CC BY-IGO as stated on HDX), Gilgit-Baltistan
+districts only. The portal map draws **district lines only**: no international boundary and
+no Line of Control, so the API publishes only the edges two Gilgit-Baltistan districts share,
+never a polygon and never the outer edge of the district set. Built in ADR 0021: the pinned
+source file `data/boundaries/cod_ab_pak_gb_districts.yaml`, `poetry run poe load-boundaries`,
+and `GET /api/v1/boundaries/district-edges`. Follow-ups: Q230 to Q239.
 
 ---
 
@@ -259,7 +265,10 @@ or the module's `application/` code.
 - **Why it matters:** `AdminLevel` ordering is used to validate every `Place.parent_id`; adding or removing a level later re-validates every place.
 - **Proposed default:** Keep `division` between `province_or_region` and `district`.
 - **Blocking:** no
-- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G1)
+- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G1). COD-AB (Q1) has no
+  division level (ADM1 province, ADM2 district, ADM3 tehsil), so divisions stay a gazetteer
+  addition without a boundary source; the district boundary load decides region membership
+  by ancestry, so it works with or without the level.
 
 ## Q17 — Place code scheme
 
@@ -299,7 +308,9 @@ or the module's `application/` code.
 - **Why it matters:** A placeholder rectangle is not a boundary; using it as geometry would misrepresent the place's real footprint.
 - **Proposed default:** No. `bbox` stays in the reference file only; `geometry` waits for the boundary source (Q1).
 - **Blocking:** no
-- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G6)
+- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G6). Since 2026-10-05
+  `geometry` of a linked district comes from COD-AB (ADR 0021), so a `bbox` is never needed
+  as a stand-in for those places.
 
 ## Q22 — How do textual name citations become provenance `Source` records?
 
@@ -467,7 +478,10 @@ or the module's `application/` code.
 - **Why it matters:** It depends on the boundary source decision (Q1); building it earlier risks a wrong shape.
 - **Proposed default:** Defer `BoundaryLoader` until Q1 (boundary source) is decided.
 - **Blocking:** no
-- **Status:** open (raised from the T9 report)
+- **Status:** answered and implemented (2026-10-05, after the maintainer decided Q1). The
+  `BoundaryLoader` port (`geography/application/ports.py`) is implemented by
+  `CodAbBoundaryLoader`, with `SharedEdgeCalculator`, `DistrictEdgeSetRepository` and
+  `DistrictEdgeQueryService` beside it (ADR 0021). (raised from the T9 report)
 
 ## Q43 — What the reference-data loaders apply in place versus skip
 
@@ -676,7 +690,12 @@ questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
 - **Why it matters:** Q3 proposes rounding public coordinates to protect reporter locations; reference-data places (administrative centroids, not reporter locations) may not need the same protection, but the setting currently has no effect anywhere.
 - **Proposed default:** None for reference-data centroids specifically; apply `public_coordinate_decimals` when reporter- or event-linked coordinates are served, from Phase 3, and have the security reviewer confirm whether administrative centroids need it too.
 - **Blocking:** no
-- **Status:** open (raised from the T7 report)
+- **Status:** open (raised from the T7 report). The district edges route (ADR 0021) serves
+  administrative lines, not reporter positions, rounded to 5 decimals for size only;
+  `public_coordinate_decimals` does not apply to them. Since the same change the ten
+  linked districts have centroids (their COD-AB representative points, Q239), served
+  here at full precision; they are administrative points, not reporter locations, so
+  the proposed default (no rounding for reference-data centroids) still holds.
 
 ## Q68 — Self-hosting the Scalar bundle with an integrity hash
 
@@ -2362,3 +2381,139 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
   explains the partial import that keeps them. Never seeded in production.
 - **Blocking:** no
 - **Status:** open (ADR 0019)
+
+## Q230 — Four COD-AB districts have no gazetteer place
+
+- **Question:** COD-AB has 14 districts in Gilgit-Baltistan; the gazetteer fixture has 10.
+  Darel (`PK311`), Tangir (`PK312`), Gupis-Yasin (`PK313`) and Rondu (`PK314`) have no
+  place. Should they be added to `admin_hierarchy_gb.yaml`, with which codes and under
+  which division?
+- **Why it matters:** Until they exist, their edges are published with `null` gazetteer
+  codes (Q234), reports cannot name them as places, and the place search does not find
+  them.
+- **Proposed default:** Add them as `status: sourced` entries citing COD-AB, with codes
+  `pk.gb.darel`, `pk.gb.tangir`, `pk.gb.gupis_yasin` and `pk.gb.rondu` and the COD-AB
+  English names, then link them in `data/boundaries/cod_ab_pak_gb_districts.yaml`. Their
+  parent division needs a source (COD-AB has none, Q16); until one is given, put them
+  directly under `pk.gb` (levels may be skipped, Q19).
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q231 — Linked fixture districts take COD-AB's current footprint
+
+- **Question:** COD-AB's Ghizer, Diamir and Skardu exclude Gupis-Yasin, Darel and Tangir,
+  and Rondu, which it lists as separate districts. Linking the gazetteer's `pk.gb.ghizer`,
+  `pk.gb.diamer` and `pk.gb.skardu` to them makes those smaller polygons their footprints.
+  Is that what the fixture places mean?
+- **Why it matters:** A record placed in "Ghizer" by name may lie in what COD-AB calls
+  Gupis-Yasin; a later point-in-district lookup would disagree with the record.
+- **Proposed default:** Yes: a gazetteer district means the district as COD-AB draws it
+  now. Historical extents, if needed, are modelled separately later.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q232 — "Diamir" in COD-AB, "Diamer" in the gazetteer
+
+- **Question:** COD-AB spells district `PK302` "Diamir"; the gazetteer fixture has
+  "Diamer". The link table treats them as one district. Is that right, and which spelling
+  is preferred in English?
+- **Why it matters:** The loader reports the difference on every run, and the name a
+  reader searches for must find the place.
+- **Proposed default:** Same district. Keep "Diamer" as the preferred English name and add
+  "Diamir" as an alternative name citing COD-AB.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q233 — Shared-edge computation parameters
+
+- **Question:** Are the shared-edge parameters right: snap 1e-5° (about 1 m),
+  Douglas-Peucker simplification 5e-4° (about 50 m), clearance from the region's outline
+  5e-4°, shortest drawn part 1e-3° (about 100 m), coordinates rounded to 5 decimals?
+- **Why it matters:** They set the payload (48 863 bytes for COD-AB v01), how closely lines
+  follow the data, and how far each line stops short of the outline.
+- **Proposed default:** As listed (`ShapelySharedEdgeCalculator` defaults, ADR 0021).
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q234 — Edges of an unlinked district are published with a `null` code
+
+- **Question:** When a district has no gazetteer place (Q230), should its shared edges be
+  published (with `null` in `properties.districts`) or left out?
+- **Why it matters:** Leaving them out breaks real lines: 11 of 29 edges touch Darel,
+  Tangir, Gupis-Yasin or Rondu, including parts of the old Gilgit–Diamer line.
+- **Proposed default:** Publish them, with `null` for the unlinked side and the COD-AB
+  codes in `properties.source_districts`. They are still edges between two
+  Gilgit-Baltistan districts, so the editorial rule holds.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q235 — Cache lifetime of the district edges
+
+- **Question:** How long may clients and shared caches keep the district edges?
+- **Why it matters:** Edges change only when an operator loads boundaries; a long lifetime
+  saves slow connections, a short one shows a new load sooner.
+- **Proposed default:** `public, max-age=86400` with a strong `ETag` naming the snapshot
+  (and `304` on `If-None-Match`); `public, max-age=300` while no boundaries are loaded,
+  so the first load shows up within minutes.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q236 — CC BY-IGO boundary data beside CC BY 4.0 data
+
+- **Question:** The district edges derive from COD-AB under CC BY-IGO 3.0, while
+  Yakhnama's own data is proposed as CC BY 4.0 (ADR 0010, Q4). How is the boundary data
+  attributed, and may it appear in exports?
+- **Why it matters:** ADR 0010 cannot be accepted without a rule for third-party data
+  under another licence (its item 3).
+- **Proposed default:** Every response carries `attribution` (source, licence, licence
+  URL, dataset version, download time), and the portal shows it under the map. District
+  edges and footprints are not part of any export until the rule exists.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q237 — Re-pinning a new COD-AB release
+
+- **Question:** Who checks HDX for a new COD-AB release for Pakistan, and how is it
+  adopted?
+- **Why it matters:** HDX may replace the file behind the pinned URL; the loader then
+  fails its checksum, on purpose, and the map keeps the last snapshot.
+- **Proposed default:** The maintainer re-pins in a reviewed change: new `download_url`,
+  `sha256`, `dataset_version` and `data_version` in
+  `data/boundaries/cod_ab_pak_gb_districts.yaml`, links reviewed against the loader's
+  mismatch report, then `poetry run poe load-boundaries`.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q238 — Place footprints are never published
+
+- **Question:** `Place.geometry` of a linked district now holds the full COD-AB polygon,
+  whose outer edges trace the Line of Control and international borders. May any route or
+  export ever publish a place footprint?
+- **Why it matters:** One careless read model would draw the borders the maintainer
+  excluded (ADR 0021).
+- **Proposed default:** No. Footprints stay out of every read model, export and event
+  (events already carry only the type and bounding box); public maps get only the shared
+  edges. Any change needs a new ADR.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q239 — District centroids from COD-AB
+
+- **Question:** The gazetteer's districts had no centroid, which the portal's "choose a
+  place" path needs for a position. Should the boundary load fill them from COD-AB?
+- **Why it matters:** Without a centroid, a report placed by district name has no
+  coordinates.
+- **Proposed default:** Yes: the district's representative point (GEOS
+  `PointOnSurface`, always inside the polygon; not the plain centroid, which can fall
+  outside a concave district, nor COD-AB's `center_lat`/`center_lon`, whose method is
+  not documented). Set it when the place has no centroid, or replace it when the stored
+  centroid is still the one the previous load recorded; never overwrite a centroid from
+  any other source (it is kept and logged as `boundary_centroid_kept`).
+- **Blocking:** no
+- **Status:** answered by the lead (2026-10-05) and implemented on the proposed default
+  (ADR 0021): the load records the centroids it set in `district_centroids` with its
+  snapshot, which makes a reload idempotent. `GET /api/v1/places` and
+  `/api/v1/places/{id}` publish them as `centroid` (JSON) and as the `Point` geometry
+  (GeoJSON) with no schema change. Still to confirm with the maintainer: whether an
+  interior point is the right "position" for a report placed by district (it can be far
+  from where an event happened, so the portal sends a district-sized accuracy with it).

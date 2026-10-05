@@ -1,0 +1,86 @@
+# District boundary source for Gilgit-Baltistan (ADR 0021).
+# Validated by DistrictBoundarySource
+# (src/yakhnama/modules/geography/domain/boundaries.py) in tests/unit/data/.
+# Read by `poetry run poe load-boundaries` (YAKHNAMA_BOUNDARY_SOURCE_FILE), never by
+# `poe seed`; it is not a seeded reference file, so it lives outside data/reference.
+#
+# The archive is pinned by URL and SHA-256: the loader downloads it once into
+# YAKHNAMA_BOUNDARY_CACHE_DIR and refuses any file with another digest. A new COD-AB
+# release means a new download_url, sha256, dataset_version and data_version here,
+# reviewed like any other change, and a new look at the links below.
+#
+# Licence as stated on the HDX dataset page (checked 2026-10-05): "Creative Commons
+# Attribution for Intergovernmental Organisations (CC BY-IGO)", licence_url
+# http://creativecommons.org/licenses/by/3.0/igo/legalcode (served here over https).
+#
+# links: one row per Gilgit-Baltistan district (adm1_pcode PK3) in the archive's
+# pak_admin2.geojson. place_code is set only where the gazetteer
+# (admin_hierarchy_gb.yaml) has the same district; it is never guessed. COD-AB has
+# 14 districts in Gilgit-Baltistan; the gazetteer has 10 fixtures. The four without
+# a gazetteer place stay unlinked until the maintainer adds them (open question
+# Q230). Linking a gazetteer fixture to a COD-AB polygon makes that polygon the
+# fixture's footprint, even where the dataset splits off a district the fixture may
+# have been meant to include (open question Q231).
+schema_version: 1
+data_version: "2026-10-05"
+dataset: cod-ab-pak
+download_url: https://data.humdata.org/dataset/a64d1ff2-7158-48c7-887d-6af69ce21906/resource/c6521e04-75e1-41be-8e02-0554a424d9f4/download/pak_admin_boundaries.geojson.zip
+sha256: dc56da20dc578b01617f219f13a37e3be3beea78018adc902a6dee9d08dee45c
+archive_member: pak_admin2.geojson
+region_code: PK3
+region_place_code: pk.gb
+source: "OCHA Common Operational Dataset, administrative boundaries for Pakistan (COD-AB); boundaries by the World Food Programme SDI; published by OCHA Field Information Services on the Humanitarian Data Exchange"
+source_url: https://data.humdata.org/dataset/cod-ab-pak
+licence: CC BY-IGO 3.0
+licence_url: https://creativecommons.org/licenses/by/3.0/igo/legalcode
+dataset_version: "COD-AB PAK v01, valid on 2022-09-09"
+links:
+  - source_code: PK301
+    source_name: Astore
+    place_code: pk.gb.astore
+  - source_code: PK302
+    source_name: Diamir
+    place_code: pk.gb.diamer
+    note: "The gazetteer spells it Diamer (Q232). COD-AB has Darel and Tangir as separate districts (Q231)"
+  - source_code: PK303
+    source_name: Ghanche
+    place_code: pk.gb.ghanche
+  - source_code: PK304
+    source_name: Ghizer
+    place_code: pk.gb.ghizer
+    note: "COD-AB has Gupis-Yasin as a separate district (Q231)"
+  - source_code: PK305
+    source_name: Gilgit
+    place_code: pk.gb.gilgit
+  - source_code: PK306
+    source_name: Hunza
+    place_code: pk.gb.hunza
+  - source_code: PK307
+    source_name: Skardu
+    place_code: pk.gb.skardu
+    note: "COD-AB has Rondu as a separate district (Q231)"
+  - source_code: PK308
+    source_name: Nagar
+    place_code: pk.gb.nagar
+  - source_code: PK309
+    source_name: Kharmang
+    place_code: pk.gb.kharmang
+  - source_code: PK310
+    source_name: Shigar
+    place_code: pk.gb.shigar
+  - source_code: PK311
+    source_name: Darel
+    place_code: null
+    note: "No gazetteer place yet (Q230)"
+  - source_code: PK312
+    source_name: Tangir
+    place_code: null
+    note: "No gazetteer place yet (Q230)"
+  - source_code: PK313
+    source_name: Gupis-Yasin
+    place_code: null
+    note: "No gazetteer place yet (Q230)"
+  - source_code: PK314
+    source_name: Rondu
+    place_code: null
+    note: "No gazetteer place yet (Q230)"

@@ -11,9 +11,21 @@ Patterns: Fake.
 from collections.abc import Iterable
 
 from tests.fakes.uow import InMemoryUnitOfWork
-from yakhnama.modules.geography.application.dto import PlaceDetail, PlaceSummary
+from yakhnama.modules.geography.application.dto import (
+    DistrictEdgeFeatureCollection,
+    DistrictEdgeSnapshot,
+    PlaceDetail,
+    PlaceSummary,
+    SharedEdgeComputation,
+)
 from yakhnama.modules.geography.application.queries import SearchPlaces
+from yakhnama.modules.geography.domain.boundaries import (
+    DistrictBoundarySet,
+    DistrictBoundarySource,
+    DistrictEdgeSet,
+)
 from yakhnama.modules.geography.domain.entities import Place
+from yakhnama.modules.geography.domain.value_objects import AdminLevel
 from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import CursorPayload, Page, encode_cursor
@@ -72,6 +84,26 @@ class InMemoryPlaceRepository:
             (place for place in self._current().values() if place.code == code), None
         )
 
+    async def list_at_level(self, level: AdminLevel) -> tuple[Place, ...]:
+        """Return every active place at ``level``, staged ones included, by code.
+
+        Args:
+            level: The administrative level.
+
+        Returns:
+            The aggregates.
+        """
+        return tuple(
+            sorted(
+                (
+                    place
+                    for place in self._current().values()
+                    if place.level is level and place.is_active
+                ),
+                key=lambda place: place.code,
+            )
+        )
+
     async def add(self, place: Place) -> None:
         """Stage a new place.
 
@@ -113,29 +145,100 @@ class InMemoryPlaceRepository:
         self._staged.clear()
 
 
+class InMemoryDistrictEdgeSetRepository:
+    """``DistrictEdgeSetRepository`` over a list in insertion order.
+
+    Implements: Fake (of Repository).
+
+    Attributes:
+        committed: The stored snapshots, oldest first.
+    """
+
+    def __init__(self, edge_sets: Iterable[DistrictEdgeSet] = ()) -> None:
+        """Create the repository.
+
+        Args:
+            edge_sets: Snapshots that exist before the test acts, oldest first.
+        """
+        self.committed: list[DistrictEdgeSet] = list(edge_sets)
+        self._staged: list[DistrictEdgeSet] = []
+
+    async def add(self, edge_set: DistrictEdgeSet) -> None:
+        """Stage a new snapshot.
+
+        Args:
+            edge_set: The snapshot.
+
+        Raises:
+            ConflictError: If a snapshot with the same id exists.
+        """
+        if any(stored.id == edge_set.id for stored in self.committed + self._staged):
+            message = f"district edge set {edge_set.id} already exists"
+            raise ConflictError(message)
+        self._staged.append(edge_set)
+
+    async def get_current(self) -> DistrictEdgeSet | None:
+        """Return the newest snapshot, staged ones included.
+
+        Returns:
+            The snapshot with the latest ``created_at`` (then the greatest id).
+        """
+        return self.newest(self.committed + self._staged)
+
+    @staticmethod
+    def newest(edge_sets: Iterable[DistrictEdgeSet]) -> DistrictEdgeSet | None:
+        """Return the newest of ``edge_sets``, as the SQL adapter orders them.
+
+        Args:
+            edge_sets: Any snapshots.
+
+        Returns:
+            The one with the latest ``created_at`` (then the greatest id), if any.
+        """
+        return max(edge_sets, key=lambda item: (item.created_at, item.id), default=None)
+
+    def apply_staged(self) -> None:
+        """Make the staged writes permanent; called on commit."""
+        self.committed.extend(self._staged)
+        self._staged.clear()
+
+    def discard_staged(self) -> None:
+        """Forget the staged writes; called on rollback."""
+        self._staged.clear()
+
+
 class InMemoryGeographyUnitOfWork(InMemoryUnitOfWork):
-    """``GeographyUnitOfWork`` over an in-memory repository.
+    """``GeographyUnitOfWork`` over in-memory repositories.
 
     Implements: Fake (of Unit of Work).
 
     Attributes:
-        places: The repository bound to this unit of work.
+        places: The place repository bound to this unit of work.
+        district_edge_sets: The edge snapshot repository bound to it.
     """
 
-    def __init__(self, places: Iterable[Place] = ()) -> None:
+    def __init__(
+        self,
+        places: Iterable[Place] = (),
+        edge_sets: Iterable[DistrictEdgeSet] = (),
+    ) -> None:
         """Create the unit of work.
 
         Args:
             places: Places that exist before the test acts.
+            edge_sets: Edge snapshots that exist before the test acts.
         """
         super().__init__()
         self.places = InMemoryPlaceRepository(places)
+        self.district_edge_sets = InMemoryDistrictEdgeSetRepository(edge_sets)
 
     def _on_commit(self) -> None:
         self.places.apply_staged()
+        self.district_edge_sets.apply_staged()
 
     def _on_rollback(self) -> None:
         self.places.discard_staged()
+        self.district_edge_sets.discard_staged()
 
 
 class InMemoryPlaceQueryService:
@@ -207,3 +310,108 @@ class InMemoryPlaceQueryService:
         if place is None:
             return None
         return PlaceDetail.from_entity(place, parent_code=self._parent_code(place))
+
+
+class InMemoryDistrictEdgeQueryService:
+    """``DistrictEdgeQueryService`` reading a fake repository's committed snapshots.
+
+    Implements: Fake (of Query Service).
+    """
+
+    def __init__(self, repository: InMemoryDistrictEdgeSetRepository) -> None:
+        """Create the query service.
+
+        Args:
+            repository: The repository whose committed snapshots are served.
+        """
+        self._repository = repository
+
+    async def get_current(self) -> DistrictEdgeSnapshot | None:
+        """Return the newest committed snapshot as its public collection.
+
+        Returns:
+            The snapshot's id and collection, or ``None``.
+        """
+        edge_set = self._repository.newest(self._repository.committed)
+        if edge_set is None:
+            return None
+        return DistrictEdgeSnapshot(
+            edge_set_id=edge_set.id,
+            collection=DistrictEdgeFeatureCollection.from_edge_set(edge_set),
+        )
+
+
+class StaticBoundaryLoader:
+    """``BoundaryLoader`` returning a prepared boundary set, or raising an error.
+
+    Implements: Fake (of Adapter).
+
+    Attributes:
+        calls: The sources it was asked to load, in order.
+    """
+
+    def __init__(
+        self,
+        boundary_set: DistrictBoundarySet | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        """Create the loader.
+
+        Args:
+            boundary_set: What ``load`` returns.
+            error: What ``load`` raises instead, if given.
+        """
+        self._boundary_set = boundary_set
+        self._error = error
+        self.calls: list[DistrictBoundarySource] = []
+
+    async def load(self, source: DistrictBoundarySource) -> DistrictBoundarySet:
+        """Record the call and return the prepared set.
+
+        Args:
+            source: The source asked for.
+
+        Returns:
+            The prepared boundary set.
+
+        Raises:
+            Exception: The prepared error, if any.
+            AssertionError: If neither a set nor an error was prepared.
+        """
+        self.calls.append(source)
+        if self._error is not None:
+            raise self._error
+        assert self._boundary_set is not None, "no boundary set prepared"
+        return self._boundary_set
+
+
+class StaticSharedEdgeCalculator:
+    """``SharedEdgeCalculator`` returning a prepared computation.
+
+    Implements: Fake (of Adapter).
+
+    Attributes:
+        calls: The boundary sets it was given, in order.
+    """
+
+    def __init__(self, computation: SharedEdgeComputation) -> None:
+        """Create the calculator.
+
+        Args:
+            computation: What ``compute`` returns.
+        """
+        self._computation = computation
+        self.calls: list[DistrictBoundarySet] = []
+
+    def compute(self, boundary_set: DistrictBoundarySet) -> SharedEdgeComputation:
+        """Record the call and return the prepared computation.
+
+        Args:
+            boundary_set: The districts.
+
+        Returns:
+            The prepared computation.
+        """
+        self.calls.append(boundary_set)
+        return self._computation

@@ -183,6 +183,13 @@ class Settings(BaseSettings):
             files the reference source adapters read (the ``local_csv_temperature``
             adapter reads ``temperature_sample.csv`` there). Relative paths resolve
             against the working directory; checked when a run reads it.
+        boundary_source_file: The committed description of the district boundary
+            archive and its district links, read by ``python -m
+            yakhnama.seed.boundaries`` (ADR 0021). Relative paths resolve against
+            the working directory; checked when the command reads it.
+        boundary_cache_dir: Directory the district boundary loader downloads
+            boundary archives into. Git-ignored by default; relative paths resolve
+            against the working directory; created on the first download.
         seed_actor_id: The system actor recorded on every change the seed makes.
             Must be a UUIDv7. When ``None``, each seed run generates a fresh UUIDv7
             system actor and logs it, so its changes can still be told apart. A
@@ -310,6 +317,8 @@ class Settings(BaseSettings):
 
     reference_data_dir: Path = Path("data/reference")
     ingestion_fixtures_dir: Path = Path("data/fixtures/ingestion")
+    boundary_source_file: Path = Path("data/boundaries/cod_ab_pak_gb_districts.yaml")
+    boundary_cache_dir: Path = Path(".cache/boundaries")
     # EntityId rather than a bare UUID: every actor id in the system is a UUIDv7
     # (ADR 0006), so a wrong value fails at startup instead of inside the seed.
     seed_actor_id: EntityId | None = None

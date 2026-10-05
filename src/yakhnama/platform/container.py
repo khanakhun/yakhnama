@@ -104,13 +104,22 @@ from yakhnama.modules.exchange.public import (
     RunImportHandler,
 )
 from yakhnama.modules.geography.application.handlers import (
+    LoadDistrictBoundariesHandler,
     LoadReferencePlacesHandler,
 )
 from yakhnama.modules.geography.application.ports import (
+    DistrictEdgeQueryService,
     GeographyUnitOfWorkFactory,
     PlaceQueryService,
 )
+from yakhnama.modules.geography.infrastructure.adapters.cod_ab import (
+    CodAbBoundaryLoader,
+)
+from yakhnama.modules.geography.infrastructure.adapters.shared_edges import (
+    ShapelySharedEdgeCalculator,
+)
 from yakhnama.modules.geography.infrastructure.queries import (
+    SqlAlchemyDistrictEdgeQueryService,
     SqlAlchemyPlaceQueryService,
 )
 from yakhnama.modules.geography.infrastructure.uow import (
@@ -374,6 +383,8 @@ class Container:
         hazards_uow_factory: The hazards ``UnitOfWorkFactory`` port.
         impacts_uow_factory: The impacts ``UnitOfWorkFactory`` port.
         place_query_service: The geography ``PlaceQueryService`` port.
+        district_edge_query_service: The geography ``DistrictEdgeQueryService``
+            port (the public shared district edges).
         hazard_type_query_service: The hazards ``HazardTypeQueryService`` port.
         impact_metric_query_service: The impacts ``ImpactMetricQueryService`` port.
         identity_uow_factory: The identity ``UnitOfWorkFactory`` port.
@@ -479,6 +490,7 @@ class Container:
     hazards_uow_factory: HazardsUnitOfWorkFactory
     impacts_uow_factory: ImpactsUnitOfWorkFactory
     place_query_service: PlaceQueryService
+    district_edge_query_service: DistrictEdgeQueryService
     hazard_type_query_service: HazardTypeQueryService
     impact_metric_query_service: ImpactMetricQueryService
     identity_uow_factory: IdentityUnitOfWorkFactory
@@ -1582,6 +1594,7 @@ def build_container(settings: Settings) -> Container:
             outbox_writer=outbox_writer,
         ),
         place_query_service=SqlAlchemyPlaceQueryService(session_factory),
+        district_edge_query_service=SqlAlchemyDistrictEdgeQueryService(session_factory),
         hazard_type_query_service=core.hazard_type_query_service,
         impact_metric_query_service=impact_metric_query_service,
         identity_uow_factory=core.identity_uow_factory,
@@ -1820,6 +1833,32 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
             include_fixtures=includes_fixture_datasets(container.settings),
         ),
         accounts=build_demo_accounts_step(container),
+    )
+
+
+def build_district_boundary_handler(
+    container: Container,
+) -> LoadDistrictBoundariesHandler:
+    """Wire the district boundary load to the container's ports (ADR 0021).
+
+    ``CanManageReferenceData`` (admins only) guards it, as it guards the seed; the
+    command line runs it as the same synthetic system actor. Boundary archives are
+    downloaded into ``settings.boundary_cache_dir`` when the handler runs, not now.
+
+    Args:
+        container: The container whose geography units of work, clock and ids the
+            load uses.
+
+    Returns:
+        The handler, ready to be called with ``LoadDistrictBoundaries``.
+    """
+    return LoadDistrictBoundariesHandler(
+        uow_factory=container.geography_uow_factory,
+        policy=CanManageReferenceData(),
+        loader=CodAbBoundaryLoader(container.settings.boundary_cache_dir),
+        calculator=ShapelySharedEdgeCalculator(),
+        clock=container.clock,
+        ids=container.id_generator,
     )
 
 

@@ -15,6 +15,7 @@ from yakhnama.shared_kernel.errors import (
     InvalidTransitionError,
     InvariantViolationError,
     NotFoundError,
+    ValidationError,
 )
 from yakhnama.shared_kernel.ids import EntityId
 
@@ -75,6 +76,17 @@ class InvalidPlaceHierarchyError(InvariantViolationError):
 
 class PlaceRetiredError(InvalidTransitionError):
     """The place is retired or merged and can no longer be changed.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+
+class BoundarySourceError(ValidationError):
+    """A boundary file could not be obtained or does not match its description.
+
+    Raised when the download fails, the file's SHA-256 is not the pinned one, the
+    archive lacks the named member, or its content is not the expected GeoJSON.
+    ``details`` carries only codes, digests and counts, never file content.
 
     Implements: Domain Error (proposed in ADR 0012).
     """

@@ -17,7 +17,10 @@ from typing import Annotated, Protocol
 
 from fastapi import Depends, Request
 
-from yakhnama.modules.geography.application.ports import PlaceQueryService
+from yakhnama.modules.geography.application.ports import (
+    DistrictEdgeQueryService,
+    PlaceQueryService,
+)
 from yakhnama.platform.auth.resolution import get_principal_resolution
 
 MISSING_CONTAINER_MESSAGE = (
@@ -34,6 +37,11 @@ class GeographyApiServices(Protocol):
     @property
     def place_query_service(self) -> PlaceQueryService:
         """Return the place query service."""
+        ...
+
+    @property
+    def district_edge_query_service(self) -> DistrictEdgeQueryService:
+        """Return the shared district edge query service."""
         ...
 
 

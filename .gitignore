@@ -37,3 +37,6 @@ site/
 
 # Docker volumes bound into the tree
 .docker-data/
+
+# Downloaded boundary archives (poe load-boundaries, ADR 0021)
+.cache/

@@ -443,6 +443,10 @@ cmd = "alembic upgrade head"
 help = "Load the versioned reference data idempotently"
 cmd = "python -m yakhnama.seed"
 
+[tool.poe.tasks.load-boundaries]
+help = "Download the pinned COD-AB archive once, link districts and publish shared edges (ADR 0021)"
+cmd = "python -m yakhnama.seed.boundaries"
+
 [tool.poe.tasks.worker]
 help = "Run a Taskiq worker for background tasks (needs YAKHNAMA_TASK_QUEUE_BACKEND=redis)"
 cmd = "taskiq worker yakhnama.platform.tasks.worker:broker"

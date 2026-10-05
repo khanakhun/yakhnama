@@ -20,8 +20,8 @@ resolved.
 | `level` | `AdminLevel` | — | Administrative level. See the `AdminLevel` table below. | Reference data or moderator. | Phase 1 |
 | `parent_id` | `UUID` (v7), nullable | — | The enclosing place. It is null for a country and required for every other level. The parent must be at a strictly higher level, and levels may be skipped (**proposed**, see Q-G4). A place is never its own parent. | Reference data or moderator. | Phase 1 |
 | `names` | list of `PlaceName`, 1–64 | — | Every name of the place in insertion order. There is at least one. No two names share `(text, language, script)`. There is at most one preferred name per language. The bound of 64 is **proposed**. | See `PlaceName`. | Phase 1 |
-| `geometry` | `PlaceGeometry`, nullable | degrees (WGS84) | The footprint: a GeoJSON Point, Polygon or MultiPolygon. It stays null until a boundary source is chosen (open question Q1 in `docs/open-questions.md`). | Boundary dataset (not yet chosen). | Phase 1 |
-| `centroid` | `Coordinates`, nullable | degrees (WGS84) | Representative point, longitude first. It is used for "is this place inside this box" checks when present. | Reference data or boundary dataset. | Phase 1 |
+| `geometry` | `PlaceGeometry`, nullable | degrees (WGS84) | The footprint: a GeoJSON Point, Polygon or MultiPolygon. For a district linked in `data/boundaries/cod_ab_pak_gb_districts.yaml` it is the full COD-AB polygon (ADR 0021); otherwise null. **Never published**: its outer edges may trace the Line of Control or an international border (Q238). | OCHA COD-AB for Pakistan via HDX, CC BY-IGO (Q1), set by `poetry run poe load-boundaries`. | Phase 1 (COD-AB from ADR 0021) |
+| `centroid` | `Coordinates`, nullable | degrees (WGS84) | Representative point, longitude first. It is used for "is this place inside this box" checks when present, and published by the places routes. For a linked district without another centroid it is the COD-AB polygon's representative point (always inside the polygon), set by the boundary load (Q239). | Reference data, or the boundary load (provenance in `district_centroids`). | Phase 1 (boundary load from ADR 0021) |
 | `status` | `active` \| `merged` \| `retired` | — | Lifecycle state. `merged` and `retired` are final: no later change is accepted. | Moderator decision. | Phase 1 |
 | `status_reason` | `str` (1–500), nullable | — | Why the place was merged or retired. It is set exactly when `status` is not `active`. Leading and trailing spaces are removed. | Moderator. | Phase 1 |
 | `merged_into_id` | `UUID` (v7), nullable | — | The place that replaced this one. It is set exactly when `status` is `merged`, and is never the place's own id. | Moderator. | Phase 1 |
@@ -61,7 +61,7 @@ One name for a place in one language and script (glossary: Place name).
 
 | field | type | unit | meaning | provenance | since |
 |-------|------|------|---------|------------|-------|
-| `geojson` | GeoJSON `Point` \| `Polygon` \| `MultiPolygon` | degrees (WGS84, EPSG:4326) | The footprint, longitude first. It holds at least one and at most 1 000 000 positions. Every position is finite and inside WGS84 bounds. Positions are two-dimensional only, because altitude has no meaning for an administrative footprint. | Boundary dataset (not yet chosen, Q1). | Phase 1 |
+| `geojson` | GeoJSON `Point` \| `Polygon` \| `MultiPolygon` | degrees (WGS84, EPSG:4326) | The footprint, longitude first. It holds at least one and at most 1 000 000 positions. Every position is finite and inside WGS84 bounds. Positions are two-dimensional only, because altitude has no meaning for an administrative footprint. | OCHA COD-AB (Q1, ADR 0021). | Phase 1 |
 
 ## Events
 
@@ -105,6 +105,78 @@ an entry in the same file (**proposed**).
 | `entries[].status` | `sourced` \| `proposed` \| `fixture` | — | How far the entry can be trusted: taken from the cited `source`, proposed and awaiting confirmation, or test fixture data that makes no claim about the world. This is data-quality status, not the place lifecycle `Place.status`. | File author. | Phase 1 |
 | `entries[].source` | `str` (1–500), nullable | — | Citation for the entry. It is required when `status` is `sourced`. | File author. | Phase 1 |
 
+## District boundaries (ADR 0021)
+
+Gilgit-Baltistan's district polygons come from OCHA COD-AB for Pakistan (Q1). They are
+stored as place footprints and published **only** as the lines two districts share,
+never as polygons and never along the outer edge of the region, which traces the Line of
+Control and international borders (maintainer decision, 2026-10-05). Source code:
+`src/yakhnama/modules/geography/domain/boundaries.py`.
+
+### Boundary source file (`data/boundaries/cod_ab_pak_gb_districts.yaml`, `DistrictBoundarySource`)
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `schema_version` | `1` | — | Version of the file format. | File author. | ADR 0021 (2026-10-05) |
+| `data_version` | `str` (1–32) | — | Version of this file's content; bumped with any change. | File author. | ADR 0021 (2026-10-05) |
+| `dataset` | `str` (1–64, lower case) | — | The dataset's identifier where it is published (`cod-ab-pak`); part of the cached file name. | HDX. | ADR 0021 (2026-10-05) |
+| `download_url` | https URL (≤ 2048) | — | Where the archive is downloaded; redirects must stay on https. | HDX resource. | ADR 0021 (2026-10-05) |
+| `sha256` | 64 hex characters | — | Digest the archive must have; any other file is refused. | Computed by the maintainer when pinning. | ADR 0021 (2026-10-05) |
+| `archive_member` | file name (1–100) | — | The GeoJSON inside the archive with the districts (`pak_admin2.geojson`). | COD-AB. | ADR 0021 (2026-10-05) |
+| `region_code` | `SourceDistrictCode` | — | The region's code in the dataset (`PK3`); only its features are read. | COD-AB `adm1_pcode`. | ADR 0021 (2026-10-05) |
+| `region_place_code` | `PlaceCode` | — | The same region in the gazetteer (`pk.gb`); gazetteer districts below it (by ancestry) are checked for a boundary. | File author. | ADR 0021 (2026-10-05) |
+| `source`, `source_url`, `licence`, `licence_url`, `dataset_version` | text (≤ 500, ≤ 100) and https URLs | — | The attribution published with every edge (see `BoundaryAttribution`). | HDX dataset page, checked 2026-10-05. | ADR 0021 (2026-10-05) |
+| `links[].source_code` | `SourceDistrictCode` (1–32) | — | A district's COD-AB P-code (`adm2_pcode`), unique in the file. **Proposed** pattern. | COD-AB. | ADR 0021 (2026-10-05) |
+| `links[].source_name` | safe text (1–200) | — | The district's COD-AB name (`adm2_name`), recorded so a reused or renamed code is reported. | COD-AB. | ADR 0021 (2026-10-05) |
+| `links[].place_code` | `PlaceCode`, nullable | — | The gazetteer district it is, or null while the gazetteer has none (Q230). Unique among rows. Written by hand, never matched by name. | Maintainer review. | ADR 0021 (2026-10-05) |
+| `links[].note` | safe text (1–500), nullable | — | Why the row is as it is. | File author. | ADR 0021 (2026-10-05) |
+
+### BoundaryAttribution (value object, published)
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `source` | safe text (1–500) | — | Who made the data and where it was obtained. | Source file. | ADR 0021 (2026-10-05) |
+| `source_url` | https URL | — | The dataset's page. | Source file. | ADR 0021 (2026-10-05) |
+| `licence` | safe text (1–100) | — | Licence name, `CC BY-IGO 3.0` for COD-AB. | Source file (HDX). | ADR 0021 (2026-10-05) |
+| `licence_url` | https URL | — | The licence's legal text. | Source file (HDX). | ADR 0021 (2026-10-05) |
+| `dataset_version` | safe text (1–100) | — | The dataset's own version and validity date. | Source file (HDX notes). | ADR 0021 (2026-10-05) |
+| `retrieved_at` | `datetime` (UTC) | — | When the archive was downloaded: the cached file's modification time. | Loader. | ADR 0021 (2026-10-05) |
+
+### DistrictEdgeSet (entity) and DistrictEdge (value object)
+
+One immutable snapshot per load of different data; the newest is current.
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `id` | `UUID` (v7) | — | Snapshot identity; names the published representation in `ETag`. | `IdGenerator`. | ADR 0021 (2026-10-05) |
+| `region_code` | `SourceDistrictCode` | — | The region the edges belong to. | Source file. | ADR 0021 (2026-10-05) |
+| `attribution` | `BoundaryAttribution` | — | As above. | Loader. | ADR 0021 (2026-10-05) |
+| `sha256` | 64 hex characters | — | Digest of the archive the edges were computed from. | Loader. | ADR 0021 (2026-10-05) |
+| `fingerprint` | 64 hex characters | — | SHA-256 over region, archive digest and every edge (not the download time); a reload of the same data adds nothing. Checked on construction. | Computed. | ADR 0021 (2026-10-05) |
+| `edges[].source_codes` | pair of `SourceDistrictCode`, sorted, distinct | — | The two districts in the dataset. Unique per snapshot. | Calculator. | ADR 0021 (2026-10-05) |
+| `edges[].place_codes` | pair of `PlaceCode` or null | — | The gazetteer district of each, in the same order; null when unlinked (Q234). | Link table and gazetteer. | ADR 0021 (2026-10-05) |
+| `edges[].geometry` | GeoJSON `LineString` \| `MultiLineString` | degrees (WGS84) | The shared boundary, simplified to ~50 m, rounded to 5 decimals, ending ~50 m short of the region's outline, never on it (**proposed** parameters, Q233). | Computed from COD-AB polygons by `ShapelySharedEdgeCalculator`. | ADR 0021 (2026-10-05) |
+| `centroids[].source_code` | `SourceDistrictCode` | — | The district the centroid was computed from. | Loader. | ADR 0021 (2026-10-05) |
+| `centroids[].place_code` | `PlaceCode` | — | The place whose centroid this load set; unique per snapshot. A place whose centroid came from elsewhere has no row. | Handler. | ADR 0021 (2026-10-05) |
+| `centroids[].point` | `Coordinates` | degrees (WGS84) | The point set: the district's representative point (GEOS `PointOnSurface`). The next load replaces the place's centroid only if it still equals this point. Not published with the edges; part of the fingerprint. | Computed from the COD-AB polygon. | ADR 0021 (2026-10-05) |
+| `created_at` | `datetime` (UTC) | — | When the snapshot was stored. | `Clock`. | ADR 0021 (2026-10-05) |
+
+Tables `district_edge_sets` (one row per snapshot, the attribution flattened into
+columns, index on `created_at`) and `district_edges` (one row per edge; `id` a UUIDv5 over
+snapshot id and pair, `position` the order within the snapshot, `edge_set_id` with
+`ON DELETE CASCADE`, a GiST index on `geometry`) and `district_centroids` (one row per
+recorded centroid; `id` a UUIDv5 over snapshot id and place code, `position`,
+`source_code`, `place_code`, `point` as a WGS84 `POINT` with a GiST index, `edge_set_id`
+with `ON DELETE CASCADE`) were added in migration `0020`.
+
+### Public payload (`GET /api/v1/boundaries/district-edges`)
+
+A GeoJSON `FeatureCollection` (`application/geo+json`): one `Feature` per edge with
+`geometry` (LineString or MultiLineString) and `properties.districts` (the two gazetteer
+codes, null when unlinked) and `properties.source_districts` (the two COD-AB codes); a
+top-level `attribution` (`BoundaryAttribution`), null with an empty `features` list while
+no boundaries are loaded. For COD-AB PAK v01: 29 features, 2 209 positions, 48 863 bytes.
+
 ## Storage-only columns (`place_names` table)
 
 Most columns of the `places` and `place_names` tables hold the fields above one to one
@@ -127,6 +199,11 @@ storage and are never part of the domain model or the public dataset.
 | Q-G3 | Which scripts do place names need? | `Latn`, `Arab`, and `Tibt` for the occasional Tibetan-script Balti. Add others only when a sourced name needs them. | no |
 | Q-G4 | Must a parent be exactly one level above its child? | No. The parent must be strictly higher and gaps are allowed, because tehsils and union councils are not recorded everywhere. | no |
 | Q-G5 | How many preferred names may a place have? | At most one per language, possibly none. Display falls back to the first-recorded name in the language, then to the caller's fallback languages. | no |
-| Q-G6 | Should a placeholder `bbox` in reference data become the place geometry? | No. It stays in the reference file only, and `geometry` waits for the boundary source (Q1). | no |
+| Q-G6 | Should a placeholder `bbox` in reference data become the place geometry? | No. It stays in the reference file only; `geometry` comes from the boundary source (Q1, decided: COD-AB). | no |
 | Q-G7 | How do textual name citations in reference data become provenance `Source` records? | Keep them in the YAML. Link them to `PlaceName.source_id` when the provenance module arrives in Phase 3. | no |
 | Q-G8 | Must every non-country place have a parent inside the data set? For example, a regional fixture that omits the country could not be loaded. | Yes. Reference files include the country entry. | no |
+
+District boundaries raise Q230 to Q239 in `docs/open-questions.md`: the four COD-AB
+districts without a gazetteer place, fixtures taking COD-AB's current footprints, the
+Diamir/Diamer spelling, the edge parameters, edges of unlinked districts, cache lifetime,
+the CC BY-IGO licence, re-pinning, never publishing footprints, and district centroids.

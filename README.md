@@ -154,6 +154,26 @@ poetry run poe worker      # runs every task, including exchange.run_export,
 poetry run poe scheduler   # enqueues the periodic tasks; run exactly one per deployment
 ```
 
+District boundaries for the portal's map come from OCHA COD-AB for Pakistan (ADR 0021).
+Load them once after `poe seed`, and again whenever
+`data/boundaries/cod_ab_pak_gb_districts.yaml` changes:
+
+```bash
+poetry run poe load-boundaries --dry-run   # download (once), match and report, roll back
+poetry run poe load-boundaries                # store footprints and publish the shared edges
+```
+
+The first run downloads the pinned archive (about 29 MB) into
+`YAKHNAMA_BOUNDARY_CACHE_DIR` (default `.cache/boundaries`, git-ignored) and refuses any
+file whose SHA-256 is not the pinned one; later runs read the cache. Running it again with
+the same data changes nothing. Each district the link table, the archive and the gazetteer
+disagree on is logged as a `boundary_mismatch` warning (four COD-AB districts have no
+gazetteer place yet, open question Q230). Each linked district without a centroid gets
+its polygon's representative point as `centroid`, which the places routes publish (a
+centroid set by anyone else is kept). The edges are served anonymously at
+`GET /api/v1/boundaries/district-edges`: only the lines two Gilgit-Baltistan districts
+share, never the outer edge of the region, with the CC BY-IGO attribution.
+
 See `docs/architecture/recording.md` for the full report-to-event flow (submission,
 triage, media upload and moderation, event creation, impact claims, verification),
 `docs/architecture/media.md` for the upload, EXIF-stripping and malware-scanning

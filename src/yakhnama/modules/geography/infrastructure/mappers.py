@@ -12,6 +12,9 @@ through PostgreSQL's ``unaccent`` as well, so that letters Unicode decomposition
 leaves alone (``ł``, ``ø``, ``đ``) fold like the rest; the query service applies the
 same rule to the search text, so both sides of a comparison are folded alike.
 
+District edge snapshots map to ``district_edge_sets`` and ``district_edges`` rows
+the same way: lines travel as ``EdgeGeometry`` and become WKB only here.
+
 Patterns: Anti-Corruption Layer (mapper).
 """
 
@@ -27,6 +30,13 @@ from shapely.geometry import mapping, shape
 from sqlalchemy import ColumnElement, func, literal
 
 from yakhnama.modules.geography.application.specifications import fold_search_text
+from yakhnama.modules.geography.domain.boundaries import (
+    BoundaryAttribution,
+    DistrictCentroid,
+    DistrictEdge,
+    DistrictEdgeSet,
+    EdgeGeometry,
+)
 from yakhnama.modules.geography.domain.entities import Place
 from yakhnama.modules.geography.domain.value_objects import (
     AdminLevel,
@@ -36,6 +46,9 @@ from yakhnama.modules.geography.domain.value_objects import (
 )
 from yakhnama.modules.geography.infrastructure.orm import (
     WGS84_SRID,
+    DistrictCentroidRow,
+    DistrictEdgeRow,
+    DistrictEdgeSetRow,
     PlaceNameRow,
     PlaceRow,
 )
@@ -43,6 +56,9 @@ from yakhnama.shared_kernel.value_objects import Coordinates
 
 PLACE_NAME_ID_NAMESPACE: Final = uuid.UUID("0192a3b4-5c6d-7e8f-9a0b-1c2d3e4f5a6b")
 """Namespace of the UUIDv5 row ids of ``place_names`` (arbitrary, fixed forever)."""
+
+DISTRICT_EDGE_ID_NAMESPACE: Final = uuid.UUID("0192a3b4-5c6d-7e8f-9a0b-1c2d3e4f5a6c")
+"""Namespace of the UUIDv5 row ids of ``district_edges`` (arbitrary, fixed forever)."""
 
 _LATIN_PREFIX: Final = "LATIN "
 
@@ -285,3 +301,125 @@ def row_to_place(
             "updated_at": row.updated_at,
         }
     )
+
+
+def edge_set_to_rows(
+    edge_set: DistrictEdgeSet,
+) -> tuple[DistrictEdgeSetRow, list[DistrictEdgeRow], list[DistrictCentroidRow]]:
+    """Build the rows of a district edge snapshot.
+
+    Args:
+        edge_set: The snapshot.
+
+    Returns:
+        The ``district_edge_sets`` row, one ``district_edges`` row per edge and one
+        ``district_centroids`` row per centroid, in the snapshot's order.
+    """
+    attribution = edge_set.attribution
+    set_row = DistrictEdgeSetRow(
+        id=edge_set.id,
+        region_code=edge_set.region_code,
+        source=attribution.source,
+        source_url=attribution.source_url,
+        licence=attribution.licence,
+        licence_url=attribution.licence_url,
+        dataset_version=attribution.dataset_version,
+        retrieved_at=attribution.retrieved_at,
+        sha256=edge_set.sha256,
+        fingerprint=edge_set.fingerprint,
+        created_at=edge_set.created_at,
+    )
+    edge_rows = [
+        DistrictEdgeRow(
+            id=uuid.uuid5(
+                DISTRICT_EDGE_ID_NAMESPACE,
+                f"{edge_set.id}\x1f{edge.source_codes[0]}\x1f{edge.source_codes[1]}",
+            ),
+            edge_set_id=edge_set.id,
+            position=position,
+            source_code_a=edge.source_codes[0],
+            source_code_b=edge.source_codes[1],
+            place_code_a=edge.place_codes[0],
+            place_code_b=edge.place_codes[1],
+            geometry=from_shape(
+                shape(edge.geometry.geojson.model_dump(mode="json")),
+                srid=WGS84_SRID,
+                extended=True,
+            ),
+        )
+        for position, edge in enumerate(edge_set.edges)
+    ]
+    centroid_rows = [
+        DistrictCentroidRow(
+            id=uuid.uuid5(
+                DISTRICT_EDGE_ID_NAMESPACE, f"{edge_set.id}\x1d{centroid.place_code}"
+            ),
+            edge_set_id=edge_set.id,
+            position=position,
+            source_code=centroid.source_code,
+            place_code=centroid.place_code,
+            point=centroid_to_element(centroid.point),
+        )
+        for position, centroid in enumerate(edge_set.centroids)
+    ]
+    return set_row, edge_rows, centroid_rows
+
+
+def rows_to_edge_set(
+    set_row: DistrictEdgeSetRow,
+    edge_rows: Iterable[DistrictEdgeRow],
+    centroid_rows: Iterable[DistrictCentroidRow] = (),
+) -> DistrictEdgeSet:
+    """Rebuild a district edge snapshot from its rows.
+
+    Args:
+        set_row: The ``district_edge_sets`` row.
+        edge_rows: Its ``district_edges`` rows, in any order.
+        centroid_rows: Its ``district_centroids`` rows, in any order.
+
+    Returns:
+        The validated snapshot; its fingerprint is checked against the content.
+    """
+    ordered = sorted(edge_rows, key=lambda row: row.position)
+    centroids = tuple(
+        DistrictCentroid(
+            source_code=row.source_code,
+            place_code=row.place_code,
+            point=_require_point(element_to_centroid(row.point)),
+        )
+        for row in sorted(centroid_rows, key=lambda row: row.position)
+    )
+    return DistrictEdgeSet(
+        id=set_row.id,
+        region_code=set_row.region_code,
+        attribution=BoundaryAttribution(
+            source=set_row.source,
+            source_url=set_row.source_url,
+            licence=set_row.licence,
+            licence_url=set_row.licence_url,
+            dataset_version=set_row.dataset_version,
+            retrieved_at=set_row.retrieved_at,
+        ),
+        sha256=set_row.sha256,
+        fingerprint=set_row.fingerprint,
+        edges=tuple(
+            DistrictEdge(
+                source_codes=(row.source_code_a, row.source_code_b),
+                place_codes=(row.place_code_a, row.place_code_b),
+                geometry=EdgeGeometry.model_validate(
+                    {"geojson": mapping(to_shape(row.geometry))}
+                ),
+            )
+            for row in ordered
+        ),
+        centroids=centroids,
+        created_at=set_row.created_at,
+    )
+
+
+def _require_point(point: Coordinates | None) -> Coordinates:
+    # The column is NOT NULL, so a stored centroid row always has a point.
+    if point is None:
+        message = "district_centroids.point is null"
+        raise TypeError(message)
+    return point

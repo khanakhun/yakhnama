@@ -5,8 +5,12 @@ Patterns: Unit of Work.
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yakhnama.modules.geography.application.ports import PlaceRepository
+from yakhnama.modules.geography.application.ports import (
+    DistrictEdgeSetRepository,
+    PlaceRepository,
+)
 from yakhnama.modules.geography.infrastructure.repositories import (
+    SqlAlchemyDistrictEdgeSetRepository,
     SqlAlchemyPlaceRepository,
 )
 from yakhnama.platform.uow import SqlAlchemyUnitOfWork
@@ -19,12 +23,13 @@ class SqlAlchemyGeographyUnitOfWork(SqlAlchemyUnitOfWork):
     """
 
     def _open_repositories(self, session: AsyncSession) -> None:
-        """Build the place repository on the session this unit of work opened.
+        """Build the repositories on the session this unit of work opened.
 
         Args:
             session: The session of this unit of work.
         """
         self._places = SqlAlchemyPlaceRepository(session)
+        self._district_edge_sets = SqlAlchemyDistrictEdgeSetRepository(session)
 
     @property
     def places(self) -> PlaceRepository:
@@ -37,3 +42,13 @@ class SqlAlchemyGeographyUnitOfWork(SqlAlchemyUnitOfWork):
         # not active, instead of an AttributeError on a missing repository.
         _ = self.session
         return self._places
+
+    @property
+    def district_edge_sets(self) -> DistrictEdgeSetRepository:
+        """Return the district edge snapshot repository bound to this transaction.
+
+        Returns:
+            The repository; valid only inside ``async with``.
+        """
+        _ = self.session
+        return self._district_edge_sets
