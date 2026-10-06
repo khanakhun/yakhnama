@@ -11,7 +11,8 @@ checks the stored object (size, magic bytes, SHA-256 deduplication) and schedule
 the malware scan. ``GET /media/{id}`` is open to anonymous callers, who only ever
 see a published asset and only its EXIF-stripped public copy; the uploader and
 moderators also get the private original. Moderators decide on
-``/moderation/media/{id}/decision``.
+``/moderation/media/{id}/decision`` and work through ``GET /moderation/media``, the
+queue of completed uploads (oldest first, no download links in the list).
 
 Errors are never mapped here: handlers and query services raise ``YakhnamaError``
 subclasses and the exception handlers in ``main.py`` render Problem Details.
@@ -20,9 +21,10 @@ Patterns: none from the catalog (thin transport layer over commands and queries)
 """
 
 from typing import Annotated, Any, Final
+from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Response, status
+from fastapi import APIRouter, Header, Query, Response, status
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.api.dependencies import (
@@ -33,13 +35,16 @@ from yakhnama.modules.media.api.dependencies import (
     Services,
 )
 from yakhnama.modules.media.api.schemas import (
+    ListMediaQueueParameters,
     MediaAssetResponse,
+    MediaQueuePage,
     ModerateMediaRequest,
     RequestUploadRequest,
 )
 from yakhnama.modules.media.public import (
     CompleteUpload,
     GetMediaAsset,
+    ListMediaQueue,
     MediaAssetDetail,
     ModerateMedia,
     ModerationStatus,
@@ -47,11 +52,15 @@ from yakhnama.modules.media.public import (
     UploadGrant,
 )
 from yakhnama.platform.etag import make_etag, set_etag
+from yakhnama.platform.openapi_headers import ETAG, LINK, LOCATION, header_responses
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.pagination import PageRequest
 
 API_PREFIX: Final = "/api/v1"
 MEDIA_PATH: Final = f"{API_PREFIX}/media"
+MEDIA_QUEUE_PATH: Final = f"{API_PREFIX}/moderation/media"
 LOCATION_HEADER: Final = "Location"
+LINK_HEADER: Final = "Link"
 
 # Any: the value type of FastAPI's own ``responses`` argument.
 _PROBLEM: Final[dict[str, Any]] = {
@@ -115,7 +124,11 @@ async def _grant(
     )
 
 
-@router.post("/media", status_code=status.HTTP_201_CREATED, responses=_CREATE_RESPONSES)
+@router.post(
+    "/media",
+    status_code=status.HTTP_201_CREATED,
+    responses={**_CREATE_RESPONSES, **header_responses(201, LOCATION)},
+)
 async def request_upload(
     body: RequestUploadRequest,
     actor: CurrentActor,
@@ -149,7 +162,7 @@ async def request_upload(
 @router.post(
     "/reports/{report_id}/media",
     status_code=status.HTTP_201_CREATED,
-    responses=_CREATE_RESPONSES,
+    responses={**_CREATE_RESPONSES, **header_responses(201, LOCATION)},
 )
 async def request_report_upload(  # noqa: PLR0913  # reason: FastAPI injects each input
     *,
@@ -182,7 +195,10 @@ async def request_report_upload(  # noqa: PLR0913  # reason: FastAPI injects eac
     return grant
 
 
-@router.post("/media/{asset_id}/complete", responses=_CHANGE_RESPONSES)
+@router.post(
+    "/media/{asset_id}/complete",
+    responses={**_CHANGE_RESPONSES, **header_responses(200, ETAG)},
+)
 async def complete_upload(
     asset_id: EntityId,
     actor: CurrentActor,
@@ -211,7 +227,10 @@ async def complete_upload(
     return _asset_response(response, detail)
 
 
-@router.get("/media/{asset_id}", responses={status.HTTP_404_NOT_FOUND: _PROBLEM})
+@router.get(
+    "/media/{asset_id}",
+    responses={status.HTTP_404_NOT_FOUND: _PROBLEM, **header_responses(200, ETAG)},
+)
 async def get_media_asset(
     asset_id: EntityId,
     actor: OptionalActor,
@@ -238,7 +257,49 @@ async def get_media_asset(
     return _asset_response(response, detail)
 
 
-@moderation_router.post("/media/{asset_id}/decision", responses=_CHANGE_RESPONSES)
+@moderation_router.get("/media", responses=header_responses(200, LINK))
+async def list_media_queue(
+    parameters: Annotated[ListMediaQueueParameters, Query()],
+    actor: ModeratorActor,
+    response: Response,
+    services: Services,
+) -> MediaQueuePage:
+    """List completed uploads awaiting or past a decision, oldest first.
+
+    Download links are left out of the list; ``GET /media/{asset_id}`` presigns
+    them for one asset.
+
+    Args:
+        parameters: Validated filters, cursor and limit.
+        actor: The moderator.
+        response: Used to set the ``Link`` header.
+        services: Use cases bound by the composition root.
+
+    Returns:
+        One page of assets.
+    """
+    page = await services.media_queries.list_media_queue(
+        ListMediaQueue(
+            actor=actor,
+            moderation_status=parameters.moderation_status_value(),
+            scan_status=parameters.scan_status,
+            page=PageRequest(limit=parameters.limit, cursor=parameters.cursor),
+        )
+    )
+    if page.next_cursor is not None:
+        following = parameters.model_copy(update={"cursor": page.next_cursor})
+        query = urlencode(following.model_dump(mode="json", exclude_none=True))
+        response.headers[LINK_HEADER] = f'<{MEDIA_QUEUE_PATH}?{query}>; rel="next"'
+    return MediaQueuePage(
+        items=tuple(MediaAssetResponse.from_detail(item) for item in page.items),
+        next_cursor=page.next_cursor,
+    )
+
+
+@moderation_router.post(
+    "/media/{asset_id}/decision",
+    responses={**_CHANGE_RESPONSES, **header_responses(200, ETAG)},
+)
 async def moderate_media(
     asset_id: EntityId,
     body: ModerateMediaRequest,

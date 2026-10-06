@@ -17,6 +17,10 @@
   triage flags.
 - **List reports.** Authenticated users; moderators see every report, everyone else
   only their own. Listings always show rounded positions.
+- **Review marks** (ADR 0022). Moderators only, to mark, to read the marks and
+  their history, and to filter on them; everyone else, the reporter included,
+  sees no mark (``None``) and gets 403 for the ``review_state`` filter. Marks never
+  change what the reporter may do.
 - **Triage.** ``RunTriage`` has no actor: it is a system task enqueued by the
   handlers above and never routed from the API.
 
@@ -44,6 +48,7 @@ __all__ = [
     "reporter_policy",
     "require_allowed",
     "require_user",
+    "review_policy",
     "rounded_view_policy",
     "submit_policy",
     "triage_view_policy",
@@ -119,6 +124,15 @@ def rounded_view_policy(record: ReportRecord) -> ActorPolicy | None:
 
 def triage_view_policy() -> ActorPolicy:
     """Return who may see triage flags.
+
+    Returns:
+        ``CanModerate()``.
+    """
+    return CanModerate()
+
+
+def review_policy() -> ActorPolicy:
+    """Return who may mark reports and read the marks.
 
     Returns:
         ``CanModerate()``.

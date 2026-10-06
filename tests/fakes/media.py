@@ -26,10 +26,18 @@ from yakhnama.modules.media.domain.value_objects import (
     MAX_MEDIA_BYTES,
     ExifFacts,
     MimeType,
+    ModerationStatus,
+    ScanStatus,
     UploadStatus,
 )
 from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.pagination import (
+    CursorPayload,
+    Page,
+    PageRequest,
+    encode_cursor,
+)
 
 FAKE_STORAGE_EXPIRY = datetime(2026, 6, 1, 13, 0, tzinfo=UTC)
 """Expiry every presigned URL of ``FakeStoragePort`` carries."""
@@ -190,13 +198,21 @@ class InMemoryMediaQueryService:
     Implements: Fake (of Query Service).
     """
 
-    def __init__(self, uow: InMemoryMediaUnitOfWork) -> None:
+    def __init__(
+        self,
+        uow: InMemoryMediaUnitOfWork,
+        listing_reports: Mapping[EntityId, EntityId] | None = None,
+    ) -> None:
         """Create the query service.
 
         Args:
             uow: The unit of work whose committed rows are served.
+            listing_reports: For assets uploaded before their report, the newest
+                report revision that lists each one; plays the SQL adapter's
+                lookup in ``reports``, which this fake cannot see.
         """
         self._uow = uow
+        self.listing_reports = dict(listing_reports or {})
 
     async def get_asset(self, asset_id: EntityId) -> MediaAssetRecord | None:
         """Return one committed asset.
@@ -226,6 +242,60 @@ class InMemoryMediaQueryService:
             MediaAssetRecord.from_entity(committed[asset_id])
             for asset_id in asset_ids
             if asset_id in committed
+        )
+
+    async def list_queue(
+        self,
+        *,
+        moderation_status: ModerationStatus | None,
+        scan_status: ScanStatus | None,
+        page: PageRequest,
+    ) -> Page[MediaAssetRecord]:
+        """Page completed assets by ``(created_at, id)`` ascending.
+
+        Args:
+            moderation_status: Only assets with this status, if set.
+            scan_status: Only assets with this verdict, if set.
+            page: Page size and cursor.
+
+        Returns:
+            One page of records, ``report_id`` resolved like the SQL adapter.
+
+        Raises:
+            ValidationError: If the cursor is invalid.
+        """
+        cursor = page.decode_cursor()
+        assets = sorted(
+            (
+                asset
+                for asset in self._uow.media_assets.committed.values()
+                if asset.upload_status is UploadStatus.COMPLETED
+                and moderation_status in {None, asset.moderation_status}
+                and scan_status in {None, asset.scan_status}
+            ),
+            key=lambda asset: (asset.created_at, asset.id),
+        )
+        if cursor is not None:
+            after = (datetime.fromisoformat(cursor.sort_key), cursor.last_id)
+            assets = [asset for asset in assets if (asset.created_at, asset.id) > after]
+        window = assets[: page.limit]
+        next_cursor = None
+        if len(assets) > page.limit:
+            last = window[-1]
+            next_cursor = encode_cursor(
+                CursorPayload(sort_key=last.created_at.isoformat(), last_id=last.id)
+            )
+        return Page[MediaAssetRecord](
+            items=tuple(
+                MediaAssetRecord.from_entity(asset).model_copy(
+                    update={
+                        "report_id": asset.report_id
+                        or self.listing_reports.get(asset.id)
+                    }
+                )
+                for asset in window
+            ),
+            next_cursor=next_cursor,
         )
 
 

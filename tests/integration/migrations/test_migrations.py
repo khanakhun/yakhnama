@@ -69,6 +69,8 @@ APPLICATION_TABLES_AT_HEAD: Final = frozenset(
         "import_jobs",
         "guest_submissions",
         "guest_challenges",
+        "report_reviews",
+        "report_review_marks",
     }
 )
 EXTENSIONS: Final = frozenset({"postgis", "pg_trgm", "unaccent"})
@@ -448,10 +450,69 @@ def test_migrations_0021_to_0023_backfill_guest_sources_reversibly(
 def test_migration_0021_checks_refuse_what_the_domain_forbids(
     alembic_config: Config, postgis_url: str, statement: str
 ) -> None:
-    command.upgrade(alembic_config, "head")
+    # The row predates 0025's lineage column; 0025 backfills it on the way up.
+    command.upgrade(alembic_config, "0024")
     asyncio.run(_execute(postgis_url, _REPORT_ROW))
+    command.upgrade(alembic_config, "head")
 
     with pytest.raises(IntegrityError):
         asyncio.run(_execute(postgis_url, statement))
 
     asyncio.run(_execute(postgis_url, "DELETE FROM reports"))
+
+
+_REVISION_ROW: Final = (
+    "INSERT INTO reports (id, reporter_id, source_id, observed_at, "
+    "observed_at_precision, observation, description, original_language, media_ids, "
+    "status, revision, supersedes_id, submitted_at, version, created_at, updated_at) "
+    "VALUES ('01890000-0000-7000-8000-0000000000e1', "
+    "'01890000-0000-7000-8000-0000000000b2', '01890000-0000-7000-8000-0000000000b3', "
+    "'2026-09-01T00:00:00Z', 'exact', ST_SetSRID(ST_MakePoint(74.3, 35.9), 4326), "
+    "'Synthetic correction.', 'en', '[]', 'submitted', 2, "
+    "'01890000-0000-7000-8000-0000000000b1', '2026-09-02T00:00:00Z', 1, "
+    "'2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')"
+)
+
+
+async def _fetch_lineages(database_url: str) -> dict[str, str | None]:
+    """Return the ``lineage_id`` of every report, or ``{}`` without the column."""
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            columns = {
+                column["name"]
+                for column in await connection.run_sync(
+                    lambda sync: inspect(sync).get_columns("reports")
+                )
+            }
+            if "lineage_id" not in columns:
+                return {}
+            result = await connection.execute(
+                text("SELECT id::text, lineage_id::text FROM reports")
+            )
+            return {row[0]: row[1] for row in result}
+    finally:
+        await engine.dispose()
+
+
+def test_migration_0025_backfills_lineages_and_creates_review_tables_reversibly(
+    alembic_config: Config, postgis_url: str
+) -> None:
+    command.upgrade(alembic_config, "0024")
+    asyncio.run(_execute(postgis_url, _REPORT_ROW))
+    asyncio.run(_execute(postgis_url, _REVISION_ROW))
+
+    command.upgrade(alembic_config, "0025")
+    upgraded = asyncio.run(_fetch_lineages(postgis_url))
+    tables = _application_tables(postgis_url)
+    command.downgrade(alembic_config, "0024")
+    downgraded = asyncio.run(_fetch_lineages(postgis_url))
+    downgraded_tables = _application_tables(postgis_url)
+    asyncio.run(_execute(postgis_url, "DELETE FROM reports WHERE revision = 2"))
+    asyncio.run(_execute(postgis_url, "DELETE FROM reports"))
+
+    root = "01890000-0000-7000-8000-0000000000b1"
+    assert upgraded == {root: root, "01890000-0000-7000-8000-0000000000e1": root}
+    assert {"report_reviews", "report_review_marks"} <= tables
+    assert downgraded == {}
+    assert not {"report_reviews", "report_review_marks"} & downgraded_tables

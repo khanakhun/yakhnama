@@ -53,6 +53,7 @@ from yakhnama.modules.impacts.public import (
     RetractImpactClaimHandler,
 )
 from yakhnama.platform.etag import make_etag, set_etag
+from yakhnama.platform.openapi_headers import ETAG, LOCATION, header_responses
 from yakhnama.shared_kernel.errors import NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
 
@@ -269,7 +270,10 @@ async def correct_impact_claim(
 @moderation_router.post(
     "/infrastructure-assets",
     status_code=status.HTTP_201_CREATED,
-    responses=_CREATE_RESPONSES,
+    responses={
+        **_CREATE_RESPONSES,
+        **header_responses(status.HTTP_201_CREATED, LOCATION, ETAG),
+    },
 )
 async def register_infrastructure_asset(
     body: RegisterInfrastructureAssetRequest,

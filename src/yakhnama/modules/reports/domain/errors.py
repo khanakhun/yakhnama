@@ -402,3 +402,55 @@ class GuestMediaNotFoundError(NotFoundError):
             "no such upload in this guest submission",
             details={"media_id": str(asset_id)},
         )
+
+
+class ReviewReasonRequiredError(ValidationError):
+    """A review mark that needs a reason arrived without one (ADR 0022).
+
+    Archiving, moving back to ``new`` and moving out of ``archived`` need a reason;
+    only a move to ``reviewed`` from ``new`` or ``reviewed`` does not.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_move(cls, from_state: str, to_state: str) -> Self:
+        """Build the error for a move without its reason.
+
+        Args:
+            from_state: The lineage's state now.
+            to_state: The state asked for.
+
+        Returns:
+            The error, with both states in ``details``.
+        """
+        return cls(
+            f"marking a report {to_state!r} from {from_state!r} requires a reason",
+            details={
+                "reason": "review_reason_required",
+                "from_state": from_state,
+                "to_state": to_state,
+            },
+        )
+
+
+class ReportFilterForbiddenError(PermissionDeniedError):
+    """A caller who may not moderate filtered reports by a moderators-only field.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_filter(cls, name: str) -> Self:
+        """Build the error for one filter.
+
+        Args:
+            name: The query parameter, such as ``review_state``.
+
+        Returns:
+            The error, with the filter's name in ``details``.
+        """
+        return cls(
+            f"only moderators may filter reports by {name}",
+            details={"action": f"filter reports by {name}", "policy": "CanModerate"},
+        )

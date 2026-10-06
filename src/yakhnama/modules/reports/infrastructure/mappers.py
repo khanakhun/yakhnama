@@ -16,13 +16,20 @@ from geoalchemy2 import WKBElement
 from geoalchemy2.shape import from_shape, to_shape
 from shapely.geometry import Point as ShapelyPoint
 
-from yakhnama.modules.reports.application.dto import ReportRecord
+from yakhnama.modules.reports.application.dto import ReportRecord, ReportReviewRecord
 from yakhnama.modules.reports.domain.entities import Report
 from yakhnama.modules.reports.domain.guest_submissions import GuestSubmission
+from yakhnama.modules.reports.domain.reviews import (
+    ReportReview,
+    ReviewMark,
+    ReviewState,
+)
 from yakhnama.modules.reports.domain.value_objects import AssistedSubmission
 from yakhnama.modules.reports.infrastructure.orm import (
     WGS84_SRID,
     GuestSubmissionRow,
+    ReportReviewMarkRow,
+    ReportReviewRow,
     ReportRow,
 )
 from yakhnama.platform.db import dump_json_column
@@ -214,11 +221,14 @@ def row_to_report(row: ReportRow) -> Report:
     )
 
 
-def row_to_exact_record(row: ReportRow) -> ReportRecord:
+def row_to_exact_record(
+    row: ReportRow, review: ReportReviewRecord | None = None
+) -> ReportRecord:
     """Build the internal read record of a row with the exact position and accuracy.
 
     Args:
         row: A fully loaded row of ``reports``.
+        review: The lineage's stored review, if the query joined one.
 
     Returns:
         The validated ``ReportRecord``.
@@ -229,11 +239,15 @@ def row_to_exact_record(row: ReportRow) -> ReportRecord:
             "observation": _observation(
                 element_to_coordinates(row.observation), row.accuracy_metres
             ),
+            "lineage_id": row.lineage_id,
+            "review": review,
         }
     )
 
 
-def row_to_rounded_record(row: ReportRow, rounded: Coordinates) -> ReportRecord:
+def row_to_rounded_record(
+    row: ReportRow, rounded: Coordinates, review: ReportReviewRecord | None = None
+) -> ReportRecord:
     """Build a read record carrying an already rounded position and no accuracy.
 
     Used by listings, which never load the exact point (see ``queries``).
@@ -242,12 +256,104 @@ def row_to_rounded_record(row: ReportRow, rounded: Coordinates) -> ReportRecord:
         row: A row of ``reports`` loaded without ``observation`` and
             ``accuracy_metres``.
         rounded: The position rounded in SQL.
+        review: The lineage's stored review, if the query joined one.
 
     Returns:
         The validated ``ReportRecord``.
     """
     return ReportRecord.model_validate(
-        {**_common_fields(row), "observation": _observation(rounded, None)}
+        {
+            **_common_fields(row),
+            "observation": _observation(rounded, None),
+            "lineage_id": row.lineage_id,
+            "review": review,
+        }
+    )
+
+
+def report_review_to_values(review: ReportReview) -> dict[str, object]:
+    """Return every column value of a review except the primary key.
+
+    Args:
+        review: The aggregate.
+
+    Returns:
+        Column name to value.
+    """
+    mark = review.last_mark
+    return {
+        "state": review.state.value,
+        "last_mark_id": mark.id,
+        "reviewed_report_id": mark.report_id,
+        "reviewed_revision": mark.revision,
+        "updated_by": mark.actor_id,
+        "version": review.version,
+        "created_at": review.created_at,
+        "updated_at": review.updated_at,
+    }
+
+
+def review_mark_to_row(lineage_id: UUID, mark: ReviewMark) -> ReportReviewMarkRow:
+    """Build the history row of one mark.
+
+    Args:
+        lineage_id: The lineage the mark belongs to.
+        mark: The mark.
+
+    Returns:
+        A new, unsaved row.
+    """
+    return ReportReviewMarkRow(
+        id=mark.id,
+        lineage_id=lineage_id,
+        state=mark.state.value,
+        reason=mark.reason,
+        report_id=mark.report_id,
+        revision=mark.revision,
+        actor_id=mark.actor_id,
+        marked_at=mark.marked_at,
+    )
+
+
+def row_to_review_mark(row: ReportReviewMarkRow) -> ReviewMark:
+    """Rebuild one mark from its history row.
+
+    Args:
+        row: A row of ``report_review_marks``.
+
+    Returns:
+        The validated ``ReviewMark``.
+    """
+    return ReviewMark(
+        id=row.id,
+        state=ReviewState(row.state),
+        reason=row.reason,
+        report_id=row.report_id,
+        revision=row.revision,
+        actor_id=row.actor_id,
+        marked_at=row.marked_at,
+    )
+
+
+def rows_to_report_review(
+    row: ReportReviewRow, last_mark: ReportReviewMarkRow
+) -> ReportReview:
+    """Rebuild a review from its row and the row of its last mark.
+
+    Args:
+        row: A row of ``report_reviews``.
+        last_mark: The row of ``row.last_mark_id``.
+
+    Returns:
+        The validated ``ReportReview``.
+    """
+    return ReportReview(
+        id=row.lineage_id,
+        state=ReviewState(row.state),
+        last_mark=row_to_review_mark(last_mark),
+        version=row.version,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 

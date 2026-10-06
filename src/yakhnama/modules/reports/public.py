@@ -4,7 +4,8 @@ Other modules, the API and the composition root import only this file: the
 commands, queries, DTOs and handlers, the ports the composition root binds
 (including the three answered by other modules), the triage value types an adapter
 builds (``PhotoEvidence``, ``ReportSummaryForTriage``), the task name the worker
-routes, and the guest submission use cases, DTOs, ports and errors (ADR 0020).
+routes, the guest submission use cases, DTOs, ports and errors (ADR 0020), and
+the moderators' review marks (ADR 0022).
 
 Patterns: Facade.
 """
@@ -15,13 +16,17 @@ from yakhnama.modules.reports.application.authorisation import (
     is_moderator,
     reporter_policy,
     require_user,
+    review_policy,
     rounded_view_policy,
     submit_policy,
     triage_view_policy,
 )
 from yakhnama.modules.reports.application.commands import (
+    REVIEW_BULK_MAX,
     CompleteGuestMediaUpload,
     IssueGuestChallenge,
+    MarkReportReview,
+    MarkReportReviews,
     OpenGuestSubmission,
     PurgeGuestRecords,
     RequestGuestMediaUpload,
@@ -32,15 +37,24 @@ from yakhnama.modules.reports.application.commands import (
     WithdrawReport,
 )
 from yakhnama.modules.reports.application.dto import (
+    REVIEW_HISTORY_MAX,
+    BulkReviewResult,
     GuestChallengeGrant,
     GuestMediaAsset,
     GuestPurgeOutcome,
     GuestReportReceipt,
     GuestSubmissionGrant,
     GuestSubmissionWindow,
+    LinkedEvent,
+    ModeratorView,
     ReportDetail,
     ReportRecord,
+    ReportReviewDetail,
+    ReportReviewRecord,
+    ReportReviewSummary,
     ReportSummary,
+    ReviewMarkResult,
+    ReviewOutcome,
 )
 from yakhnama.modules.reports.application.guest_handlers import (
     GUEST_SOURCE_CITATION,
@@ -62,6 +76,8 @@ from yakhnama.modules.reports.application.handlers import (
     CITIZEN_SOURCE_TITLE,
     ORGANISATION_SOURCE_CITATION,
     ORGANISATION_SOURCE_TITLE,
+    MarkReportReviewHandler,
+    MarkReportReviewsHandler,
     ReviseReportHandler,
     RunTriageHandler,
     SubmitReportHandler,
@@ -78,6 +94,7 @@ from yakhnama.modules.reports.application.ports import (
     PhotoEvidenceProvider,
     ReportQueryService,
     ReportRepository,
+    ReportReviewRepository,
     ReportsUnitOfWork,
     ReportsUnitOfWorkFactory,
     SpentChallengeRepository,
@@ -85,6 +102,7 @@ from yakhnama.modules.reports.application.ports import (
 from yakhnama.modules.reports.application.queries import (
     FindNearbyReports,
     GetReport,
+    GetReportReview,
     ListReports,
 )
 from yakhnama.modules.reports.application.query_services import (
@@ -97,6 +115,7 @@ from yakhnama.modules.reports.application.specifications import (
     ReportObservedFromSpecification,
     ReportObservedToSpecification,
     ReportReporterSpecification,
+    ReportReviewStateSpecification,
     ReportStatusSpecification,
 )
 from yakhnama.modules.reports.domain.errors import (
@@ -110,10 +129,12 @@ from yakhnama.modules.reports.domain.errors import (
     GuestProofInvalidError,
     GuestSubmissionClosedError,
     GuestSubmissionLimitError,
+    ReportFilterForbiddenError,
     ReportImmutableError,
     ReportNotFoundError,
     ReportRevisionUnchangedError,
     ReportWithdrawnError,
+    ReviewReasonRequiredError,
 )
 from yakhnama.modules.reports.domain.guest_submissions import (
     GUEST_MEDIA_MAX,
@@ -121,6 +142,13 @@ from yakhnama.modules.reports.domain.guest_submissions import (
     GuestChallenge,
     GuestSubmission,
     GuestSubmissionLimits,
+)
+from yakhnama.modules.reports.domain.reviews import (
+    REVIEW_REASON_MAX_LENGTH,
+    ReportReview,
+    ReviewMark,
+    ReviewReason,
+    ReviewState,
 )
 from yakhnama.modules.reports.domain.triage import (
     PhotoEvidence,
@@ -151,14 +179,19 @@ __all__ = [
     "GUEST_SOURCE_TITLE",
     "ORGANISATION_SOURCE_CITATION",
     "ORGANISATION_SOURCE_TITLE",
+    "REVIEW_BULK_MAX",
+    "REVIEW_HISTORY_MAX",
+    "REVIEW_REASON_MAX_LENGTH",
     "RUN_TRIAGE_TASK",
     "AssistedSubmission",
     "AuthorisedReportQueryService",
+    "BulkReviewResult",
     "CompleteGuestMediaUpload",
     "CompleteGuestMediaUploadHandler",
     "ConsentMethod",
     "FindNearbyReports",
     "GetReport",
+    "GetReportReview",
     "GuestCap",
     "GuestCapabilityExpiredError",
     "GuestCapabilityInvalidError",
@@ -188,8 +221,14 @@ __all__ = [
     "HazardGuess",
     "IssueGuestChallenge",
     "IssueGuestChallengeHandler",
+    "LinkedEvent",
     "ListReports",
+    "MarkReportReview",
+    "MarkReportReviewHandler",
+    "MarkReportReviews",
+    "MarkReportReviewsHandler",
     "MediaOwnershipChecker",
+    "ModeratorView",
     "NearbyReportsFinder",
     "ObservationPoint",
     "OpenGuestSubmission",
@@ -202,6 +241,7 @@ __all__ = [
     "ReportChannelSpecification",
     "ReportContent",
     "ReportDetail",
+    "ReportFilterForbiddenError",
     "ReportHazardCodeSpecification",
     "ReportImmutableError",
     "ReportInBoundingBoxSpecification",
@@ -212,6 +252,12 @@ __all__ = [
     "ReportRecord",
     "ReportReporterSpecification",
     "ReportRepository",
+    "ReportReview",
+    "ReportReviewDetail",
+    "ReportReviewRecord",
+    "ReportReviewRepository",
+    "ReportReviewStateSpecification",
+    "ReportReviewSummary",
     "ReportRevisionUnchangedError",
     "ReportStatus",
     "ReportStatusSpecification",
@@ -222,6 +268,12 @@ __all__ = [
     "ReportsUnitOfWorkFactory",
     "RequestGuestMediaUpload",
     "RequestGuestMediaUploadHandler",
+    "ReviewMark",
+    "ReviewMarkResult",
+    "ReviewOutcome",
+    "ReviewReason",
+    "ReviewReasonRequiredError",
+    "ReviewState",
     "ReviseReport",
     "ReviseReportHandler",
     "RunTriage",
@@ -240,6 +292,7 @@ __all__ = [
     "is_moderator",
     "reporter_policy",
     "require_user",
+    "review_policy",
     "rounded_view_policy",
     "submit_policy",
     "triage_view_policy",

@@ -28,6 +28,16 @@ replace a report even if two corrections race. The reporter, organisation and so
 ids carry no foreign key: they belong to the ``identity`` and ``provenance`` modules,
 which this module knows only through their facades.
 
+``lineage_id`` names the report's lineage, the id of its revision 1 (ADR 0022). The
+repository sets it when it inserts a row (a revision copies it from the report it
+supersedes); ``lineage_root_is_first_revision`` checks that revision 1 is its own
+lineage and no other revision is. ``report_reviews`` holds one row per marked
+lineage (its current mark, denormalised from the last one) and
+``report_review_marks`` every mark ever made, insert-only; neither changes a
+report row. ``media_ids`` has a GIN index (``jsonb_path_ops``) so the media
+module's moderation queue can find the report that lists an asset uploaded before
+it.
+
 Patterns: Adapter (ORM row models behind the repository and query service adapters).
 """
 
@@ -46,6 +56,9 @@ WGS84_SRID: Final = 4326
 """EPSG code of every stored geometry (ADR 0002)."""
 
 REPORTS_TABLE: Final = "reports"
+REPORT_REVIEWS_TABLE: Final = "report_reviews"
+REPORT_REVIEW_MARKS_TABLE: Final = "report_review_marks"
+REVIEW_STATES_CHECK: Final = "state IN ('new', 'reviewed', 'archived')"
 GUEST_SUBMISSIONS_TABLE: Final = "guest_submissions"
 GUEST_CHALLENGES_TABLE: Final = "guest_challenges"
 
@@ -84,6 +97,7 @@ class ReportRow(Base):
         assisted_consent_method: ``ConsentMethod`` of an assisted report.
         assisted_consent_statement_version: The consent statement's version.
         assisted_note: The assisting person's private note, if any.
+        lineage_id: The id of the lineage's revision 1; set on insert.
     """
 
     __tablename__ = REPORTS_TABLE
@@ -116,7 +130,19 @@ class ReportRow(Base):
             "AND (assisted_consent_method IS NOT NULL OR assisted_note IS NULL)",
             name="assisted_matches_channel",
         ),
+        CheckConstraint(
+            "(revision = 1) = (lineage_id = id)",
+            name="lineage_root_is_first_revision",
+        ),
         Index("ix_reports_observation_gist", "observation", postgresql_using="gist"),
+        # Serves "which report lists this media asset" for the media moderation
+        # queue (containment, ``@>``), read by the media module's SQL only.
+        Index(
+            "ix_reports_media_ids_gin",
+            "media_ids",
+            postgresql_using="gin",
+            postgresql_ops={"media_ids": "jsonb_path_ops"},
+        ),
         # Serves the newest-first keyset listing (read backwards).
         Index("ix_reports_created_at_id", "created_at", "id"),
         # Serves the moderators' guest and assisted queues (``channel=...``,
@@ -168,6 +194,95 @@ class ReportRow(Base):
     # CONSENT_STATEMENT_VERSION_PATTERN and ASSISTANCE_NOTE_MAX_LENGTH.
     assisted_consent_statement_version: Mapped[str | None] = mapped_column(String(32))
     assisted_note: Mapped[str | None] = mapped_column(String(500))
+    lineage_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reports.id", ondelete="RESTRICT"), index=True
+    )
+
+
+class ReportReviewRow(Base):
+    """Row model of ``report_reviews``: the current mark of one report lineage.
+
+    Implements: Adapter (ORM row model of ``SqlAlchemyReportReviewRepository``).
+
+    Attributes:
+        lineage_id: Primary key, the id of the lineage's revision 1.
+        state: ``ReviewState`` value of the last mark.
+        last_mark_id: The last mark in ``report_review_marks``.
+        reviewed_report_id: The revision the last mark was made on.
+        reviewed_revision: That revision's number.
+        updated_by: The moderator who made the last mark.
+        version: Optimistic-concurrency version, compared on every update.
+        created_at: When the lineage was first marked, UTC.
+        updated_at: When it was last marked, UTC.
+    """
+
+    __tablename__ = REPORT_REVIEWS_TABLE
+    __table_args__ = (
+        CheckConstraint(REVIEW_STATES_CHECK, name="state_known"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("reviewed_revision >= 1", name="revision_positive"),
+        CheckConstraint("created_at <= updated_at", name="times_ordered"),
+    )
+
+    lineage_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reports.id", ondelete="RESTRICT"), primary_key=True
+    )
+    state: Mapped[str] = mapped_column(String(16), index=True)
+    # No foreign key: the mark row references this row, and the two are written
+    # in one transaction by the repository, review first.
+    last_mark_id: Mapped[UUID]
+    reviewed_report_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reports.id", ondelete="RESTRICT")
+    )
+    reviewed_revision: Mapped[int] = mapped_column(Integer)
+    updated_by: Mapped[UUID]
+    version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class ReportReviewMarkRow(Base):
+    """Row model of ``report_review_marks``: one mark, inserted once, never changed.
+
+    Implements: Adapter (ORM row model of ``SqlAlchemyReportReviewRepository``).
+
+    Attributes:
+        id: Primary key, the mark id (UUIDv7).
+        lineage_id: The lineage's review.
+        state: ``ReviewState`` value the mark set.
+        reason: Why, or a note; moderators only.
+        report_id: The revision the moderator looked at.
+        revision: That revision's number.
+        actor_id: The moderator.
+        marked_at: When, UTC.
+    """
+
+    __tablename__ = REPORT_REVIEW_MARKS_TABLE
+    __table_args__ = (
+        CheckConstraint(REVIEW_STATES_CHECK, name="state_known"),
+        CheckConstraint("revision >= 1", name="revision_positive"),
+        # Serves the newest-first history of one lineage.
+        Index(
+            "ix_report_review_marks_lineage_id_marked_at_id",
+            "lineage_id",
+            "marked_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    lineage_id: Mapped[UUID] = mapped_column(
+        ForeignKey("report_reviews.lineage_id", ondelete="RESTRICT")
+    )
+    state: Mapped[str] = mapped_column(String(16))
+    # REVIEW_REASON_MAX_LENGTH.
+    reason: Mapped[str | None] = mapped_column(String(500))
+    report_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reports.id", ondelete="RESTRICT")
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    actor_id: Mapped[UUID]
+    marked_at: Mapped[datetime]
 
 
 class GuestSubmissionRow(Base):

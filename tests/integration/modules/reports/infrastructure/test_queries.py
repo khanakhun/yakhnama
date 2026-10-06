@@ -203,7 +203,9 @@ async def test_report_query_service_get_report_returns_exact_record(
 
     record = await service.get_report(stored[0].id)
 
-    assert record == ReportRecord.from_entity(stored[0])
+    assert record == ReportRecord.from_entity(stored[0]).model_copy(
+        update={"lineage_id": stored[0].id}
+    )
 
 
 async def test_report_query_service_get_unknown_report_returns_none(
@@ -251,8 +253,11 @@ async def test_report_query_service_list_returns_rounded_point_without_accuracy(
         exact = by_id[record.id].observation.coordinates
         assert record.observation.coordinates == round_coordinates(exact, 2)
         assert record.observation.accuracy is None
-        # Everything except the position matches the stored report.
-        expected = ReportRecord.from_entity(by_id[record.id])
+        # Everything except the position matches the stored report, which is
+        # its own lineage (revision 1).
+        expected = ReportRecord.from_entity(by_id[record.id]).model_copy(
+            update={"lineage_id": record.id}
+        )
         assert record.model_dump(exclude={"observation"}) == expected.model_dump(
             exclude={"observation"}
         )

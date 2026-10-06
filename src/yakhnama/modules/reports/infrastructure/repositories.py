@@ -14,6 +14,12 @@ to tell a missing report (``ReportNotFoundError``) from a concurrent change
 
 There is no delete: reports are never removed (``AGENTS.md`` §5).
 
+``add`` also fills ``lineage_id`` (ADR 0022): a report's own id for revision 1, and
+for a later revision the lineage of the report it supersedes, read in the same
+transaction. ``SqlAlchemyReportReviewRepository`` writes a lineage's review row and
+appends its last mark to ``report_review_marks`` in the same transaction, review
+first because the mark references it; marks are only ever inserted.
+
 ``SqlAlchemyGuestSubmissionRepository`` follows the same rules for guest submissions
 (a unique violation on ``reference`` or ``report_id`` is a conflict). Its
 ``lock_cap`` takes a transaction-scoped PostgreSQL advisory lock with one constant
@@ -45,16 +51,22 @@ from yakhnama.modules.reports.domain.guest_submissions import (
     GuestCap,
     GuestSubmission,
 )
+from yakhnama.modules.reports.domain.reviews import ReportReview
 from yakhnama.modules.reports.infrastructure.mappers import (
     guest_submission_to_values,
+    report_review_to_values,
     report_to_row,
     report_to_values,
+    review_mark_to_row,
     row_to_guest_submission,
     row_to_report,
+    rows_to_report_review,
 )
 from yakhnama.modules.reports.infrastructure.orm import (
     GuestChallengeRow,
     GuestSubmissionRow,
+    ReportReviewMarkRow,
+    ReportReviewRow,
     ReportRow,
 )
 from yakhnama.platform.db import is_unique_violation
@@ -129,6 +141,7 @@ class SqlAlchemyReportRepository:
                 is not stored, which the application layer rules out.
         """
         row = report_to_row(report)
+        row.lineage_id = await self._lineage_for(report)
         try:
             # The savepoint keeps the transaction usable after a duplicate.
             async with self._session.begin_nested():
@@ -179,6 +192,145 @@ class SqlAlchemyReportRepository:
                 "stored_version": stored,
             },
         )
+
+    async def lineage_of(self, report_id: EntityId) -> EntityId | None:
+        """Return the lineage of a stored report: the id of its revision 1.
+
+        Args:
+            report_id: Any revision.
+
+        Returns:
+            The lineage id, or ``None`` if the report is not stored.
+        """
+        lineage_id: EntityId | None = await self._session.scalar(
+            select(ReportRow.lineage_id).where(ReportRow.id == report_id)
+        )
+        return lineage_id
+
+    async def _lineage_for(self, report: Report) -> EntityId:
+        if report.supersedes_id is None:
+            return report.id
+        lineage_id = await self.lineage_of(report.supersedes_id)
+        # For a revision of an unstored report there is no lineage to inherit; the
+        # superseded id stands in, and the insert fails on the foreign key of
+        # supersedes_id with the IntegrityError ``add`` documents.
+        return report.supersedes_id if lineage_id is None else lineage_id
+
+
+class SqlAlchemyReportReviewRepository:
+    """PostgreSQL-backed implementation of ``ReportReviewRepository``.
+
+    The session belongs to the unit of work; this class never commits.
+
+    Implements: Repository (port ``ReportReviewRepository``).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Create the repository.
+
+        Args:
+            session: The unit of work's session.
+        """
+        self._session = session
+
+    async def get(self, lineage_id: EntityId) -> ReportReview | None:
+        """Return the review of a lineage with its last mark.
+
+        Args:
+            lineage_id: The id of the lineage's revision 1.
+
+        Returns:
+            The aggregate, or ``None`` if the lineage was never marked.
+        """
+        statement = (
+            select(ReportReviewRow, ReportReviewMarkRow)
+            .join(
+                ReportReviewMarkRow,
+                ReportReviewMarkRow.id == ReportReviewRow.last_mark_id,
+            )
+            .where(ReportReviewRow.lineage_id == lineage_id)
+        )
+        found = (await self._session.execute(statement)).tuples().one_or_none()
+        if found is None:
+            return None
+        review_row, mark_row = found
+        self._session.expunge(review_row)
+        self._session.expunge(mark_row)
+        return rows_to_report_review(review_row, mark_row)
+
+    async def add(self, review: ReportReview) -> None:
+        """Insert a lineage's first review and append its first mark.
+
+        Args:
+            review: The new aggregate at version 1.
+
+        Raises:
+            ConflictError: If the lineage already has a review.
+        """
+        row = ReportReviewRow(lineage_id=review.id, **report_review_to_values(review))
+        try:
+            # The savepoint keeps the transaction usable after a duplicate.
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError as error:
+            if not is_unique_violation(error):
+                raise
+            message = f"report lineage {review.id} was marked concurrently"
+            raise ConflictError(
+                message, details={"lineage_id": str(review.id)}
+            ) from error
+        self._session.expunge(row)
+        await self._append(review)
+
+    async def save(self, review: ReportReview) -> None:
+        """Update a stored review and append its new last mark.
+
+        Args:
+            review: The new state; its ``version`` is one more than the stored one.
+
+        Raises:
+            NotFoundError: If the lineage has no stored review.
+            ConflictError: If the stored version is not ``review.version - 1``.
+        """
+        statement = (
+            update(ReportReviewRow)
+            .where(
+                ReportReviewRow.lineage_id == review.id,
+                ReportReviewRow.version == review.version - 1,
+            )
+            .values(report_review_to_values(review))
+            .returning(ReportReviewRow.lineage_id)
+            .execution_options(synchronize_session=False)
+        )
+        if (await self._session.execute(statement)).scalar_one_or_none() is None:
+            stored = await self._session.scalar(
+                select(ReportReviewRow.version).where(
+                    ReportReviewRow.lineage_id == review.id
+                )
+            )
+            if stored is None:
+                message = f"report lineage {review.id} has no review"
+                raise NotFoundError(message, details={"lineage_id": str(review.id)})
+            message = (
+                f"report lineage {review.id} was marked concurrently "
+                f"(expected version {review.version - 1})"
+            )
+            raise ConflictError(
+                message,
+                details={
+                    "lineage_id": str(review.id),
+                    "expected_version": review.version - 1,
+                    "stored_version": stored,
+                },
+            )
+        await self._append(review)
+
+    async def _append(self, review: ReportReview) -> None:
+        row = review_mark_to_row(review.id, review.last_mark)
+        self._session.add(row)
+        await self._session.flush()
+        self._session.expunge(row)
 
 
 class SqlAlchemyGuestSubmissionRepository:

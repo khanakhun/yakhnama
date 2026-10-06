@@ -13,7 +13,7 @@ Patterns: API Schema.
 """
 
 from enum import StrEnum
-from typing import Annotated, Final, Self
+from typing import Annotated, Final, Literal, Self
 
 from pydantic import (
     AwareDatetime,
@@ -43,11 +43,14 @@ from yakhnama.modules.reports.domain.value_objects import (
     WithdrawalReason,
 )
 from yakhnama.modules.reports.public import (
+    REVIEW_BULK_MAX,
     HazardGuess,
     ObservationPoint,
     ReportContent,
     ReportStatus,
     ReportSummary,
+    ReviewReason,
+    ReviewState,
 )
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
@@ -228,6 +231,10 @@ class ListReportsParameters(BaseModel):
             positions.
         observed_from: Only reports observed at or after this instant (``from``).
         observed_to: Only reports observed at or before this instant (``to``).
+        review_state: Only reports whose lineage carries this review mark;
+            moderators only, 403 for anyone else (ADR 0022).
+        reporter: ``me`` for the caller's own reports only; narrows a
+            moderator's listing to the reports they submitted themselves.
         output_format: ``json`` or ``geojson`` (query name ``format``).
         cursor: Opaque cursor from a previous page.
         limit: Page size, 1 to 200.
@@ -241,6 +248,8 @@ class ListReportsParameters(BaseModel):
     bbox: BoundingBoxText | None = None
     observed_from: AwareDatetime | None = Field(default=None, alias="from")
     observed_to: AwareDatetime | None = Field(default=None, alias="to")
+    review_state: ReviewState | None = None
+    reporter: Literal["me"] | None = None
     output_format: ReportFormat | None = Field(default=None, alias="format")
     cursor: Annotated[str | None, Field(max_length=MAX_CURSOR_LENGTH)] = None
     limit: Annotated[int, Field(ge=1, le=MAX_PAGE_LIMIT)] = DEFAULT_PAGE_LIMIT
@@ -384,3 +393,39 @@ class GuestReportRequest(ReportContentRequest):
     """
 
     media_ids: tuple[EntityId, ...] = Field(default=(), max_length=GUEST_MEDIA_MAX)
+
+
+class MarkReviewRequest(BaseModel):
+    """Body of ``POST /api/v1/moderation/reports/{report_id}/review``.
+
+    Implements: API Schema.
+
+    Attributes:
+        state: ``new``, ``reviewed`` or ``archived``.
+        reason: Why, or a note, 1 to 500 characters of safe text. Required to
+            archive, to go back to ``new`` and to leave ``archived`` (422
+            otherwise); optional for ``reviewed``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    state: ReviewState
+    reason: ReviewReason | None = None
+
+
+class BulkMarkReviewRequest(BaseModel):
+    """Body of ``POST /api/v1/moderation/reports/review``: one mark, many reports.
+
+    Implements: API Schema.
+
+    Attributes:
+        report_ids: 1 to 100 distinct reports.
+        state: The mark for all of them.
+        reason: The same reason for all of them; required as for one report.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    report_ids: tuple[EntityId, ...] = Field(min_length=1, max_length=REVIEW_BULK_MAX)
+    state: ReviewState
+    reason: ReviewReason | None = None

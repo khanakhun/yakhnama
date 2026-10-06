@@ -32,6 +32,9 @@ A report holds two kinds of personal data: the reporter's **position**
 - A guest report's reporter is the guest submission; it is never shown (`reporter_id`
   is `null` in every API view). The guest's capability is stored only as its SHA-256
   digest (ADR 0020).
+- A moderator's review reason or note (`report_review_marks.reason`) may quote the
+  report; it is shown to moderators only, never in an event (`ReportReviewMarked`
+  carries `has_reason` only) or a log (ADR 0022).
 
 ## Report (aggregate root)
 
@@ -64,6 +67,7 @@ A report holds two kinds of personal data: the reporter's **position**
 | `assisted.consent_method` | `ConsentMethod`, nullable | — | How the assisted person consented: `verbal` or `written`. Set exactly for `assisted`. | Assisting person. | 2026-10 |
 | `assisted.consent_statement_version` | `str`, `^[a-z0-9][a-z0-9._-]{0,31}$`, nullable | — | Version of the consent statement read to or by the assisted person; the statement's text lives with the client (portal message catalogues). | Assisting person's client. | 2026-10 |
 | `assisted.note` | `str`, safe text 1–500 with line breaks, nullable | — | Private note by the assisting person. **Personal data**: exact view only; stored as plain text (not encrypted). | Assisting person. | 2026-10 |
+| `lineage_id` (column only) | `UUID` (v7) | — | The id of the lineage's revision 1: equal to `id` for revision 1, inherited by every later revision. Not a field of the aggregate; set by the repository on insert and read by the review marks. | Platform. | 2026-10 (ADR 0022) |
 
 ### ReportStatus
 
@@ -126,6 +130,7 @@ reason, coordinate or accuracy.
 | `reports.report_superseded` | A revision was replaced by the next one. | `superseded_by_id` |
 | `reports.report_withdrawn` | The reporter withdrew a report. | `previous_status` |
 | `reports.report_triaged` | A triage result was attached. | `flag_kinds` |
+| `reports.report_review_marked` | A moderator marked a lineage; `aggregate_type` is `report_review` and `aggregate_id` the lineage id; the report itself is unchanged. | `state`, `previous_state`, `report_id`, `revision`, `actor_id`, `has_reason` (never the reason) |
 
 ## Errors
 
@@ -148,6 +153,51 @@ reason, coordinate or accuracy.
 | `GuestSubmissionClosedError` | conflict (`guest-submission-closed`) | An upload or a different report after the report was reserved. |
 | `GuestMediaNotFoundError` | not found | Completing an asset not granted to the submission. |
 | `GuestSubmissionLimitError` | 429 (`rate-limited`) | An hourly cap is reached: submissions opened, or guest reports submitted; carries `retry_after_seconds` (the `Retry-After` header). |
+| `ReviewReasonRequiredError` | validation | A review mark that needs a reason has none (archive, back to `new`, out of `archived`); `details.reason` is `review_reason_required`. |
+| `ReportFilterForbiddenError` | permission denied | A caller who is not a moderator filters reports by `review_state`. |
+
+## Review marks (ADR 0022)
+
+Report moderation is non-blocking and reversible (maintainer, 2026-10-07): nothing a
+reporter sends is refused, rejected or deleted, and a mark never changes a report's
+status, content, `version` or its reporter's rights to revise and withdraw. Moderators
+mark a report **lineage** (a report and all its revisions) `new`, `reviewed` or
+`archived`; marks are shown to moderators only (Q240).
+
+### ReportReview (aggregate root)
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `id` | `UUID` (v7) | — | The lineage id: the id of the lineage's revision 1. | Platform. | 2026-10 |
+| `state` | `ReviewState` | — | `new` (never marked, or a mark undone), `reviewed` (a moderator looked at it), `archived` (set aside with a reason; still on record). A lineage without a review is `new`. | Moderator. | 2026-10 |
+| `last_mark` | `ReviewMark` | — | The mark that set `state`. | Moderator. | 2026-10 |
+| `version` | `int`, 1–2³¹−1 | count | Optimistic-concurrency version; the API's review `ETag` is `"<lineage_id>:<version>"`, version 0 while unmarked. | Platform. | 2026-10 |
+| `created_at` | `datetime` (UTC) | UTC | When the lineage was first marked. | Platform `Clock`. | 2026-10 |
+| `updated_at` | `datetime` (UTC) | UTC | When it was last marked; equals `last_mark.marked_at`. | Platform `Clock`. | 2026-10 |
+
+### ReviewMark (one row of the history, never changed)
+
+| field | type | unit | meaning | provenance | since |
+|-------|------|------|---------|------------|-------|
+| `id` | `UUID` (v7) | — | The mark. | Platform. | 2026-10 |
+| `state` | `ReviewState` | — | The state the mark set. | Moderator. | 2026-10 |
+| `reason` | `str`, safe text 1–500 with line breaks, nullable | — | Why, or a note. Required to archive, to go back to `new` and to leave `archived`; optional when marking `reviewed` from `new` or `reviewed` (Q242). Moderators only. | Moderator. | 2026-10 |
+| `report_id` | `UUID` (v7) | — | The revision the moderator looked at. | Moderator's request. | 2026-10 |
+| `revision` | `int`, 1–1000 | count | That revision's number. | Platform. | 2026-10 |
+| `actor_id` | `UUID` (v7) | — | The moderator (a user id). | Authenticated actor. | 2026-10 |
+| `marked_at` | `datetime` (UTC) | UTC | When. | Platform `Clock`. | 2026-10 |
+
+A mark repeating the last one (same state, revision and reason) changes nothing.
+
+### What reports carry for moderators
+
+`ReportSummary.review` and `ReportDetail.review` are
+`{state, updated_at, updated_by, reviewed_revision, revised_since}`, `null` for anyone
+who is not a moderator. `revised_since` is true while the lineage has a newer revision
+than the one a `reviewed` or `archived` mark was made on. `ReportDetail.linked_events`
+(moderators only) lists `{event_id, report_id, role}` for every event any revision of
+the lineage is linked to, read from the events module's `event_report_links`
+projection.
 
 ## Guest submissions (ADR 0020)
 
@@ -230,6 +280,19 @@ over the non-account channels (the moderators' guest and assisted queues), and e
 `reserved_fields_together`. Downgrading `0021` fails while a submission is reserved but
 not yet filed (seconds per report in flight).
 
+Migration `0025_report_review_marks_and_moderation_queues` adds `reports.lineage_id`
+(backfilled along each revision chain, then `NOT NULL`, referencing `reports.id`,
+indexed), the check `lineage_root_is_first_revision` (`(revision = 1) = (lineage_id =
+id)`), the GIN index `ix_reports_media_ids_gin` (`jsonb_path_ops`) for the media
+queue's report lookup, and two tables: `report_reviews` (primary key `lineage_id`
+referencing `reports.id`; `state`, indexed and checked; `last_mark_id`;
+`reviewed_report_id` referencing `reports.id`; `reviewed_revision`, `updated_by`,
+`version`, `created_at`, `updated_at`) and `report_review_marks` (insert-only; `id`,
+`lineage_id` referencing `report_reviews`, `state`, `reason`, `report_id` referencing
+`reports.id`, `revision`, `actor_id`, `marked_at`; indexed on `(lineage_id, marked_at,
+id)`). All references are `ON DELETE RESTRICT`. **Its downgrade loses every review
+mark.**
+
 ## Open questions raised by this module
 
 | # | Question | Proposed default | Blocking |
@@ -249,4 +312,4 @@ not yet filed (seconds per report in flight).
 | Q-R13 | Does every revision keep the original's reporter, organisation and source? | Yes; a revision is a correction by the same reporter, not a new source. | no |
 
 The reporting channels and guest submissions added their questions to the central
-log, `docs/open-questions.md` Q218–Q228.
+log, `docs/open-questions.md` Q218–Q228; the review marks Q240–Q246 and Q251–Q253.

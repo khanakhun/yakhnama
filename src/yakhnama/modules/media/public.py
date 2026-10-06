@@ -55,7 +55,7 @@ from yakhnama.modules.media.application.ports import (
     ReportSourceLookup,
     StoragePort,
 )
-from yakhnama.modules.media.application.queries import GetMediaAsset
+from yakhnama.modules.media.application.queries import GetMediaAsset, ListMediaQueue
 from yakhnama.modules.media.application.query_services import (
     AuthorisedMediaQueryService,
 )
@@ -102,6 +102,7 @@ __all__ = [
     "InfectedMediaError",
     "InvalidModerationDecisionError",
     "InvalidScanVerdictError",
+    "ListMediaQueue",
     "MalwareScanner",
     "MediaAsset",
     "MediaAssetDetail",

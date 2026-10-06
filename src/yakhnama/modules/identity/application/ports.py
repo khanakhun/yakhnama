@@ -11,6 +11,7 @@ from typing import Protocol
 from yakhnama.modules.identity.application.dto import (
     MeDetail,
     MemberSummary,
+    ModeratorSummary,
     OrganizationDetail,
 )
 from yakhnama.modules.identity.application.queries import ListOrganizationMembers
@@ -276,6 +277,19 @@ class IdentityQueryService(Protocol):
 
         Returns:
             The detail view, or ``None``.
+        """
+        ...
+
+    async def list_moderators(self, limit: int) -> tuple[ModeratorSummary, ...]:
+        """Return the active users who hold ``moderator`` or ``admin``.
+
+        Ordered by display name (users without one last), then by id.
+
+        Args:
+            limit: Most entries returned.
+
+        Returns:
+            Up to ``limit`` entries.
         """
         ...
 

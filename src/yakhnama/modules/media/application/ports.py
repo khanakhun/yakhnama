@@ -24,9 +24,11 @@ from yakhnama.modules.media.domain.entities import MediaAsset
 from yakhnama.modules.media.domain.value_objects import (
     ExifFacts,
     MimeType,
+    ModerationStatus,
     ScanStatus,
 )
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.pagination import Page, PageRequest
 from yakhnama.shared_kernel.uow import UnitOfWork, UnitOfWorkFactory
 
 SCAN_TASK: Final = "media.scan"
@@ -149,6 +151,34 @@ class MediaQueryService(Protocol):
 
         Returns:
             The records found.
+        """
+        ...
+
+    async def list_queue(
+        self,
+        *,
+        moderation_status: ModerationStatus | None,
+        scan_status: ScanStatus | None,
+        page: PageRequest,
+    ) -> Page[MediaAssetRecord]:
+        """Return one page of completed uploads, oldest first, for moderators.
+
+        Ordered by ``created_at`` ascending, then by id; the cursor's
+        ``sort_key`` is ``created_at`` in ISO 8601 and its ``last_id`` the last
+        asset's id. Each record's ``report_id`` is the asset's own, or, for an
+        asset uploaded before its report existed, the id of the newest report
+        revision that lists it (``None`` if no report lists it yet).
+
+        Args:
+            moderation_status: Only assets with this status, if set.
+            scan_status: Only assets with this scan verdict, if set.
+            page: Page size and cursor.
+
+        Returns:
+            Up to ``page.limit`` records and the next cursor, if any.
+
+        Raises:
+            ValidationError: If the cursor is invalid.
         """
         ...
 

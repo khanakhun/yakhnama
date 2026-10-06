@@ -57,6 +57,7 @@ from yakhnama.modules.exchange.public import (
 )
 from yakhnama.modules.identity.public import Actor
 from yakhnama.platform.etag import make_etag, set_etag
+from yakhnama.platform.openapi_headers import ETAG, LOCATION, header_responses
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
 
@@ -269,7 +270,10 @@ async def request_import_upload(
 @moderation_router.post(
     "/imports",
     status_code=status.HTTP_202_ACCEPTED,
-    responses=_CREATING_RESPONSES,
+    responses={
+        **_CREATING_RESPONSES,
+        **header_responses(status.HTTP_202_ACCEPTED, LOCATION, ETAG),
+    },
 )
 async def request_import(
     body: RequestImportRequest,
@@ -320,7 +324,11 @@ async def _read_import(
 
 
 @moderation_router.get(
-    "/imports/{job_id}", responses={status.HTTP_404_NOT_FOUND: _PROBLEM}
+    "/imports/{job_id}",
+    responses={
+        status.HTTP_404_NOT_FOUND: _PROBLEM,
+        **header_responses(status.HTTP_200_OK, ETAG),
+    },
 )
 async def get_import(
     job_id: EntityId,

@@ -30,6 +30,19 @@ Listings page by keyset on ``(created_at, id)`` descending, newest first; the
 cursor's ``sort_key`` is ``created_at`` in ISO 8601 and ``last_id`` the last report's
 id, as the port requires.
 
+**Review marks** (ADR 0022). Both reads left-join the lineage's row in
+``report_reviews`` (primary key ``lineage_id``) and select the lineage's newest
+revision as a correlated ``max(revision)`` over ``ix_reports_lineage_id``, so each
+record carries its ``ReportReviewRecord`` without a second round trip.
+``ReportReviewStateSpecification`` compiles to ``coalesce(state, 'new') = :state``:
+a lineage without a review is ``new``. The history is read newest first from
+``report_review_marks`` over its ``(lineage_id, marked_at, id)`` index.
+
+**Linked events** are read from ``event_report_links``, the events module's
+projection of its report links, as a lightweight ``table()`` clause with only the
+columns read here (never the events module's ORM model; modules share no Python
+internals, ``AGENTS.md`` §2.1), joined to every revision of the lineage.
+
 **Nearby reports.** ``find_nearby`` selects current (``submitted``) reports with
 ``ST_DWithin(observation::geography, center::geography, radius, false)`` and
 ``observed_at`` within the window on either side, nearest first by
@@ -43,6 +56,7 @@ geometry GiST index; the ``observed_at`` index bounds the scan to the time windo
 Patterns: Query Service (adapter side), Specification (SQL compilation).
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Final
 
@@ -51,20 +65,30 @@ from sqlalchemy import (
     ColumnElement,
     Float,
     Numeric,
+    String,
     Text,
+    Uuid,
     and_,
     cast,
+    column,
     false,
     func,
+    literal,
     not_,
     or_,
     select,
+    table,
     true,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import defer
+from sqlalchemy.orm import aliased, defer
+from sqlalchemy.types import DateTime
 
-from yakhnama.modules.reports.application.dto import ReportRecord
+from yakhnama.modules.reports.application.dto import (
+    LinkedEvent,
+    ReportRecord,
+    ReportReviewRecord,
+)
 from yakhnama.modules.reports.application.queries import FindNearbyReports
 from yakhnama.modules.reports.application.specifications import (
     ReportChannelSpecification,
@@ -73,17 +97,25 @@ from yakhnama.modules.reports.application.specifications import (
     ReportObservedFromSpecification,
     ReportObservedToSpecification,
     ReportReporterSpecification,
+    ReportReviewStateSpecification,
     ReportStatusSpecification,
 )
+from yakhnama.modules.reports.domain.reviews import ReviewMark, ReviewState
 from yakhnama.modules.reports.domain.triage import ReportSummaryForTriage
 from yakhnama.modules.reports.domain.value_objects import ReportStatus
 from yakhnama.modules.reports.infrastructure.mappers import (
     element_to_coordinates,
     observed_at_from_columns,
     row_to_exact_record,
+    row_to_review_mark,
     row_to_rounded_record,
 )
-from yakhnama.modules.reports.infrastructure.orm import WGS84_SRID, ReportRow
+from yakhnama.modules.reports.infrastructure.orm import (
+    WGS84_SRID,
+    ReportReviewMarkRow,
+    ReportReviewRow,
+    ReportRow,
+)
 from yakhnama.shared_kernel.errors import ValidationError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
@@ -104,6 +136,17 @@ from yakhnama.shared_kernel.specification import (
 from yakhnama.shared_kernel.value_objects import Coordinates
 
 _DEGREES_BASE: Final = 10
+
+EVENT_REPORT_LINKS: Final = table(
+    "event_report_links",
+    column("event_id", Uuid()),
+    column("report_id", Uuid()),
+    column("role", String()),
+    column("linked_at", DateTime(timezone=True)),
+)
+"""The columns of the events module's link projection this read model joins."""
+
+_LINEAGE_REVISIONS = aliased(ReportRow, name="lineage_revisions")
 # ST_DWithin / ST_Distance on geography: False selects the mean-radius sphere.
 _USE_SPHEROID: Final = False
 
@@ -193,7 +236,7 @@ def _in_rounded_bbox(
 def _report_leaf_condition(
     specification: Specification[ReportRecord],
 ) -> ColumnElement[bool]:
-    """Compile one of the seven report leaves.
+    """Compile one of the eight report leaves.
 
     Raises:
         TypeError: If the leaf has no SQL translation.
@@ -214,10 +257,76 @@ def _report_leaf_condition(
             condition = ReportRow.observed_at <= specification.instant
         case ReportReporterSpecification():
             condition = ReportRow.reporter_id == specification.reporter_id
+        case ReportReviewStateSpecification():
+            condition = (
+                func.coalesce(ReportReviewRow.state, literal(ReviewState.NEW.value))
+                == specification.state.value
+            )
         case _:
             message = f"no SQL translation for {type(specification).__name__}"
             raise TypeError(message)
     return condition
+
+
+def latest_revision_of_lineage() -> ColumnElement[int]:
+    """Return the newest revision number of the row's lineage, as a scalar.
+
+    Returns:
+        A correlated ``max(revision)`` over the lineage's rows.
+    """
+    return (
+        select(func.max(_LINEAGE_REVISIONS.revision))
+        .where(_LINEAGE_REVISIONS.lineage_id == ReportRow.lineage_id)
+        .correlate(ReportRow)
+        .scalar_subquery()
+    )
+
+
+def review_record_from(found: Sequence[object]) -> ReportReviewRecord | None:
+    """Build the review a joined row carries, if the lineage has one.
+
+    Args:
+        found: A row whose last seven columns are the ``REVIEW_COLUMNS``.
+
+    Returns:
+        The review, or ``None`` when the outer join found none.
+    """
+    (
+        state,
+        reviewed_report_id,
+        reviewed_revision,
+        updated_at,
+        updated_by,
+        version,
+        latest_revision,
+    ) = found[-len(REVIEW_COLUMNS) :]
+    if state is None:
+        return None
+    return ReportReviewRecord.model_validate(
+        {
+            "state": state,
+            "reviewed_report_id": reviewed_report_id,
+            "reviewed_revision": reviewed_revision,
+            "updated_at": updated_at,
+            "updated_by": updated_by,
+            "version": version,
+            "latest_revision": latest_revision,
+        }
+    )
+
+
+REVIEW_COLUMNS: Final = (
+    ReportReviewRow.state,
+    ReportReviewRow.reviewed_report_id,
+    ReportReviewRow.reviewed_revision,
+    ReportReviewRow.updated_at,
+    ReportReviewRow.updated_by,
+    ReportReviewRow.version,
+    latest_revision_of_lineage(),
+)
+"""The review columns both reads select after the report's own."""
+
+_REVIEW_JOIN: Final = ReportReviewRow.lineage_id == ReportRow.lineage_id
 
 
 class ReportSpecificationCompiler:
@@ -323,9 +432,16 @@ class SqlAlchemyReportQueryService:
         Returns:
             The record, or ``None``.
         """
+        statement = (
+            select(ReportRow, *REVIEW_COLUMNS)
+            .outerjoin(ReportReviewRow, _REVIEW_JOIN)
+            .where(ReportRow.id == report_id)
+        )
         async with self._session_factory() as session:
-            row = await session.get(ReportRow, report_id)
-        return None if row is None else row_to_exact_record(row)
+            found = (await session.execute(statement)).one_or_none()
+        if found is None:
+            return None
+        return row_to_exact_record(found[0], review_record_from(found))
 
     async def list_reports(
         self, specification: Specification[ReportRecord], page: PageRequest
@@ -347,7 +463,8 @@ class SqlAlchemyReportQueryService:
         cursor = page.decode_cursor()
         longitude, latitude = rounded_point(self._public_coordinates.decimals)
         statement = (
-            select(ReportRow, longitude, latitude)
+            select(ReportRow, longitude, latitude, *REVIEW_COLUMNS)
+            .outerjoin(ReportReviewRow, _REVIEW_JOIN)
             # raiseload: reading the exact point on this path is a bug, not a query.
             .options(
                 defer(ReportRow.observation, raiseload=True),
@@ -367,12 +484,14 @@ class SqlAlchemyReportQueryService:
                 )
             )
         async with self._session_factory() as session:
-            rows = (await session.execute(statement)).tuples().all()
+            rows = (await session.execute(statement)).all()
         records = [
             row_to_rounded_record(
-                row, Coordinates(longitude=row_longitude, latitude=row_latitude)
+                found[0],
+                Coordinates(longitude=found[1], latitude=found[2]),
+                review_record_from(found),
             )
-            for row, row_longitude, row_latitude in rows
+            for found in rows
         ]
         window = records[: page.limit]
         next_cursor = None
@@ -382,6 +501,55 @@ class SqlAlchemyReportQueryService:
                 CursorPayload(sort_key=last.created_at.isoformat(), last_id=last.id)
             )
         return Page[ReportRecord](items=tuple(window), next_cursor=next_cursor)
+
+    async def list_review_marks(
+        self, lineage_id: EntityId, limit: int
+    ) -> tuple[ReviewMark, ...]:
+        """Return a lineage's review marks, newest first.
+
+        Args:
+            lineage_id: The id of the lineage's revision 1.
+            limit: Most marks returned.
+
+        Returns:
+            Up to ``limit`` marks, by ``marked_at`` then id, descending.
+        """
+        statement = (
+            select(ReportReviewMarkRow)
+            .where(ReportReviewMarkRow.lineage_id == lineage_id)
+            .order_by(
+                ReportReviewMarkRow.marked_at.desc(), ReportReviewMarkRow.id.desc()
+            )
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.execute(statement)).scalars().all()
+        return tuple(row_to_review_mark(row) for row in rows)
+
+    async def list_linked_events(self, lineage_id: EntityId) -> tuple[LinkedEvent, ...]:
+        """Return the event links of every revision of a lineage, oldest first.
+
+        Args:
+            lineage_id: The id of the lineage's revision 1.
+
+        Returns:
+            The links.
+        """
+        links = EVENT_REPORT_LINKS
+        statement = (
+            select(links.c.event_id, links.c.report_id, links.c.role)
+            .join(ReportRow, ReportRow.id == links.c.report_id)
+            .where(ReportRow.lineage_id == lineage_id)
+            .order_by(links.c.linked_at, links.c.event_id, links.c.report_id)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.execute(statement)).tuples().all()
+        return tuple(
+            LinkedEvent.model_validate(
+                {"event_id": event_id, "report_id": report_id, "role": role}
+            )
+            for event_id, report_id, role in rows
+        )
 
 
 class SqlAlchemyNearbyReportsFinder:

@@ -25,6 +25,13 @@ the robust trigger).
 **Corrections** follow the domain's two-step pattern: ``revise`` returns the new
 revision and ``mark_superseded`` the old one, both saved in one unit of work.
 
+**Review marks** (ADR 0022) change only the lineage's ``ReportReview``, never the
+report: ``MarkReportReviewHandler`` loads the report to learn its lineage and
+revision, checks ``expected_version`` against the review (0 while unmarked)
+inside the unit of work, and records the mark. ``MarkReportReviewsHandler``
+applies one mark to many reports, each in its own unit of work, and reports what
+happened to each instead of failing them all.
+
 Patterns: Command Handler, Unit of Work, Policy, Domain Events, Chain of
 Responsibility.
 """
@@ -44,15 +51,23 @@ from yakhnama.modules.reports.application.authorisation import (
     reporter_policy,
     require_allowed,
     require_user,
+    review_policy,
     submit_policy,
 )
 from yakhnama.modules.reports.application.commands import (
+    MarkReportReview,
+    MarkReportReviews,
     ReviseReport,
     RunTriage,
     SubmitReport,
     WithdrawReport,
 )
-from yakhnama.modules.reports.application.dto import ReportDetail
+from yakhnama.modules.reports.application.dto import (
+    BulkReviewResult,
+    ReportDetail,
+    ReviewMarkResult,
+    ReviewOutcome,
+)
 from yakhnama.modules.reports.application.ports import (
     RUN_TRIAGE_TASK,
     MediaOwnershipChecker,
@@ -63,8 +78,19 @@ from yakhnama.modules.reports.application.ports import (
 )
 from yakhnama.modules.reports.application.queries import FindNearbyReports
 from yakhnama.modules.reports.domain.entities import Report
-from yakhnama.modules.reports.domain.errors import ReportNotFoundError
-from yakhnama.modules.reports.domain.factories import ReportFactory
+from yakhnama.modules.reports.domain.errors import (
+    ReportNotFoundError,
+    ReviewReasonRequiredError,
+)
+from yakhnama.modules.reports.domain.factories import (
+    ReportFactory,
+    ReportReviewFactory,
+)
+from yakhnama.modules.reports.domain.reviews import (
+    ReportReview,
+    ReviewMarkRequest,
+    ReviewState,
+)
 from yakhnama.modules.reports.domain.triage import (
     DUPLICATE_DISTANCE_METRES,
     DUPLICATE_TIME_WINDOW,
@@ -81,6 +107,7 @@ from yakhnama.modules.reports.domain.value_objects import (
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import (
     ConflictError,
+    InvariantViolationError,
     PermissionDeniedError,
     PreconditionFailedError,
 )
@@ -520,3 +547,166 @@ class RunTriageHandler:
                 await uow.reports.save(change.record_into(uow))
             await uow.commit()
         return result
+
+
+class MarkReportReviewHandler:
+    """Mark a report's lineage ``new``, ``reviewed`` or ``archived``; moderators only.
+
+    The report is read, never written: its status, content and its reporter's
+    rights do not change (ADR 0022).
+
+    Implements: Command Handler.
+    """
+
+    def __init__(
+        self, uow_factory: ReportsUnitOfWorkFactory, clock: Clock, ids: IdGenerator
+    ) -> None:
+        """Create the handler.
+
+        Args:
+            uow_factory: Opens a reports unit of work per call.
+            clock: Source of the mark's time.
+            ids: Source of mark and event ids.
+        """
+        self._uow_factory = uow_factory
+        self._clock = clock
+        self._ids = ids
+
+    async def __call__(self, command: MarkReportReview) -> ReviewMarkResult:
+        """Record the mark, or nothing if it repeats the last one.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            ``marked`` or ``unchanged``, with the lineage, its state and the
+            review's version afterwards.
+
+        Raises:
+            PermissionDeniedError: If the actor may not moderate.
+            ReportNotFoundError: If the report does not exist.
+            PreconditionFailedError: If ``expected_version`` is stale.
+            ReviewReasonRequiredError: If the move needs a reason and has none.
+            ConflictError: If another mark of the lineage was stored meanwhile.
+        """
+        require_allowed(review_policy(), command.actor, action="mark reports")
+        actor_id = require_user(command.actor, action="mark reports")
+        async with self._uow_factory() as uow:
+            report = await _load_report(uow, command.report_id)
+            lineage_id = await uow.reports.lineage_of(report.id)
+            if lineage_id is None:
+                message = "a stored report has no lineage"
+                raise InvariantViolationError(
+                    message, details={"report_id": str(report.id)}
+                )
+            review = await uow.report_reviews.get(lineage_id)
+            _check_version(
+                command.expected_version, 0 if review is None else review.version
+            )
+            request = ReviewMarkRequest(
+                state=command.state,
+                reason=command.reason,
+                report_id=report.id,
+                revision=report.revision,
+                actor_id=actor_id,
+            )
+            stored, outcome = await self._mark(uow, lineage_id, review, request)
+            await uow.commit()
+        return ReviewMarkResult(
+            report_id=report.id,
+            lineage_id=lineage_id,
+            outcome=outcome,
+            state=ReviewState.NEW if stored is None else stored.state,
+            version=0 if stored is None else stored.version,
+        )
+
+    async def _mark(
+        self,
+        uow: ReportsUnitOfWork,
+        lineage_id: EntityId,
+        review: ReportReview | None,
+        request: ReviewMarkRequest,
+    ) -> tuple[ReportReview | None, ReviewOutcome]:
+        if review is None:
+            first = ReportReviewFactory().first_mark(
+                lineage_id, request, clock=self._clock, ids=self._ids
+            )
+            if first is None:
+                return None, ReviewOutcome.UNCHANGED
+            created = first.record_into(uow)
+            await uow.report_reviews.add(created)
+            return created, ReviewOutcome.MARKED
+        change = review.mark(request, clock=self._clock, ids=self._ids)
+        if not change.events:
+            return review, ReviewOutcome.UNCHANGED
+        changed = change.record_into(uow)
+        await uow.report_reviews.save(changed)
+        return changed, ReviewOutcome.MARKED
+
+
+class MarkReportReviewsHandler:
+    """Apply one mark to many reports, each on its own; moderators only.
+
+    Not atomic on purpose: one report that is missing, needs a reason it was not
+    given (for example an archived one being marked ``reviewed``) or is being
+    marked by someone else at the same moment must not keep the others from
+    being marked. Every report gets its own result.
+
+    Implements: Command Handler.
+    """
+
+    def __init__(self, mark_one: MarkReportReviewHandler) -> None:
+        """Create the handler.
+
+        Args:
+            mark_one: Marks one report.
+        """
+        self._mark_one = mark_one
+
+    async def __call__(self, command: MarkReportReviews) -> BulkReviewResult:
+        """Mark every report and say what happened to each.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            One result per report, in request order.
+
+        Raises:
+            PermissionDeniedError: If the actor may not moderate; checked once,
+                before any report is read.
+        """
+        require_allowed(review_policy(), command.actor, action="mark reports")
+        # One after the other, not gathered: each opens its own unit of work and
+        # the order of the results is the order of the request.
+        results = [
+            await self._mark(command, report_id) for report_id in command.report_ids
+        ]
+        return BulkReviewResult(items=tuple(results))
+
+    async def _mark(
+        self, command: MarkReportReviews, report_id: EntityId
+    ) -> ReviewMarkResult:
+        failure: ReviewOutcome
+        try:
+            return await self._mark_one(
+                MarkReportReview(
+                    actor=command.actor,
+                    report_id=report_id,
+                    state=command.state,
+                    reason=command.reason,
+                )
+            )
+        except ReportNotFoundError:
+            failure = ReviewOutcome.NOT_FOUND
+        except ReviewReasonRequiredError:
+            failure = ReviewOutcome.REASON_REQUIRED
+        except ConflictError:
+            failure = ReviewOutcome.CONFLICT
+        return ReviewMarkResult(
+            report_id=report_id,
+            lineage_id=None,
+            outcome=failure,
+            state=None,
+            version=None,
+        )

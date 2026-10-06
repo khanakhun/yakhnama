@@ -52,3 +52,17 @@ class ListOrganizationMembers(BaseModel):
 
     organization_id: EntityId
     page: PageRequest = PageRequest()
+
+
+class ListModerators(BaseModel):
+    """Ask for the moderator directory: who a case can be assigned to.
+
+    Implements: Query.
+
+    Attributes:
+        actor: Who asks; moderators only.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor

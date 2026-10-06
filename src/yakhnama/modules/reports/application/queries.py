@@ -16,8 +16,10 @@ from yakhnama.modules.reports.application.specifications import (
     ReportInBoundingBoxSpecification,
     ReportObservedFromSpecification,
     ReportObservedToSpecification,
+    ReportReviewStateSpecification,
     ReportStatusSpecification,
 )
+from yakhnama.modules.reports.domain.reviews import ReviewState
 from yakhnama.modules.reports.domain.triage import NEARBY_REPORTS_MAX
 from yakhnama.modules.reports.domain.value_objects import (
     GuessedHazardCode,
@@ -60,6 +62,10 @@ class ListReports(BaseModel):
         bbox: Only reports whose *rounded* position lies in this box, if set.
         observed_from: Only reports observed at or after this instant, if set.
         observed_to: Only reports observed at or before this instant, if set.
+        review_state: Only reports whose lineage carries this review mark, if
+            set; moderators only (ADR 0022).
+        is_own_only: Only the actor's own reports (``reporter=me``); narrows a
+            moderator's listing, and changes nothing for anyone else.
         page: Page size and cursor.
     """
 
@@ -72,6 +78,8 @@ class ListReports(BaseModel):
     bbox: BoundingBox | None = None
     observed_from: AwareDatetime | None = None
     observed_to: AwareDatetime | None = None
+    review_state: ReviewState | None = None
+    is_own_only: bool = False
     page: PageRequest = PageRequest()
 
     @model_validator(mode="after")
@@ -112,10 +120,28 @@ class ListReports(BaseModel):
             filters.append(ReportObservedFromSpecification(self.observed_from))
         if self.observed_to is not None:
             filters.append(ReportObservedToSpecification(self.observed_to))
+        if self.review_state is not None:
+            filters.append(ReportReviewStateSpecification(self.review_state))
         combined: Specification[ReportRecord] = TrueSpecification[ReportRecord]()
         for specification in filters:
             combined = combined.and_(specification)
         return combined
+
+
+class GetReportReview(BaseModel):
+    """Ask for the review of a report's lineage and its history (moderators only).
+
+    Implements: Query.
+
+    Attributes:
+        actor: Who asks.
+        report_id: Any revision of the lineage.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    report_id: EntityId
 
 
 class FindNearbyReports(BaseModel):

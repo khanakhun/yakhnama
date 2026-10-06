@@ -318,3 +318,35 @@ class SeedAccountsReport(BaseModel):
             or self.is_organization_created
             or self.memberships_created
         )
+
+
+class ModeratorSummary(BaseModel):
+    """One entry of the moderator directory: an id and a display name, nothing else.
+
+    No issuer, subject, e-mail or role list: the directory exists so a moderator
+    can pick a colleague by name, and ``id`` is the user id that verification's
+    ``assigned_to`` and ``reviewer_id`` already carry.
+
+    Implements: DTO.
+
+    Attributes:
+        id: The user's id.
+        display_name: The user's optional display name.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: EntityId
+    display_name: DisplayName | None
+
+    @classmethod
+    def from_entity(cls, user: User) -> Self:
+        """Build the directory entry of a user.
+
+        Args:
+            user: The user.
+
+        Returns:
+            Its entry.
+        """
+        return cls(id=user.id, display_name=user.display_name)

@@ -21,6 +21,7 @@ from tests.fakes.uow import InMemoryUnitOfWork
 from yakhnama.modules.identity.application.dto import (
     MeDetail,
     MemberSummary,
+    ModeratorSummary,
     OrganizationDetail,
 )
 from yakhnama.modules.identity.application.queries import ListOrganizationMembers
@@ -35,6 +36,7 @@ from yakhnama.modules.identity.domain.value_objects import (
     ExternalIdentity,
     OrganizationRole,
     Role,
+    UserStatus,
 )
 from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
@@ -618,3 +620,27 @@ class InMemoryIdentityQueryService:
                 CursorPayload(sort_key=last.since.isoformat(), last_id=last.user_id)
             )
         return Page[MemberSummary](items=tuple(window), next_cursor=next_cursor)
+
+    async def list_moderators(self, limit: int) -> tuple[ModeratorSummary, ...]:
+        """Return active users holding ``moderator`` or ``admin``.
+
+        Args:
+            limit: Most entries returned.
+
+        Returns:
+            Entries by display name (nulls last), then id, like the SQL adapter.
+        """
+        moderators = sorted(
+            (
+                user
+                for user in self._uow.users.committed.values()
+                if user.status is UserStatus.ACTIVE
+                and user.roles & {Role.MODERATOR, Role.ADMIN}
+            ),
+            key=lambda user: (
+                user.display_name is None,
+                user.display_name or "",
+                user.id,
+            ),
+        )
+        return tuple(ModeratorSummary.from_entity(user) for user in moderators[:limit])

@@ -26,6 +26,7 @@ REPORTS_EVENT_TYPES: Final = {
     "reports.report_superseded",
     "reports.report_withdrawn",
     "reports.report_triaged",
+    "reports.report_review_marked",
 }
 
 

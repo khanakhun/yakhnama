@@ -59,6 +59,8 @@ REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[3]
 ALEMBIC_INI: Final = REPOSITORY_ROOT / "alembic.ini"
 VERSION_TABLE: Final = "alembic_version"
 MODULE_TABLES: Final = (
+    "report_review_marks",
+    "report_reviews",
     "guest_challenges",
     "guest_submissions",
     "export_jobs",

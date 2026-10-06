@@ -16,22 +16,32 @@ applied (Phase 3 plan §2):
 - an assisted report's consent record and private note follow the exact position:
   only the person who entered it and moderators see them (ADR 0019);
 - a guest report never shows a reporter: its ``reporter_id`` is the guest
-  submission, an internal access record (ADR 0020).
+  submission, an internal access record (ADR 0020);
+- the moderators' review mark (``review``) and the events a report is linked to
+  (``linked_events``) are shown to moderators only, ``None`` for everyone else,
+  the reporter included (ADR 0022).
 
 The guest DTOs at the end are what the guest submission use cases return.
 
 Patterns: DTO.
 """
 
+from enum import StrEnum
 from typing import Final, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from yakhnama.modules.media.public import UploadStatus
+from yakhnama.modules.reports.application.commands import REVIEW_BULK_MAX
 from yakhnama.modules.reports.domain.entities import Report
 from yakhnama.modules.reports.domain.guest_submissions import (
     DifficultyBits,
     GuestReference,
+)
+from yakhnama.modules.reports.domain.reviews import (
+    ReviewMark,
+    ReviewState,
+    ReviewVersion,
 )
 from yakhnama.modules.reports.domain.value_objects import (
     MEDIA_PER_REPORT_MAX,
@@ -57,6 +67,112 @@ from yakhnama.shared_kernel.value_objects import (
     DateWithPrecision,
     LanguageCode,
 )
+
+LINKED_EVENTS_MAX: Final = 200
+"""Most event links a report detail lists; far above what one observation gets."""
+
+LinkRoleName = Literal["primary", "supporting", "contradicting"]
+"""The values of the events module's report-link role, spelled out so this module
+does not import the events module; a unit test keeps them equal."""
+
+
+class ReportReviewRecord(BaseModel):
+    """A lineage's stored review as the read side joins it to a report (internal).
+
+    Implements: DTO.
+
+    Attributes:
+        state: The current mark.
+        reviewed_report_id: The revision the last mark was made on.
+        reviewed_revision: That revision's number.
+        updated_at: When the lineage was last marked, UTC.
+        updated_by: The moderator who marked it last.
+        version: The review's optimistic-concurrency version.
+        latest_revision: The newest revision of the lineage, now.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    state: ReviewState
+    reviewed_report_id: EntityId
+    reviewed_revision: RevisionNumber
+    updated_at: AwareDatetime
+    updated_by: EntityId
+    version: ReviewVersion
+    latest_revision: RevisionNumber
+
+
+class ReportReviewSummary(BaseModel):
+    """The moderators' mark on a report's lineage, as a report carries it.
+
+    A lineage nobody has marked is ``new`` with no time, moderator or revision.
+
+    Implements: DTO.
+
+    Attributes:
+        state: ``new``, ``reviewed`` or ``archived``.
+        updated_at: When the lineage was last marked, if ever.
+        updated_by: The moderator who marked it last (a user id), if anyone.
+        reviewed_revision: The revision the last mark was made on, if any.
+        revised_since: Whether the lineage has a newer revision than the one
+            the last ``reviewed`` or ``archived`` mark was made on.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    state: ReviewState
+    updated_at: AwareDatetime | None
+    updated_by: EntityId | None
+    reviewed_revision: RevisionNumber | None
+    revised_since: bool
+
+    @classmethod
+    def from_record(cls, record: ReportReviewRecord | None) -> Self:
+        """Build the mark of a lineage.
+
+        Args:
+            record: The stored review, or ``None`` if the lineage was never
+                marked.
+
+        Returns:
+            The summary.
+        """
+        if record is None:
+            return cls(
+                state=ReviewState.NEW,
+                updated_at=None,
+                updated_by=None,
+                reviewed_revision=None,
+                revised_since=False,
+            )
+        return cls(
+            state=record.state,
+            updated_at=record.updated_at,
+            updated_by=record.updated_by,
+            reviewed_revision=record.reviewed_revision,
+            revised_since=(
+                record.state is not ReviewState.NEW
+                and record.latest_revision > record.reviewed_revision
+            ),
+        )
+
+
+class LinkedEvent(BaseModel):
+    """An event a revision of the report is linked to (moderators only).
+
+    Implements: DTO.
+
+    Attributes:
+        event_id: The event.
+        report_id: The revision of the lineage that is linked.
+        role: How the event uses it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    event_id: EntityId
+    report_id: EntityId
+    role: LinkRoleName
 
 
 class ReportRecord(BaseModel):
@@ -90,6 +206,10 @@ class ReportRecord(BaseModel):
         created_at: When the record was created, UTC.
         channel: How the report reached the platform.
         assisted: The assistance and consent record of an assisted report.
+        lineage_id: The id of the lineage's revision 1; ``None`` when built from
+            an aggregate, which does not hold it.
+        review: The lineage's stored review, or ``None`` if never marked (or
+            not read).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -116,6 +236,8 @@ class ReportRecord(BaseModel):
     created_at: AwareDatetime
     channel: ReportChannel = ReportChannel.ACCOUNT
     assisted: AssistedSubmission | None = None
+    lineage_id: EntityId | None = None
+    review: ReportReviewRecord | None = None
 
     @classmethod
     def from_entity(cls, report: Report) -> Self:
@@ -169,6 +291,8 @@ class ReportSummary(BaseModel):
         media_count: How many media assets are attached.
         submitted_at: When it was submitted, UTC.
         channel: How the report reached the platform.
+        review: The moderators' mark on its lineage; moderators only, ``None``
+            for everyone else.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -183,16 +307,22 @@ class ReportSummary(BaseModel):
     media_count: int = Field(ge=0, le=MEDIA_PER_REPORT_MAX)
     submitted_at: AwareDatetime | None
     channel: ReportChannel
+    review: ReportReviewSummary | None = None
 
     @classmethod
     def from_record(
-        cls, record: ReportRecord, public_coordinates: PublicCoordinatePolicy
+        cls,
+        record: ReportRecord,
+        public_coordinates: PublicCoordinatePolicy,
+        *,
+        is_review_visible: bool = False,
     ) -> Self:
         """Build the summary of a report, rounding its position.
 
         Args:
             record: The internal record.
             public_coordinates: How far to round the position.
+            is_review_visible: Whether to include the review mark (moderators).
 
         Returns:
             Its summary.
@@ -210,6 +340,11 @@ class ReportSummary(BaseModel):
             media_count=len(record.media_ids),
             submitted_at=record.submitted_at,
             channel=record.channel,
+            review=(
+                ReportReviewSummary.from_record(record.review)
+                if is_review_visible
+                else None
+            ),
         )
 
 
@@ -245,6 +380,9 @@ class ReportDetail(BaseModel):
         assisted: The consent record and private note of an assisted report,
             only alongside exact coordinates (the person who entered it and
             moderators); ``None`` otherwise.
+        review: The moderators' mark on its lineage; moderators only.
+        linked_events: The events any revision of the lineage is linked to;
+            moderators only.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -272,6 +410,10 @@ class ReportDetail(BaseModel):
     version: ReportVersion
     channel: ReportChannel
     assisted: AssistedSubmission | None
+    review: ReportReviewSummary | None = None
+    linked_events: tuple[LinkedEvent, ...] | None = Field(
+        default=None, max_length=LINKED_EVENTS_MAX
+    )
 
     @classmethod
     def from_record(
@@ -280,6 +422,7 @@ class ReportDetail(BaseModel):
         *,
         public_coordinates: PublicCoordinatePolicy | None,
         is_triage_visible: bool,
+        moderation: "ModeratorView | None" = None,
     ) -> Self:
         """Build the detail view of a report.
 
@@ -289,6 +432,8 @@ class ReportDetail(BaseModel):
                 assistance record; otherwise the policy that rounds the position
                 (accuracy and assistance record hidden).
             is_triage_visible: Whether to include the triage result.
+            moderation: The linked events, for a moderator; ``None`` hides the
+                review mark and the links.
 
         Returns:
             Its detail view.
@@ -325,6 +470,12 @@ class ReportDetail(BaseModel):
             version=record.version,
             channel=record.channel,
             assisted=record.assisted if is_exact else None,
+            review=(
+                None
+                if moderation is None
+                else ReportReviewSummary.from_record(record.review)
+            ),
+            linked_events=None if moderation is None else moderation.linked_events,
         )
 
     @classmethod
@@ -342,6 +493,109 @@ class ReportDetail(BaseModel):
             public_coordinates=None,
             is_triage_visible=False,
         )
+
+
+class ModeratorView(BaseModel):
+    """What only a moderator's detail view of a report adds.
+
+    Implements: DTO.
+
+    Attributes:
+        linked_events: The events any revision of the lineage is linked to.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    linked_events: tuple[LinkedEvent, ...] = Field(
+        default=(), max_length=LINKED_EVENTS_MAX
+    )
+
+
+REVIEW_HISTORY_MAX: Final = 200
+"""Most marks a review read returns, newest first."""
+
+
+class ReportReviewDetail(BaseModel):
+    """A lineage's review with its history, newest mark first (moderators only).
+
+    Implements: DTO.
+
+    Attributes:
+        report_id: The revision asked about.
+        lineage_id: The id of the lineage's revision 1; the ETag names it.
+        state: The current mark.
+        updated_at: When the lineage was last marked, if ever.
+        updated_by: The moderator who marked it last, if anyone.
+        reviewed_revision: The revision the last mark was made on, if any.
+        revised_since: Whether a newer revision exists than the one marked.
+        version: The review's version; 0 while the lineage was never marked.
+        history: The marks, newest first, at most ``REVIEW_HISTORY_MAX``.
+        is_history_truncated: Whether older marks were left out.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    report_id: EntityId
+    lineage_id: EntityId
+    state: ReviewState
+    updated_at: AwareDatetime | None
+    updated_by: EntityId | None
+    reviewed_revision: RevisionNumber | None
+    revised_since: bool
+    version: int = Field(ge=0)
+    history: tuple[ReviewMark, ...] = Field(max_length=REVIEW_HISTORY_MAX)
+    is_history_truncated: bool
+
+
+class ReviewOutcome(StrEnum):
+    """What one mark of a bulk request did.
+
+    Implements: DTO.
+    """
+
+    MARKED = "marked"
+    UNCHANGED = "unchanged"
+    NOT_FOUND = "not_found"
+    REASON_REQUIRED = "reason_required"
+    CONFLICT = "conflict"
+
+
+class ReviewMarkResult(BaseModel):
+    """What marking one report did.
+
+    Implements: DTO.
+
+    Attributes:
+        report_id: The report asked about.
+        lineage_id: Its lineage, if the report exists.
+        outcome: ``marked`` or ``unchanged`` for a single mark; any value in
+            a bulk result.
+        state: The lineage's state afterwards, if the report exists.
+        version: The review's version afterwards (0 if never marked), if the
+            report exists.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    report_id: EntityId
+    lineage_id: EntityId | None
+    outcome: ReviewOutcome
+    state: ReviewState | None
+    version: int | None = Field(ge=0)
+
+
+class BulkReviewResult(BaseModel):
+    """What a bulk mark did to each report, in request order.
+
+    Implements: DTO.
+
+    Attributes:
+        items: One result per distinct report id.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    items: tuple[ReviewMarkResult, ...] = Field(max_length=REVIEW_BULK_MAX)
 
 
 GUEST_MEDIA_RESPONSE_MAX: Final = 3

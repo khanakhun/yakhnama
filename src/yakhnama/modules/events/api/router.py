@@ -86,6 +86,7 @@ from yakhnama.platform.etag import (
     make_etag,
     set_etag,
 )
+from yakhnama.platform.openapi_headers import ETAG, LINK, LOCATION, header_responses
 from yakhnama.shared_kernel.errors import PreconditionFailedError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
@@ -115,10 +116,12 @@ _PUBLIC_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_429_TOO_MANY_REQUESTS: _PROBLEM,
     status.HTTP_503_SERVICE_UNAVAILABLE: _PROBLEM,
 }
+# Every route that uses it answers 200 with the event's new ETag.
 _CHANGE_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_404_NOT_FOUND: _PROBLEM,
     status.HTTP_409_CONFLICT: _PROBLEM,
     status.HTTP_412_PRECONDITION_FAILED: _PROBLEM,
+    **header_responses(status.HTTP_200_OK, ETAG),
 }
 
 EventListFeature = Feature[Point, EventFeatureProperties]
@@ -220,7 +223,12 @@ async def _changed_event(
 @router.get(
     "/events",
     response_model=EventPage,
-    responses={status.HTTP_200_OK: _GEOJSON_ALTERNATIVE},
+    responses={
+        status.HTTP_200_OK: {
+            **_GEOJSON_ALTERNATIVE,
+            **header_responses(status.HTTP_200_OK, LINK)[status.HTTP_200_OK],
+        }
+    },
 )
 async def list_events(
     parameters: Annotated[ListEventsParameters, Query()],
@@ -292,7 +300,10 @@ async def list_events(
     "/events/{event_id}",
     response_model=EventDetail,
     responses={
-        status.HTTP_200_OK: _GEOJSON_ALTERNATIVE,
+        status.HTTP_200_OK: {
+            **_GEOJSON_ALTERNATIVE,
+            **header_responses(status.HTTP_200_OK, ETAG)[status.HTTP_200_OK],
+        },
         status.HTTP_404_NOT_FOUND: _PROBLEM,
     },
 )
@@ -376,6 +387,7 @@ async def get_event_timeline(
         status.HTTP_400_BAD_REQUEST: _PROBLEM,
         status.HTTP_404_NOT_FOUND: _PROBLEM,
         status.HTTP_409_CONFLICT: _PROBLEM,
+        **header_responses(status.HTTP_201_CREATED, LOCATION, ETAG),
     },
 )
 async def create_event(

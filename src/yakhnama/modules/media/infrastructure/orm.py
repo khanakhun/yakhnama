@@ -15,6 +15,10 @@ which is exactly what ``find_completed_by_digest`` searches. It is not unique: t
 application deduplicates by returning the oldest completed asset, and a race between
 two completions of the same file is harmless.
 
+``(moderation_status, created_at, id)`` is indexed for completed uploads only (a
+partial index, migration 0025): it serves the moderators' queue, which lists only
+completed uploads, filtered by moderation status, oldest first.
+
 Patterns: Adapter (ORM row models behind the repository and query service adapters).
 """
 
@@ -77,6 +81,14 @@ class MediaAssetRow(Base):
             "ix_media_assets_owner_id_sha256_completed",
             "owner_id",
             "sha256",
+            postgresql_where=sql_text("upload_status = 'completed'"),
+        ),
+        # Serves the moderators' queue (completed uploads, oldest first).
+        Index(
+            "ix_media_assets_moderation_queue",
+            "moderation_status",
+            "created_at",
+            "id",
             postgresql_where=sql_text("upload_status = 'completed'"),
         ),
         # Serves the stale-upload sweep, which reads only requested assets.

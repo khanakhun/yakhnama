@@ -29,6 +29,7 @@ from yakhnama.modules.media.public import UploadGrant
 from yakhnama.modules.reports.application.dto import (
     GuestMediaAsset,
     GuestSubmissionWindow,
+    LinkedEvent,
     ReportRecord,
 )
 from yakhnama.modules.reports.application.queries import FindNearbyReports
@@ -38,6 +39,7 @@ from yakhnama.modules.reports.domain.guest_submissions import (
     GuestChallenge,
     GuestSubmission,
 )
+from yakhnama.modules.reports.domain.reviews import ReportReview, ReviewMark
 from yakhnama.modules.reports.domain.triage import (
     PhotoEvidence,
     ReportSummaryForTriage,
@@ -92,6 +94,62 @@ class ReportRepository(Protocol):
         Raises:
             NotFoundError: If no report with that id exists.
             ConflictError: If the stored version is not ``report.version - 1``.
+        """
+        ...
+
+    async def lineage_of(self, report_id: EntityId) -> EntityId | None:
+        """Return the lineage of a stored report: the id of its revision 1.
+
+        Args:
+            report_id: Any revision.
+
+        Returns:
+            The lineage id, or ``None`` if the report is not stored.
+        """
+        ...
+
+
+class ReportReviewRepository(Protocol):
+    """Loads and stages ``ReportReview`` aggregates; marks are only ever appended.
+
+    ``add`` and ``save`` also append the review's ``last_mark`` to the lineage's
+    history, in the same transaction; nothing removes or changes a stored mark.
+
+    Implements: Repository (port side).
+    """
+
+    async def get(self, lineage_id: EntityId) -> ReportReview | None:
+        """Return the review of a lineage.
+
+        Args:
+            lineage_id: The id of the lineage's revision 1.
+
+        Returns:
+            The aggregate, or ``None`` if the lineage was never marked.
+        """
+        ...
+
+    async def add(self, review: ReportReview) -> None:
+        """Stage a lineage's first review and its first mark.
+
+        Args:
+            review: The new aggregate at version 1.
+
+        Raises:
+            ConflictError: If the lineage already has a review (a concurrent
+                first mark).
+        """
+        ...
+
+    async def save(self, review: ReportReview) -> None:
+        """Stage a changed review and append its new last mark.
+
+        Args:
+            review: The new state; its ``version`` is one more than the stored one.
+
+        Raises:
+            NotFoundError: If the lineage has no stored review.
+            ConflictError: If the stored version is not ``review.version - 1``.
         """
         ...
 
@@ -257,6 +315,11 @@ class ReportsUnitOfWork(UnitOfWork, Protocol):
         ...
 
     @property
+    def report_reviews(self) -> ReportReviewRepository:
+        """Return the review repository bound to this transaction."""
+        ...
+
+    @property
     def spent_challenges(self) -> SpentChallengeRepository:
         """Return the spent challenge repository bound to this transaction."""
         ...
@@ -268,6 +331,10 @@ type ReportsUnitOfWorkFactory = UnitOfWorkFactory[ReportsUnitOfWork]
 
 class ReportQueryService(Protocol):
     """Read port for reports; returns internal records with exact positions.
+
+    Every record it returns carries its ``lineage_id`` and its lineage's stored
+    ``review`` (``None`` when never marked), so the application can show the
+    mark to moderators and filter on it.
 
     Authorisation and the privacy rules are applied by
     ``AuthorisedReportQueryService``; implementations only read.
@@ -305,6 +372,34 @@ class ReportQueryService(Protocol):
 
         Raises:
             ValidationError: If the cursor is invalid.
+        """
+        ...
+
+    async def list_review_marks(
+        self, lineage_id: EntityId, limit: int
+    ) -> tuple[ReviewMark, ...]:
+        """Return a lineage's review marks, newest first.
+
+        Args:
+            lineage_id: The id of the lineage's revision 1.
+            limit: Most marks returned.
+
+        Returns:
+            Up to ``limit`` marks, ordered by ``marked_at`` then id, descending.
+        """
+        ...
+
+    async def list_linked_events(self, lineage_id: EntityId) -> tuple[LinkedEvent, ...]:
+        """Return the event links of every revision of a lineage.
+
+        Read from the events module's projection of its report links; this
+        module never writes it.
+
+        Args:
+            lineage_id: The id of the lineage's revision 1.
+
+        Returns:
+            The links, oldest first.
         """
         ...
 

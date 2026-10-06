@@ -9,21 +9,32 @@ the in-memory fake uses, so both implementations share one definition of every f
 query per page. The cursor carries ``since`` in ISO 8601 (microsecond precision,
 like ``timestamptz``) and the last user id.
 
+``list_moderators`` selects active users whose ``roles`` JSONB array holds
+``moderator`` or ``admin`` (``roles ?| array[...]``; ``admin`` implies
+``moderator``), ordered by display name with users without one last, then by id.
+The users table is small, so no index serves it.
+
 Patterns: Query Service (adapter side).
 """
 
 from datetime import datetime
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from yakhnama.modules.identity.application.dto import (
     MeDetail,
     MemberSummary,
+    ModeratorSummary,
     OrganizationDetail,
 )
 from yakhnama.modules.identity.application.queries import ListOrganizationMembers
-from yakhnama.modules.identity.domain.value_objects import OrganizationStatus
+from yakhnama.modules.identity.domain.value_objects import (
+    OrganizationStatus,
+    Role,
+    UserStatus,
+)
 from yakhnama.modules.identity.infrastructure.mappers import (
     row_to_membership,
     row_to_organization,
@@ -205,3 +216,25 @@ class SqlAlchemyIdentityQueryService:
                 CursorPayload(sort_key=last.since.isoformat(), last_id=last.user_id)
             )
         return Page[MemberSummary](items=tuple(window), next_cursor=next_cursor)
+
+    async def list_moderators(self, limit: int) -> tuple[ModeratorSummary, ...]:
+        """Return the active users who hold ``moderator`` or ``admin``.
+
+        Args:
+            limit: Most entries returned.
+
+        Returns:
+            Up to ``limit`` entries, by display name (nulls last), then id.
+        """
+        statement = (
+            select(UserRow)
+            .where(
+                UserRow.status == UserStatus.ACTIVE.value,
+                UserRow.roles.op("?|")(array([Role.MODERATOR.value, Role.ADMIN.value])),
+            )
+            .order_by(UserRow.display_name.asc().nulls_last(), UserRow.id)
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.execute(statement)).scalars().all()
+        return tuple(ModeratorSummary.from_entity(row_to_user(row)) for row in rows)

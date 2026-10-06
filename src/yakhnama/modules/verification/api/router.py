@@ -49,6 +49,7 @@ from yakhnama.platform.etag import (
     make_etag,
     set_etag,
 )
+from yakhnama.platform.openapi_headers import ETAG, LINK, header_responses
 from yakhnama.shared_kernel.errors import PreconditionFailedError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
@@ -71,10 +72,12 @@ _COMMON_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_429_TOO_MANY_REQUESTS: _PROBLEM,
     status.HTTP_503_SERVICE_UNAVAILABLE: _PROBLEM,
 }
+# Every route that uses it answers 200 with the case's new ETag.
 _CHANGE_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_404_NOT_FOUND: _PROBLEM,
     status.HTTP_409_CONFLICT: _PROBLEM,
     status.HTTP_412_PRECONDITION_FAILED: _PROBLEM,
+    **header_responses(status.HTTP_200_OK, ETAG),
 }
 
 moderation_router = APIRouter(
@@ -113,7 +116,9 @@ async def _check_if_match(
         raise PreconditionFailedError(PRECONDITION_FAILED_MESSAGE)
 
 
-@moderation_router.get("/verification-cases")
+@moderation_router.get(
+    "/verification-cases", responses=header_responses(status.HTTP_200_OK, LINK)
+)
 async def list_verification_cases(
     parameters: Annotated[ListCasesParameters, Query()],
     actor: ModeratorActor,
@@ -148,7 +153,11 @@ async def list_verification_cases(
 
 
 @moderation_router.get(
-    "/verification-cases/{case_id}", responses={status.HTTP_404_NOT_FOUND: _PROBLEM}
+    "/verification-cases/{case_id}",
+    responses={
+        status.HTTP_404_NOT_FOUND: _PROBLEM,
+        **header_responses(status.HTTP_200_OK, ETAG),
+    },
 )
 async def get_verification_case(
     case_id: EntityId,

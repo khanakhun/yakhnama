@@ -9,11 +9,15 @@ Patterns: Command.
 
 from typing import Annotated, Final
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.public import MAX_MEDIA_BYTES
 from yakhnama.modules.reports.domain.guest_submissions import ProofNonce
+from yakhnama.modules.reports.domain.reviews import (
+    ReviewReason,
+    ReviewState,
+)
 from yakhnama.modules.reports.domain.value_objects import (
     AssistedSubmission,
     ClientReportId,
@@ -104,6 +108,65 @@ class WithdrawReport(BaseModel):
     report_id: EntityId
     reason: WithdrawalReason
     expected_version: ReportVersion | None = None
+
+
+REVIEW_BULK_MAX: Final = 100
+"""Most reports one bulk mark may name (``MarkReportReviews``)."""
+
+
+class MarkReportReview(BaseModel):
+    """Mark a report's lineage ``new``, ``reviewed`` or ``archived`` (ADR 0022).
+
+    The report itself is not changed: not its status, content or reporter rights.
+
+    Implements: Command.
+
+    Attributes:
+        actor: The moderator.
+        report_id: The revision the moderator looked at.
+        state: The mark.
+        reason: Why, or a note; required to archive, to go back to ``new`` and to
+            leave ``archived``.
+        expected_version: The review's version the client last saw, from
+            ``If-Match`` (0 while the lineage was never marked); not checked when
+            ``None``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    report_id: EntityId
+    state: ReviewState
+    reason: ReviewReason | None = None
+    expected_version: Annotated[int, Field(ge=0)] | None = None
+
+
+class MarkReportReviews(BaseModel):
+    """Apply one mark to many reports, each on its own (ADR 0022).
+
+    Implements: Command.
+
+    Attributes:
+        actor: The moderator.
+        report_ids: The reports, 1 to ``REVIEW_BULK_MAX`` distinct ids.
+        state: The mark.
+        reason: Why; the same for every report.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    report_ids: tuple[EntityId, ...] = Field(min_length=1, max_length=REVIEW_BULK_MAX)
+    state: ReviewState
+    reason: ReviewReason | None = None
+
+    @field_validator("report_ids", mode="after")
+    @classmethod
+    def _check_distinct(cls, value: tuple[EntityId, ...]) -> tuple[EntityId, ...]:
+        if len(set(value)) != len(value):
+            message = "report_ids must not repeat an id"
+            raise ValueError(message)
+        return value
 
 
 class RunTriage(BaseModel):

@@ -2571,3 +2571,164 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
   (GeoJSON) with no schema change. Still to confirm with the maintainer: whether an
   interior point is the right "position" for a report placed by district (it can be far
   from where an event happened, so the portal sends a district-sized accuracy with it).
+
+## Q240 — Who sees a report's review mark
+
+- **Question:** Review marks (`new`, `reviewed`, `archived`, ADR 0022) and their reasons
+  are shown to moderators only; `review` is `null` for everyone else, the reporter
+  included. Should the reporter see anything, for example that their report was looked
+  at?
+- **Why it matters:** An archive reason may be blunt ("spam", "test"); showing it could
+  discourage reporters, hiding it means a reporter never learns their report was set
+  aside.
+- **Proposed default:** Marks are internal: moderators only, never the reporter, never in
+  an event or a log (maintainer decision of 2026-10-07 makes moderation non-blocking; the
+  portal plan, phase 3, proposes the same).
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q241 — A review mark per lineage, kept across revisions
+
+- **Question:** Is the review mark held per report lineage (a report and all its
+  revisions) rather than per revision, so a correction keeps the mark and shows
+  `revised_since` instead of falling back to `new`?
+- **Why it matters:** Per revision, every correction would put an already reviewed
+  observation back in the queue; per lineage, a moderator could miss a correction if the
+  console ignored `revised_since`.
+- **Proposed default:** Per lineage (ADR 0022), each mark recording the revision it was
+  made on; `revised_since` is true while a newer revision exists than the one a
+  `reviewed` or `archived` mark was made on.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q242 — When a review mark needs a reason
+
+- **Question:** Which marks need a reason?
+- **Why it matters:** Reasons make the history useful; requiring them everywhere slows
+  down the common case (looking at a report and marking it reviewed).
+- **Proposed default:** Archiving, moving back to `new` and moving out of `archived` need
+  a reason (1–500 characters of safe text); marking `reviewed` from `new` or `reviewed`
+  takes an optional note.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q243 — The `review_state` filter for non-moderators
+
+- **Question:** What does `GET /reports?review_state=...` do for a caller who is not a
+  moderator?
+- **Why it matters:** Applying it to their own reports would tell a reporter whether
+  their report was archived (Q240); ignoring it silently returns a list that does not
+  match the request.
+- **Proposed default:** `403 permission-denied`.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q244 — Bulk review marks are not atomic
+
+- **Question:** Should `POST /moderation/reports/review` mark all reports or none?
+- **Why it matters:** In a spam wave one report that is already archived, missing or
+  being marked by another moderator would otherwise block the whole batch.
+- **Proposed default:** Each report on its own, with one outcome per report (`marked`,
+  `unchanged`, `not_found`, `reason_required`, `conflict`), at most 100 distinct ids
+  per request.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q245 — Review marks in exports and statistics
+
+- **Question:** Should the moderators' `reports` export, or any count, carry or respect
+  the review mark (for example leave archived reports out)?
+- **Why it matters:** An archived spam wave would otherwise show up in moderator exports
+  and any future report statistics.
+- **Proposed default:** No change for now: reports are never public, exports keep every
+  report without the mark, and nothing is counted by mark until a statistic needs it.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q246 — Review marks and verification cases on reports
+
+- **Question:** `VerificationCase` allows the target kind `report` (Q133), but nothing
+  opens one, and report moderation is now the reversible review mark. Should report
+  cases be retired, or kept for a later use?
+- **Why it matters:** Two moderator-facing states for the same report would confuse the
+  console and the audit trail.
+- **Proposed default:** Keep marks and verification apart: marks for reports, cases for
+  events (and later claims, Q154); do not open cases for reports.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q247 — `report_id` of an asset uploaded before its report
+
+- **Question:** An asset uploaded with `POST /media` before its report exists keeps
+  `media_assets.report_id` empty. The moderation media queue resolves it from the newest
+  report that lists the asset, but `GET /media/{id}` still returns the stored, empty
+  value. Should the media module record the report when a report attaches an asset?
+- **Why it matters:** The two reads disagree for the same asset.
+- **Proposed default:** Keep the queue's resolution and the single read as they are;
+  later, set `report_id` when a report attaches the asset (an event from the reports
+  module), then drop the resolution.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q248 — Size of the moderator directory
+
+- **Question:** `GET /moderation/moderators` returns at most 500 people, unpaged and
+  unsearchable. Is that enough?
+- **Why it matters:** An assignment picker with more people needs search or paging.
+- **Proposed default:** Keep the cap until there are more than about 100 moderators.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q249 — Suspended moderators in the directory
+
+- **Question:** Suspended users are left out of the moderator directory. A case already
+  assigned to one then shows only an id in the console. Is that right?
+- **Why it matters:** Assigning work to a suspended account is pointless, but existing
+  assignments still need a readable name.
+- **Proposed default:** Leave them out; the console shows "unknown moderator" for an id
+  it cannot name.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q250 — Directory roles are the stored roles
+
+- **Question:** The directory reads the roles stored on each user (mirrored at first
+  sign-in, changed through the role routes), not the identity provider's live roles.
+  Is that acceptable?
+- **Why it matters:** A role granted only in Keycloak after the user's first sign-in does
+  not show up.
+- **Proposed default:** Accept; roles are managed through the admin role routes
+  (`/users/{id}/roles`), which is also what authorisation reads.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q251 — `If-Match` on the review routes
+
+- **Question:** Should `POST /moderation/reports/{id}/review` require `If-Match`?
+- **Why it matters:** Without it, a stale console can overwrite a mark made a moment
+  earlier by someone else; with it required, every client must read before it writes.
+- **Proposed default:** Optional, like the other moderation routes (Q66); when sent it is
+  checked against the review's version inside the unit of work. The portal always sends
+  it.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q252 — Length of the review history in one read
+
+- **Question:** A review read returns the 200 newest marks and says whether older ones
+  were left out (`is_history_truncated`), with no paging. Is that enough?
+- **Why it matters:** A lineage marked back and forth more than 200 times would hide its
+  oldest marks from the console (they stay stored and in the audit log).
+- **Proposed default:** Keep 200 without paging.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q253 — Review marks in the GeoJSON listing of reports
+
+- **Question:** `GET /reports` as GeoJSON does not carry the review mark in its feature
+  properties. Should it?
+- **Why it matters:** A moderators' map of reports could colour by mark.
+- **Proposed default:** JSON only for now; add the mark to the GeoJSON properties for
+  moderators when the console draws such a map.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)

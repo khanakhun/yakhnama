@@ -16,6 +16,7 @@ Patterns: Specification.
 from datetime import datetime
 
 from yakhnama.modules.reports.application.dto import ReportRecord
+from yakhnama.modules.reports.domain.reviews import ReviewState
 from yakhnama.modules.reports.domain.value_objects import ReportChannel, ReportStatus
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.privacy import PublicCoordinatePolicy
@@ -276,3 +277,42 @@ class ReportReporterSpecification(Specification[ReportRecord]):
             ``True`` if the reporter ids are equal.
         """
         return candidate.reporter_id == self._reporter_id
+
+
+class ReportReviewStateSpecification(Specification[ReportRecord]):
+    """Matches reports whose lineage carries one review mark (moderators only).
+
+    A lineage nobody has marked is ``new``, so ``new`` matches reports without a
+    stored review as well (ADR 0022).
+
+    Implements: Specification.
+
+    Attributes:
+        state: The mark to match.
+    """
+
+    def __init__(self, state: ReviewState) -> None:
+        """Create the specification.
+
+        Args:
+            state: The mark to match.
+        """
+        self._state = state
+
+    @property
+    def state(self) -> ReviewState:
+        """Return the mark to match."""
+        return self._state
+
+    def is_satisfied_by(self, candidate: ReportRecord) -> bool:
+        """Tell whether ``candidate``'s lineage carries the mark.
+
+        Args:
+            candidate: The report to test.
+
+        Returns:
+            ``True`` if the stored state (``new`` without one) is the state.
+        """
+        review = candidate.review
+        current = ReviewState.NEW if review is None else review.state
+        return current is self._state

@@ -151,6 +151,25 @@ default is to deny: anonymous actors hold no roles or memberships, so only
 | `CanReportOnBehalf(organization_id)` | `trusted_reporter`, `moderator` or `admin`; and, when an organisation is named, `org_member` holders who are members of it (assisted reporting, ADR 0019) |
 | `CanReadVerifiedData` | everyone, including anonymous callers (open dataset; Q10 in `docs/open-questions.md`) |
 
+## Moderator directory
+
+`GET /api/v1/moderation/moderators` lists who a verification case can be assigned to,
+for the console's assignment picker. Only moderators and admins may read it
+(`moderator_directory_policy`, which is `CanModerate`, **proposed**; 403 otherwise).
+
+| field | type | meaning |
+|-------|------|---------|
+| `id` | UUIDv7 | The user id, the same value verification's `assigned_to` and `reviewer_id` carry. |
+| `display_name` | string \| null | The user's own display name, or `null` when they have not chosen one. |
+
+The entries are the **active** users whose stored roles include `moderator` or `admin`
+(`admin` implies `moderator`), ordered by display name (users without one last), then
+by id, at most 500 (`MODERATOR_DIRECTORY_MAX`, **proposed**; no paging, Q248). A suspended
+user is left out: a case assigned to them could not be worked on (Q249). Nothing else about
+a user is exposed: no issuer, subject, e-mail, role list, status or timestamps. Roles
+are the stored ones (mirrored from the token at first sight and changed through the
+role routes), not a live view of the identity provider (Q250).
+
 ## Seeded development accounts
 
 `SeedAccounts` (handler `SeedAccountsHandler`, `IsAdmin`) makes sure a fixed set of

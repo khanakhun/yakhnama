@@ -22,7 +22,7 @@ from datetime import timedelta
 from http import HTTPStatus
 from importlib.metadata import version
 from types import MappingProxyType
-from typing import Final
+from typing import Any, Final
 
 import pydantic
 import structlog
@@ -69,6 +69,9 @@ from yakhnama.modules.provenance.api.router import router as provenance_router
 from yakhnama.modules.reports.api.guest_router import (
     router as guest_submissions_router,
 )
+from yakhnama.modules.reports.api.router import (
+    moderation_router as reports_moderation_router,
+)
 from yakhnama.modules.reports.api.router import router as reports_router
 from yakhnama.modules.reports.public import (
     GuestCapabilityExpiredError,
@@ -101,6 +104,7 @@ from yakhnama.platform.http import (
 )
 from yakhnama.platform.idempotency.middleware import IdempotencyMiddleware
 from yakhnama.platform.logging import configure_logging
+from yakhnama.platform.openapi_headers import declare_middleware_headers
 from yakhnama.platform.problem_details import (
     ProblemFieldError,
     build_problem,
@@ -232,6 +236,7 @@ API_ROUTERS: Final[tuple[APIRouter, ...]] = (
     events_moderation_router,
     impact_claims_moderation_router,
     verification_moderation_router,
+    reports_moderation_router,
     exchange_router,
     exchange_moderation_router,
     ingestion_router,
@@ -599,4 +604,26 @@ def create_app(
     app.exception_handler(Exception)(build_internal_error_handler(resolved_settings))
     for api_router in API_ROUTERS:
         app.include_router(api_router)
+    _declare_middleware_headers(app)
     return app
+
+
+def _declare_middleware_headers(app: FastAPI) -> None:
+    """Make ``app.openapi()`` also declare the headers the middlewares set.
+
+    FastAPI documents only what routes return; ``Retry-After`` and
+    ``Idempotent-Replayed`` come from the rate-limit and idempotency middlewares
+    (``platform/openapi_headers``, ADR 0022).
+
+    Args:
+        app: The application, with every router included.
+    """
+    build_document = app.openapi
+
+    # Any: the OpenAPI document is free JSON, FastAPI's own return type.
+    def openapi_with_headers() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            app.openapi_schema = declare_middleware_headers(build_document())
+        return app.openapi_schema
+
+    app.openapi = openapi_with_headers  # type: ignore[method-assign]  # reason: FastAPI's documented way to extend the generated schema

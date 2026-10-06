@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yakhnama.modules.reports.application.ports import (
     GuestSubmissionRepository,
     ReportRepository,
+    ReportReviewRepository,
     SpentChallengeRepository,
 )
 from yakhnama.modules.reports.infrastructure.repositories import (
     SqlAlchemyGuestSubmissionRepository,
     SqlAlchemyReportRepository,
+    SqlAlchemyReportReviewRepository,
     SqlAlchemySpentChallengeRepository,
 )
 from yakhnama.platform.uow import SqlAlchemyUnitOfWork
@@ -33,6 +35,7 @@ class SqlAlchemyReportsUnitOfWork(SqlAlchemyUnitOfWork):
         self._reports = SqlAlchemyReportRepository(session)
         self._guest_submissions = SqlAlchemyGuestSubmissionRepository(session)
         self._spent_challenges = SqlAlchemySpentChallengeRepository(session)
+        self._report_reviews = SqlAlchemyReportReviewRepository(session)
 
     @property
     def reports(self) -> ReportRepository:
@@ -65,3 +68,13 @@ class SqlAlchemyReportsUnitOfWork(SqlAlchemyUnitOfWork):
         """
         _ = self.session
         return self._spent_challenges
+
+    @property
+    def report_reviews(self) -> ReportReviewRepository:
+        """Return the review repository bound to this transaction.
+
+        Returns:
+            The repository; valid only inside ``async with``.
+        """
+        _ = self.session
+        return self._report_reviews

@@ -162,6 +162,12 @@ Documented in `platform/etag.py`; summary:
   check it when sent, but do not yet require it (`docs/open-questions.md` Q66).
 - `If-Match` uses strong comparison only: a weak tag (`W/"..."`) never matches, and `*`
   matches any current representation.
+- Every route that sets `ETag`, `Location` or `Link` declares it in OpenAPI
+  (`platform/openapi_headers.header_responses`; every moderation route,
+  `GET /reports/{id}` and `GET /events/{id}` among them). The headers the middlewares
+  set are added to the whole document once (`declare_middleware_headers`):
+  `Retry-After` on every `429`, and on every authenticated `POST`
+  `Idempotent-Replayed` on success and `Retry-After` on `409` (ADR 0022).
 
 ## Content negotiation: GeoJSON for places
 
@@ -416,6 +422,34 @@ reverse proxy are what protect the moderators' queue (ADR 0020, Q223).
 | `POST` | `/api/v1/guest-submissions/{submission_id}/media` | `Guest-Capability` | Up to three image upload grants; body `{mime_type, byte_size}`; `201`. |
 | `POST` | `/api/v1/guest-submissions/{submission_id}/media/{asset_id}/complete` | `Guest-Capability` | Completes one granted photo, until the capability expires. |
 | `POST` | `/api/v1/guest-submissions/{submission_id}/report` | `Guest-Capability` | The one report; retry-safe receipt (24 h after expiry); reports cap; `201`. |
+
+## Moderation console additions (ADR 0022)
+
+Report moderation is non-blocking and reversible: moderators mark a report's lineage
+(the report and all its revisions) `new`, `reviewed` or `archived` and can undo
+either; a mark never changes the report, its `ETag` or its reporter's rights. A mark
+has its own `ETag`, `"<lineage_id>:<version>"` (version `0` while the lineage was
+never marked); `If-Match` is optional on the mark (Q66, Q251) and, when sent, is
+checked inside the unit of work. Archiving, going back to `new` and leaving
+`archived` need a `reason` (1–500 characters of safe text; `422 validation-error`
+with `details.reason = "review_reason_required"` otherwise).
+
+`GET /reports` and `GET /reports/{id}` give moderators `review`
+(`{state, updated_at, updated_by, reviewed_revision, revised_since}`) on each report,
+and the detail also `linked_events` (`[{event_id, report_id, role}]` across the
+lineage); both are `null` for everyone else, the reporter included (Q240).
+
+### Route table (moderation console)
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/api/v1/reports?review_state=new\|reviewed\|archived` | auth (policy) | Moderators only (`403` for anyone else, Q243); `new` includes lineages never marked. |
+| `GET` | `/api/v1/reports?reporter=me` | auth | The caller's own reports only; narrows a moderator's listing; kept in the `Link` of the next page. |
+| `GET` | `/api/v1/moderation/reports/{report_id}/review` | auth (policy, M) | `ReportReviewDetail`: the mark, the revision it was made on, `revised_since`, `version`, the 200 newest marks (`is_history_truncated`); `ETag`. |
+| `POST` | `/api/v1/moderation/reports/{report_id}/review` | auth (policy, M) | Body `{state, reason?}`; repeating the last mark changes nothing; optional `If-Match` (`412` when stale or naming another review); returns `ReportReviewDetail`; `ETag`. |
+| `POST` | `/api/v1/moderation/reports/review` | auth (policy, M) | Body `{report_ids (1–100, distinct), state, reason?}`; each report on its own (Q244); `200` with one `{report_id, lineage_id, outcome, state, version}` per report, `outcome` one of `marked`, `unchanged`, `not_found`, `reason_required`, `conflict`. |
+| `GET` | `/api/v1/moderation/media` | auth (policy, M) | Completed uploads, oldest first; filters `moderation_status`, `scan_status`; cursor pagination, `Link`; `MediaAssetResponse` items without presigned links; `report_id` resolved for assets uploaded before their report (Q247). |
+| `GET` | `/api/v1/moderation/moderators` | auth (policy, M) | `{items: [{id, display_name}]}`: active users with the stored `moderator` or `admin` role, at most 500 (Q248–Q250). |
 
 ## Phase 4 additions
 

@@ -24,7 +24,9 @@ from yakhnama.modules.media.public import HttpHeader, UploadGrant, UploadStatus
 from yakhnama.modules.reports.application.dto import (
     GuestMediaAsset,
     GuestSubmissionWindow,
+    LinkedEvent,
     ReportRecord,
+    ReportReviewRecord,
 )
 from yakhnama.modules.reports.application.queries import FindNearbyReports
 from yakhnama.modules.reports.domain.entities import Report
@@ -37,6 +39,7 @@ from yakhnama.modules.reports.domain.guest_submissions import (
     GuestCap,
     GuestSubmission,
 )
+from yakhnama.modules.reports.domain.reviews import ReportReview, ReviewMark
 from yakhnama.modules.reports.domain.triage import (
     PhotoEvidence,
     ReportSummaryForTriage,
@@ -121,6 +124,17 @@ class InMemoryReportRepository:
             raise ConflictError(message)
         self._staged[report.id] = report
 
+    async def lineage_of(self, report_id: EntityId) -> EntityId | None:
+        """Return the id of the stored report's revision 1, walking the chain.
+
+        Args:
+            report_id: Any revision.
+
+        Returns:
+            The lineage id, or ``None`` if the report is not stored.
+        """
+        return lineage_in(self._current(), report_id)
+
     def apply_staged(self) -> None:
         """Make the staged writes permanent; called on commit."""
         self.committed.update(self._staged)
@@ -129,6 +143,107 @@ class InMemoryReportRepository:
     def discard_staged(self) -> None:
         """Forget the staged writes; called on rollback."""
         self._staged.clear()
+
+
+def lineage_in(
+    reports: Mapping[EntityId, Report], report_id: EntityId
+) -> EntityId | None:
+    """Return the id of a report's revision 1 among ``reports``.
+
+    Args:
+        reports: The stored reports by id.
+        report_id: Any revision.
+
+    Returns:
+        The lineage id, or ``None`` if the report is not among them.
+    """
+    report = reports.get(report_id)
+    while report is not None and report.supersedes_id is not None:
+        report = reports.get(report.supersedes_id)
+    return None if report is None else report.id
+
+
+class InMemoryReportReviewRepository:
+    """``ReportReviewRepository`` over a dictionary keyed by lineage id.
+
+    Like the SQL adapter, ``add`` and ``save`` append the review's last mark to the
+    lineage's history, which is never changed afterwards.
+
+    Implements: Fake (of Repository).
+
+    Attributes:
+        committed: The stored reviews, as a committed transaction left them.
+        marks: Every committed mark per lineage, oldest first.
+    """
+
+    def __init__(self) -> None:
+        """Create an empty repository."""
+        self.committed: dict[EntityId, ReportReview] = {}
+        self.marks: dict[EntityId, list[ReviewMark]] = {}
+        self._staged: dict[EntityId, ReportReview] = {}
+        self._staged_marks: list[tuple[EntityId, ReviewMark]] = []
+
+    def _current(self) -> dict[EntityId, ReportReview]:
+        return {**self.committed, **self._staged}
+
+    async def get(self, lineage_id: EntityId) -> ReportReview | None:
+        """Return the review, staged changes included.
+
+        Args:
+            lineage_id: The lineage.
+
+        Returns:
+            The aggregate, or ``None``.
+        """
+        return self._current().get(lineage_id)
+
+    async def add(self, review: ReportReview) -> None:
+        """Stage a first review and its first mark.
+
+        Args:
+            review: The new aggregate.
+
+        Raises:
+            ConflictError: If the lineage has a review.
+        """
+        if review.id in self._current():
+            message = "the lineage was marked concurrently"
+            raise ConflictError(message)
+        self._staged[review.id] = review
+        self._staged_marks.append((review.id, review.last_mark))
+
+    async def save(self, review: ReportReview) -> None:
+        """Stage a changed review and its new mark.
+
+        Args:
+            review: The new state.
+
+        Raises:
+            NotFoundError: If the lineage has no review.
+            ConflictError: If the version does not follow the stored one.
+        """
+        stored = self._current().get(review.id)
+        if stored is None:
+            message = f"lineage {review.id} has no review"
+            raise NotFoundError(message)
+        if review.version != stored.version + 1:
+            message = f"lineage {review.id} was marked concurrently"
+            raise ConflictError(message)
+        self._staged[review.id] = review
+        self._staged_marks.append((review.id, review.last_mark))
+
+    def apply_staged(self) -> None:
+        """Make the staged writes permanent; called on commit."""
+        self.committed.update(self._staged)
+        for lineage_id, mark in self._staged_marks:
+            self.marks.setdefault(lineage_id, []).append(mark)
+        self._staged.clear()
+        self._staged_marks.clear()
+
+    def discard_staged(self) -> None:
+        """Forget the staged writes; called on rollback."""
+        self._staged.clear()
+        self._staged_marks.clear()
 
 
 class InMemoryGuestSubmissionRepository:
@@ -386,6 +501,7 @@ class InMemoryReportsUnitOfWork(InMemoryUnitOfWork):
         reports: The report repository bound to this unit of work.
         guest_submissions: The guest submission repository.
         spent_challenges: The spent challenge repository.
+        report_reviews: The review repository.
     """
 
     def __init__(
@@ -406,16 +522,19 @@ class InMemoryReportsUnitOfWork(InMemoryUnitOfWork):
         self.reports = InMemoryReportRepository(reports)
         self.guest_submissions = InMemoryGuestSubmissionRepository(guest_submissions)
         self.spent_challenges = InMemorySpentChallengeRepository(database_clock)
+        self.report_reviews = InMemoryReportReviewRepository()
 
     def _on_commit(self) -> None:
         self.reports.apply_staged()
         self.guest_submissions.apply_staged()
         self.spent_challenges.apply_staged()
+        self.report_reviews.apply_staged()
 
     def _on_rollback(self) -> None:
         self.reports.discard_staged()
         self.guest_submissions.discard_staged()
         self.spent_challenges.discard_staged()
+        self.report_reviews.discard_staged()
 
 
 def _newest_first(record: ReportRecord) -> tuple[datetime, EntityId]:
@@ -425,7 +544,14 @@ def _newest_first(record: ReportRecord) -> tuple[datetime, EntityId]:
 class InMemoryReportQueryService:
     """``ReportQueryService`` reading a fake unit of work's committed rows.
 
+    Records carry their lineage and their lineage's committed review, as the SQL
+    adapter's joins do. Event links come from what the test arranges in
+    ``linked_events`` (the events module's projection is not here).
+
     Implements: Fake (of Query Service).
+
+    Attributes:
+        linked_events: Arranged links, by the linked report revision's id.
     """
 
     def __init__(self, uow: InMemoryReportsUnitOfWork) -> None:
@@ -435,6 +561,34 @@ class InMemoryReportQueryService:
             uow: The unit of work whose committed rows are served.
         """
         self._uow = uow
+        self.linked_events: dict[EntityId, tuple[LinkedEvent, ...]] = {}
+
+    def _record(self, report: Report) -> ReportRecord:
+        committed = self._uow.reports.committed
+        lineage_id = lineage_in(committed, report.id)
+        review = (
+            None
+            if lineage_id is None
+            else self._uow.report_reviews.committed.get(lineage_id)
+        )
+        review_record = None
+        if review is not None:
+            review_record = ReportReviewRecord(
+                state=review.state,
+                reviewed_report_id=review.last_mark.report_id,
+                reviewed_revision=review.last_mark.revision,
+                updated_at=review.updated_at,
+                updated_by=review.updated_by,
+                version=review.version,
+                latest_revision=max(
+                    other.revision
+                    for other in committed.values()
+                    if lineage_in(committed, other.id) == lineage_id
+                ),
+            )
+        return ReportRecord.from_entity(report).model_copy(
+            update={"lineage_id": lineage_id, "review": review_record}
+        )
 
     async def get_report(self, report_id: EntityId) -> ReportRecord | None:
         """Return one committed report.
@@ -446,7 +600,42 @@ class InMemoryReportQueryService:
             The record, or ``None``.
         """
         report = self._uow.reports.committed.get(report_id)
-        return None if report is None else ReportRecord.from_entity(report)
+        return None if report is None else self._record(report)
+
+    async def list_review_marks(
+        self, lineage_id: EntityId, limit: int
+    ) -> tuple[ReviewMark, ...]:
+        """Return the lineage's committed marks, newest first.
+
+        Args:
+            lineage_id: The lineage.
+            limit: Most marks returned.
+
+        Returns:
+            The marks.
+        """
+        marks = self._uow.report_reviews.marks.get(lineage_id, [])
+        newest_first = sorted(
+            marks, key=lambda mark: (mark.marked_at, mark.id), reverse=True
+        )
+        return tuple(newest_first[:limit])
+
+    async def list_linked_events(self, lineage_id: EntityId) -> tuple[LinkedEvent, ...]:
+        """Return the arranged links of every committed revision of the lineage.
+
+        Args:
+            lineage_id: The lineage.
+
+        Returns:
+            The links, in arrangement order of the revisions.
+        """
+        committed = self._uow.reports.committed
+        return tuple(
+            link
+            for report_id, links in self.linked_events.items()
+            if lineage_in(committed, report_id) == lineage_id
+            for link in links
+        )
 
     async def list_reports(
         self, specification: Specification[ReportRecord], page: PageRequest
@@ -467,9 +656,7 @@ class InMemoryReportQueryService:
         records = sorted(
             (
                 record
-                for record in map(
-                    ReportRecord.from_entity, self._uow.reports.committed.values()
-                )
+                for record in map(self._record, self._uow.reports.committed.values())
                 if specification.is_satisfied_by(record)
             ),
             key=_newest_first,

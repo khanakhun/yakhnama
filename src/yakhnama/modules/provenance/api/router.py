@@ -35,6 +35,7 @@ from yakhnama.modules.provenance.public import (
     SourceDetail,
 )
 from yakhnama.platform.etag import make_etag, set_etag
+from yakhnama.platform.openapi_headers import ETAG, LOCATION, header_responses
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
 
@@ -138,6 +139,7 @@ async def get_source(
     responses={
         status.HTTP_400_BAD_REQUEST: _PROBLEM,
         status.HTTP_409_CONFLICT: _PROBLEM,
+        **header_responses(status.HTTP_201_CREATED, LOCATION, ETAG),
     },
 )
 async def register_source(

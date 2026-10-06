@@ -123,10 +123,37 @@ carry no foreign key, because they belong to other modules. Migration `0024` add
 partial index `ix_media_assets_created_at_requested` on `created_at` over requested
 uploads, for the stale-upload sweep.
 
+Migration `0025` adds the partial index `ix_media_assets_moderation_queue` on
+`(moderation_status, created_at, id)` over completed uploads, for the moderators'
+queue below, and (on the reports module's table) the GIN index
+`ix_reports_media_ids_gin` on `reports.media_ids` (`jsonb_path_ops`), which serves the
+queue's report lookup.
+
 An upload grant takes the file's exact `byte_size` (1 to 52 428 800 bytes); it is not
 stored on the asset, but signed into the presigned `PUT` as `Content-Length`, so the
 stored object can only have that size. A guest photo's asset id is the one its reserved
 slot names (ADR 0020).
+
+## Moderators' queue
+
+`GET /api/v1/moderation/media` (moderators and admins only; `CanModerate` in the
+application, 403 for anyone else) lists **completed** uploads, oldest first by
+`(created_at, id)`, one page at a time (`limit` 1 to 200, default 50, opaque `cursor`,
+the next page also in `Link`). A requested or failed upload has no file to look at, so
+it is never queued. Filters: `moderation_status` (`pending`, `approved`, `rejected`,
+`quarantined`) and `scan_status` (`pending`, `clean`, `infected`, `unavailable`).
+
+Each item is the `MediaAssetResponse` of `GET /api/v1/media/{asset_id}` with
+`public_download` and `original_download` always `null`: a page of up to 200 presigned
+links would be costly to sign and would hand out originals nobody opened, so a
+moderator opens one asset to get its links.
+
+`report_id` in the queue is the asset's own report or, for a photo uploaded before its
+report existed (`POST /media`, the usual path; such an asset keeps `report_id`
+`NULL`), the **newest report revision whose `media_ids` lists the asset** (a correlated
+lookup on `reports`, read as a plain table, never through the reports module's code).
+`GET /api/v1/media/{asset_id}` still returns the stored `report_id`, which can be
+`null` for the same asset (`docs/open-questions.md` Q247).
 
 ## Open questions raised by this module
 
