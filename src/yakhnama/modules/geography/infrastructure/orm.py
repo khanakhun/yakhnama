@@ -11,6 +11,11 @@ Search runs on ``place_names.text_folded``: the name after ``fold_search_text``
 ``unaccent`` (see ``mappers.py``). A GIN trigram index (``gin_trgm_ops``) serves both
 the ``%`` similarity operator and ``ILIKE '%...%'`` substring matches.
 
+District edge snapshots (ADR 0021) live in ``district_edge_sets`` with one row per
+snapshot and its attribution, ``district_edges`` with one row per pair of districts
+and its line, and ``district_centroids`` with one row per place centroid the load
+set (provenance for the next load, Q239).
+
 Patterns: Adapter (ORM row models behind the repository and query service adapters).
 """
 
@@ -41,6 +46,9 @@ WGS84_SRID: Final = 4326
 
 PLACES_TABLE: Final = "places"
 PLACE_NAMES_TABLE: Final = "place_names"
+DISTRICT_EDGE_SETS_TABLE: Final = "district_edge_sets"
+DISTRICT_EDGES_TABLE: Final = "district_edges"
+DISTRICT_CENTROIDS_TABLE: Final = "district_centroids"
 
 
 class PlaceRow(Base):
@@ -160,3 +168,124 @@ class PlaceNameRow(Base):
     kind: Mapped[str] = mapped_column(String(32))
     is_preferred: Mapped[bool] = mapped_column(Boolean)
     source_id: Mapped[UUID | None]
+
+
+class DistrictEdgeSetRow(Base):
+    """Row model of ``district_edge_sets``: one immutable shared-edge snapshot.
+
+    Implements: Adapter (ORM row model of ``SqlAlchemyDistrictEdgeSetRepository``).
+
+    Attributes:
+        id: Primary key, the snapshot id (UUIDv7).
+        region_code: The region's code in the boundary dataset.
+        source: Attribution: who made the data and where it was obtained.
+        source_url: The dataset's page.
+        licence: The licence's name.
+        licence_url: The licence's legal text.
+        dataset_version: The dataset's own version.
+        retrieved_at: When the file was downloaded, UTC.
+        sha256: The digest of the file the edges were computed from.
+        fingerprint: The digest of the snapshot's content.
+        created_at: When the snapshot was stored, UTC; the newest is current.
+    """
+
+    __tablename__ = DISTRICT_EDGE_SETS_TABLE
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    region_code: Mapped[str] = mapped_column(String(32))
+    source: Mapped[str] = mapped_column(String(500))
+    source_url: Mapped[str] = mapped_column(String(2048))
+    licence: Mapped[str] = mapped_column(String(100))
+    licence_url: Mapped[str] = mapped_column(String(2048))
+    dataset_version: Mapped[str] = mapped_column(String(100))
+    retrieved_at: Mapped[datetime]
+    sha256: Mapped[str] = mapped_column(String(64))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class DistrictEdgeRow(Base):
+    """Row model of ``district_edges``: the line two districts of a snapshot share.
+
+    Implements: Adapter (ORM row model of ``SqlAlchemyDistrictEdgeSetRepository``).
+
+    Attributes:
+        id: Primary key, deterministic per snapshot and pair of districts.
+        edge_set_id: The snapshot; rows go with it.
+        position: Zero-based order of the edge within the snapshot.
+        source_code_a: The first district's code in the dataset (sorted order).
+        source_code_b: The second district's code in the dataset.
+        place_code_a: The first district's gazetteer code, if linked.
+        place_code_b: The second district's gazetteer code, if linked.
+        geometry: The WGS84 LineString or MultiLineString.
+    """
+
+    __tablename__ = DISTRICT_EDGES_TABLE
+    __table_args__ = (
+        UniqueConstraint(
+            "edge_set_id",
+            "source_code_a",
+            "source_code_b",
+            name="uq_district_edges_edge_set_id_source_code_a_source_code_b",
+        ),
+        UniqueConstraint(
+            "edge_set_id", "position", name="uq_district_edges_edge_set_id_position"
+        ),
+        Index("ix_district_edges_geometry_gist", "geometry", postgresql_using="gist"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    # No separate index: both unique constraints lead with edge_set_id.
+    edge_set_id: Mapped[UUID] = mapped_column(
+        ForeignKey("district_edge_sets.id", ondelete="CASCADE")
+    )
+    position: Mapped[int] = mapped_column(SmallInteger)
+    source_code_a: Mapped[str] = mapped_column(String(32))
+    source_code_b: Mapped[str] = mapped_column(String(32))
+    place_code_a: Mapped[str | None] = mapped_column(String(64))
+    place_code_b: Mapped[str | None] = mapped_column(String(64))
+    geometry: Mapped[WKBElement] = mapped_column(
+        Geometry(geometry_type="GEOMETRY", srid=WGS84_SRID, spatial_index=False)
+    )
+
+
+class DistrictCentroidRow(Base):
+    """Row model of ``district_centroids``: a centroid a snapshot's load set.
+
+    Implements: Adapter (ORM row model of ``SqlAlchemyDistrictEdgeSetRepository``).
+
+    Attributes:
+        id: Primary key, deterministic per snapshot and place.
+        edge_set_id: The snapshot; rows go with it.
+        position: Zero-based order of the centroid within the snapshot.
+        source_code: The district's code in the dataset.
+        place_code: The gazetteer place whose centroid was set.
+        point: The WGS84 point set as the centroid.
+    """
+
+    __tablename__ = DISTRICT_CENTROIDS_TABLE
+    __table_args__ = (
+        UniqueConstraint(
+            "edge_set_id",
+            "place_code",
+            name="uq_district_centroids_edge_set_id_place_code",
+        ),
+        UniqueConstraint(
+            "edge_set_id",
+            "position",
+            name="uq_district_centroids_edge_set_id_position",
+        ),
+        Index("ix_district_centroids_point_gist", "point", postgresql_using="gist"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    # No separate index: both unique constraints lead with edge_set_id.
+    edge_set_id: Mapped[UUID] = mapped_column(
+        ForeignKey("district_edge_sets.id", ondelete="CASCADE")
+    )
+    position: Mapped[int] = mapped_column(SmallInteger)
+    source_code: Mapped[str] = mapped_column(String(32))
+    place_code: Mapped[str] = mapped_column(String(64))
+    point: Mapped[WKBElement] = mapped_column(
+        Geometry(geometry_type="POINT", srid=WGS84_SRID, spatial_index=False)
+    )

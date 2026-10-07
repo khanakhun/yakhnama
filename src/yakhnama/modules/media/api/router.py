@@ -2,13 +2,17 @@
 
 Uploads go straight to object storage through presigned URLs: a client asks for
 an upload grant (``POST /media`` before its report exists, or
-``POST /reports/{id}/media`` for its own submitted report), ``PUT``s the file to
-the URL with the returned headers, then calls ``POST /media/{id}/complete``, which
+``POST /reports/{id}/media`` for its own submitted report) with the file's type and
+exact ``byte_size``, ``PUT``s exactly those bytes to the URL with the returned
+headers (the URL signs ``Content-Type`` and ``Content-Length``, so storage refuses
+any other type or length; a browser sets ``Content-Length`` itself from the body),
+then calls ``POST /media/{id}/complete``, which
 checks the stored object (size, magic bytes, SHA-256 deduplication) and schedules
 the malware scan. ``GET /media/{id}`` is open to anonymous callers, who only ever
 see a published asset and only its EXIF-stripped public copy; the uploader and
 moderators also get the private original. Moderators decide on
-``/moderation/media/{id}/decision``.
+``/moderation/media/{id}/decision`` and work through ``GET /moderation/media``, the
+queue of completed uploads (oldest first, no download links in the list).
 
 Errors are never mapped here: handlers and query services raise ``YakhnamaError``
 subclasses and the exception handlers in ``main.py`` render Problem Details.
@@ -17,9 +21,10 @@ Patterns: none from the catalog (thin transport layer over commands and queries)
 """
 
 from typing import Annotated, Any, Final
+from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Response, status
+from fastapi import APIRouter, Header, Query, Response, status
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.api.dependencies import (
@@ -30,25 +35,33 @@ from yakhnama.modules.media.api.dependencies import (
     Services,
 )
 from yakhnama.modules.media.api.schemas import (
+    ListMediaQueueParameters,
     MediaAssetResponse,
+    MediaQueuePage,
     ModerateMediaRequest,
     RequestUploadRequest,
 )
 from yakhnama.modules.media.public import (
     CompleteUpload,
     GetMediaAsset,
+    ListMediaQueue,
     MediaAssetDetail,
     ModerateMedia,
     ModerationStatus,
     RequestUpload,
     UploadGrant,
 )
-from yakhnama.platform.etag import make_etag, set_etag
+from yakhnama.platform.etag import expected_version_from_if_match, make_etag, set_etag
+from yakhnama.platform.openapi_headers import ETAG, LINK, LOCATION, header_responses
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.pagination import PageRequest
 
 API_PREFIX: Final = "/api/v1"
 MEDIA_PATH: Final = f"{API_PREFIX}/media"
+MEDIA_QUEUE_PATH: Final = f"{API_PREFIX}/moderation/media"
 LOCATION_HEADER: Final = "Location"
+LINK_HEADER: Final = "Link"
+IF_MATCH_MAX_LENGTH: Final = 512
 
 # Any: the value type of FastAPI's own ``responses`` argument.
 _PROBLEM: Final[dict[str, Any]] = {
@@ -79,6 +92,14 @@ moderation_router = APIRouter(
     responses=_COMMON_RESPONSES,
 )
 
+IfMatch = Annotated[
+    str | None,
+    Header(
+        alias="If-Match",
+        max_length=IF_MATCH_MAX_LENGTH,
+        description='Optional: the asset\'s ETag, for example "<asset_id>:3".',
+    ),
+]
 IdempotencyKey = Annotated[
     UUID | None,
     Header(
@@ -103,11 +124,20 @@ async def _grant(
     body: RequestUploadRequest,
 ) -> UploadGrant:
     return await services.request_upload_handler(
-        RequestUpload(actor=actor, report_id=report_id, mime_type=body.mime_type)
+        RequestUpload(
+            actor=actor,
+            report_id=report_id,
+            mime_type=body.mime_type,
+            byte_size=body.byte_size,
+        )
     )
 
 
-@router.post("/media", status_code=status.HTTP_201_CREATED, responses=_CREATE_RESPONSES)
+@router.post(
+    "/media",
+    status_code=status.HTTP_201_CREATED,
+    responses={**_CREATE_RESPONSES, **header_responses(201, LOCATION)},
+)
 async def request_upload(
     body: RequestUploadRequest,
     actor: CurrentActor,
@@ -118,7 +148,9 @@ async def request_upload(
     """Grant a presigned upload for a file whose report is not submitted yet.
 
     The returned ``asset_id`` can then be listed in ``media_ids`` of
-    ``POST /reports``.
+    ``POST /reports``. ``PUT`` exactly ``byte_size`` bytes with the returned
+    headers; a body of any other length is refused by storage (403), a
+    ``byte_size`` above ``max_bytes`` here (422).
 
     Args:
         body: The declared media type.
@@ -139,7 +171,7 @@ async def request_upload(
 @router.post(
     "/reports/{report_id}/media",
     status_code=status.HTTP_201_CREATED,
-    responses=_CREATE_RESPONSES,
+    responses={**_CREATE_RESPONSES, **header_responses(201, LOCATION)},
 )
 async def request_report_upload(  # noqa: PLR0913  # reason: FastAPI injects each input
     *,
@@ -172,7 +204,10 @@ async def request_report_upload(  # noqa: PLR0913  # reason: FastAPI injects eac
     return grant
 
 
-@router.post("/media/{asset_id}/complete", responses=_CHANGE_RESPONSES)
+@router.post(
+    "/media/{asset_id}/complete",
+    responses={**_CHANGE_RESPONSES, **header_responses(200, ETAG)},
+)
 async def complete_upload(
     asset_id: EntityId,
     actor: CurrentActor,
@@ -201,7 +236,10 @@ async def complete_upload(
     return _asset_response(response, detail)
 
 
-@router.get("/media/{asset_id}", responses={status.HTTP_404_NOT_FOUND: _PROBLEM})
+@router.get(
+    "/media/{asset_id}",
+    responses={status.HTTP_404_NOT_FOUND: _PROBLEM, **header_responses(200, ETAG)},
+)
 async def get_media_asset(
     asset_id: EntityId,
     actor: OptionalActor,
@@ -228,15 +266,68 @@ async def get_media_asset(
     return _asset_response(response, detail)
 
 
-@moderation_router.post("/media/{asset_id}/decision", responses=_CHANGE_RESPONSES)
-async def moderate_media(
+@moderation_router.get("/media", responses=header_responses(200, LINK))
+async def list_media_queue(
+    parameters: Annotated[ListMediaQueueParameters, Query()],
+    actor: ModeratorActor,
+    response: Response,
+    services: Services,
+) -> MediaQueuePage:
+    """List completed uploads awaiting or past a decision, oldest first.
+
+    Download links are left out of the list; ``GET /media/{asset_id}`` presigns
+    them for one asset.
+
+    Args:
+        parameters: Validated filters, cursor and limit.
+        actor: The moderator.
+        response: Used to set the ``Link`` header.
+        services: Use cases bound by the composition root.
+
+    Returns:
+        One page of assets.
+    """
+    page = await services.media_queries.list_media_queue(
+        ListMediaQueue(
+            actor=actor,
+            moderation_status=parameters.moderation_status_value(),
+            scan_status=parameters.scan_status,
+            page=PageRequest(limit=parameters.limit, cursor=parameters.cursor),
+        )
+    )
+    if page.next_cursor is not None:
+        following = parameters.model_copy(update={"cursor": page.next_cursor})
+        query = urlencode(following.model_dump(mode="json", exclude_none=True))
+        response.headers[LINK_HEADER] = f'<{MEDIA_QUEUE_PATH}?{query}>; rel="next"'
+    return MediaQueuePage(
+        items=tuple(MediaAssetResponse.from_detail(item) for item in page.items),
+        next_cursor=page.next_cursor,
+    )
+
+
+@moderation_router.post(
+    "/media/{asset_id}/decision",
+    responses={
+        **_CHANGE_RESPONSES,
+        status.HTTP_412_PRECONDITION_FAILED: _PROBLEM,
+        **header_responses(200, ETAG),
+    },
+)
+async def moderate_media(  # noqa: PLR0913  # reason: FastAPI injects each input
+    *,
     asset_id: EntityId,
     body: ModerateMediaRequest,
     actor: ModeratorActor,
     response: Response,
     services: Services,
+    if_match: IfMatch = None,
 ) -> MediaAssetResponse:
     """Record a moderator's decision, publishing the public copy when approved.
+
+    ``If-Match`` is optional, as on every moderation route (Q66); when sent it is
+    compared with the asset's version inside the command's unit of work, so two
+    moderators deciding at once cannot let a stale approval overwrite a
+    rejection.
 
     Args:
         asset_id: The asset.
@@ -244,9 +335,14 @@ async def moderate_media(
         actor: The moderator.
         response: Used to set the ``ETag`` header.
         services: Use cases bound by the composition root.
+        if_match: Optional: the asset's ETag the decision is based on.
 
     Returns:
         The asset after the decision.
+
+    Raises:
+        PreconditionFailedError: If ``If-Match`` is stale, names another asset
+            or is not a single strong tag (412).
     """
     detail = await services.moderate_media_handler(
         ModerateMedia(
@@ -255,6 +351,11 @@ async def moderate_media(
             decision=ModerationStatus(body.decision),
             sensitivity=body.sensitivity,
             reason=body.reason,
+            expected_version=(
+                None
+                if if_match is None
+                else expected_version_from_if_match(if_match, asset_id)
+            ),
         )
     )
     return _asset_response(response, detail)

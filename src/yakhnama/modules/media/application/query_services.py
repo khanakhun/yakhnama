@@ -5,18 +5,26 @@ presigns only those: the public copy for anyone once it is published, the privat
 original (which still carries EXIF, GPS included) for its uploader and moderators
 only. An asset the actor may not see is reported as missing.
 
+The moderators' queue (``list_media_queue``) is refused to everyone else and never
+presigns anything: a page of up to 200 links would be expensive to sign and would
+hand out originals nobody opened. A moderator gets the links of one asset from
+``get_media_asset``.
+
 Patterns: Query Service, Policy.
 """
 
 from yakhnama.modules.media.application.authorisation import (
+    moderation_policy,
     original_view_policy,
     public_view_policy,
+    require_allowed,
 )
 from yakhnama.modules.media.application.dto import MediaAssetDetail
 from yakhnama.modules.media.application.ports import MediaQueryService, StoragePort
-from yakhnama.modules.media.application.queries import GetMediaAsset
+from yakhnama.modules.media.application.queries import GetMediaAsset, ListMediaQueue
 from yakhnama.modules.media.domain.errors import MediaAssetNotFoundError
 from yakhnama.modules.media.domain.value_objects import UploadStatus
+from yakhnama.shared_kernel.pagination import Page
 
 
 class AuthorisedMediaQueryService:
@@ -72,4 +80,28 @@ class AuthorisedMediaQueryService:
             record,
             public_download=public_download,
             original_download=original_download,
+        )
+
+    async def list_media_queue(self, query: ListMediaQueue) -> Page[MediaAssetDetail]:
+        """Return one page of the moderators' queue, oldest first, without links.
+
+        Args:
+            query: The actor, filters and page request.
+
+        Returns:
+            Completed uploads with their statuses and report; no download links.
+
+        Raises:
+            PermissionDeniedError: If the actor may not moderate.
+            ValidationError: If the cursor is invalid.
+        """
+        require_allowed(moderation_policy(), query.actor, action="read the media queue")
+        page = await self._query_service.list_queue(
+            moderation_status=query.moderation_status,
+            scan_status=query.scan_status,
+            page=query.page,
+        )
+        return Page[MediaAssetDetail](
+            items=tuple(MediaAssetDetail.from_record(record) for record in page.items),
+            next_cursor=page.next_cursor,
         )

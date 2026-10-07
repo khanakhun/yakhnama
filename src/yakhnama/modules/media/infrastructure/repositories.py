@@ -12,6 +12,9 @@ Optimistic concurrency: ``save`` updates a row only ``WHERE version = new versio
 Patterns: Repository (adapter side).
 """
 
+from collections.abc import Sequence
+from datetime import datetime
+
 from sqlalchemy import ColumnElement, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +80,34 @@ class SqlAlchemyMediaAssetRepository:
             & (MediaAssetRow.sha256 == sha256)
             & (MediaAssetRow.upload_status == UploadStatus.COMPLETED.value)
         )
+
+    async def find_requested_before(
+        self, before: datetime, limit: int
+    ) -> Sequence[MediaAsset]:
+        """Return ``requested`` assets created before ``before``, oldest first.
+
+        Served by the partial index on ``created_at`` for requested uploads.
+
+        Args:
+            before: Only assets created earlier than this instant, UTC.
+            limit: Most assets returned.
+
+        Returns:
+            The assets, oldest first.
+        """
+        statement = (
+            select(MediaAssetRow)
+            .where(
+                MediaAssetRow.upload_status == UploadStatus.REQUESTED.value,
+                MediaAssetRow.created_at < before,
+            )
+            .order_by(MediaAssetRow.created_at, MediaAssetRow.id)
+            .limit(limit)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        for row in rows:
+            self._session.expunge(row)
+        return tuple(row_to_asset(row) for row in rows)
 
     async def add(self, asset: MediaAsset) -> None:
         """Insert a new asset.

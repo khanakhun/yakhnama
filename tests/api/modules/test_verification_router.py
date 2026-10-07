@@ -301,3 +301,30 @@ async def test_assign_case_with_stale_if_match_returns_412() -> None:
         )
 
     assert response.status_code == 412
+
+
+async def test_list_cases_by_target_finds_an_events_case_in_one_call() -> None:
+    api = recording_app()
+
+    async with api.client() as client:
+        report = await submit_report(client)
+        event = await create_event(client, [report["id"]])
+        case_id = await event_case_id(client, str(event["id"]))
+        await _case(client)
+        listed = await client.get(
+            CASES,
+            params={"target_kind": "event", "target_id": str(event["id"])},
+            headers=moderator_headers(),
+        )
+        other_kind = await client.get(
+            CASES,
+            params={"target_kind": "report", "target_id": str(event["id"])},
+            headers=moderator_headers(),
+        )
+        invalid = await client.get(
+            CASES, params={"target_id": "not-a-uuid"}, headers=moderator_headers()
+        )
+
+    assert [item["id"] for item in listed.json()["items"]] == [case_id]
+    assert other_kind.json()["items"] == []
+    assert invalid.status_code == 422

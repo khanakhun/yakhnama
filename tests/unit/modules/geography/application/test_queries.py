@@ -8,9 +8,13 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from tests.fakes.geography import (
+    InMemoryDistrictEdgeQueryService,
+    InMemoryDistrictEdgeSetRepository,
     InMemoryGeographyUnitOfWork,
     InMemoryPlaceQueryService,
     InMemoryPlaceRepository,
+    StaticBoundaryLoader,
+    StaticSharedEdgeCalculator,
 )
 from tests.fakes.ids import SequentialIdGenerator
 from tests.fakes.uow import InMemoryUnitOfWorkFactory
@@ -27,10 +31,14 @@ from yakhnama.modules.geography.application.dto import (
     display_name,
 )
 from yakhnama.modules.geography.application.ports import (
+    BoundaryLoader,
+    DistrictEdgeQueryService,
+    DistrictEdgeSetRepository,
     GeographyUnitOfWork,
     GeographyUnitOfWorkFactory,
     PlaceQueryService,
     PlaceRepository,
+    SharedEdgeCalculator,
 )
 from yakhnama.modules.geography.application.queries import (
     SEARCH_TEXT_MAX_LENGTH,
@@ -214,6 +222,10 @@ def test_place_summary_and_detail_from_entity_carry_parent_code() -> None:
         (PlaceRepository, InMemoryPlaceRepository),
         (PlaceQueryService, InMemoryPlaceQueryService),
         (GeographyUnitOfWork, InMemoryGeographyUnitOfWork),
+        (DistrictEdgeSetRepository, InMemoryDistrictEdgeSetRepository),
+        (DistrictEdgeQueryService, InMemoryDistrictEdgeQueryService),
+        (BoundaryLoader, StaticBoundaryLoader),
+        (SharedEdgeCalculator, StaticSharedEdgeCalculator),
     ],
 )
 def test_fake_defines_every_protocol_member(protocol: type, fake: type) -> None:
@@ -221,8 +233,8 @@ def test_fake_defines_every_protocol_member(protocol: type, fake: type) -> None:
 
     missing = sorted(member for member in members if not hasattr(fake, member))
 
-    # ``places`` is an instance attribute of the unit of work fake.
-    assert missing in ([], ["places"])
+    # The repositories are instance attributes of the unit of work fake.
+    assert missing in ([], ["district_edge_sets", "places"])
 
 
 def test_fakes_satisfy_ports_statically() -> None:
@@ -232,8 +244,14 @@ def test_fakes_satisfy_ports_statically() -> None:
     unit_of_work: GeographyUnitOfWork = uow
     factory: GeographyUnitOfWorkFactory = InMemoryUnitOfWorkFactory(uow)
     service: PlaceQueryService = InMemoryPlaceQueryService(uow.places)
+    edge_sets: DistrictEdgeSetRepository = uow.district_edge_sets
+    edges: DistrictEdgeQueryService = InMemoryDistrictEdgeQueryService(
+        uow.district_edge_sets
+    )
 
     assert unit_of_work.places is repository
+    assert unit_of_work.district_edge_sets is edge_sets
+    assert edges is not None
     assert factory() is uow
     assert service is not None
 

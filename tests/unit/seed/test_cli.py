@@ -16,7 +16,11 @@ from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.modules.geography.public import LoadReport as PlaceLoadReport
 from yakhnama.modules.hazards.public import LoadReport as HazardTypeLoadReport
 from yakhnama.modules.hazards.public import SkippedChange
-from yakhnama.modules.identity.public import CanManageReferenceData, Role
+from yakhnama.modules.identity.public import (
+    CanManageReferenceData,
+    Role,
+    SeedAccountsReport,
+)
 from yakhnama.modules.impacts.public import LoadReport as ImpactMetricLoadReport
 from yakhnama.modules.ingestion.public import LoadReport as DatasetLoadReport
 from yakhnama.modules.ingestion.public import SkippedChange as DatasetSkippedChange
@@ -404,3 +408,25 @@ def test_build_system_actor_is_admin_citizen_without_memberships() -> None:
     assert actor.roles == frozenset({Role.CITIZEN, Role.ADMIN})
     assert actor.memberships == frozenset()
     assert CanManageReferenceData().is_allowed(actor) is True
+
+
+def test_log_report_logs_the_demo_accounts_summary() -> None:
+    accounts = SeedAccountsReport(
+        users_created=2,
+        roles_granted=0,
+        is_organization_created=True,
+        memberships_created=1,
+    )
+    report = _report().model_copy(update={"accounts": accounts})
+
+    with capture_logs() as logs:
+        log_report(report)
+
+    (completed,) = logs
+    assert completed["demo_accounts"] == {
+        "users_created": 2,
+        "roles_granted": 0,
+        "is_organization_created": True,
+        "memberships_created": 1,
+    }
+    assert completed["is_unchanged"] is False

@@ -17,9 +17,11 @@ from yakhnama.platform.settings import Settings
 from yakhnama.platform.tasks.handlers import (
     EXCHANGE_RUN_EXPORT_TASK,
     EXCHANGE_RUN_IMPORT_TASK,
+    GUEST_PURGE_TASK,
     IDEMPOTENCY_PURGE_TASK,
     INGESTION_RUN_TASK,
     MEDIA_SCAN_TASK,
+    MEDIA_SWEEP_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
     REPORTS_TRIAGE_TASK,
@@ -61,7 +63,9 @@ def test_build_container_binds_the_platform_and_module_task_handlers(
         OUTBOX_PURGE_TASK,
         IDEMPOTENCY_PURGE_TASK,
         REPORTS_TRIAGE_TASK,
+        GUEST_PURGE_TASK,
         MEDIA_SCAN_TASK,
+        MEDIA_SWEEP_TASK,
         EXCHANGE_RUN_EXPORT_TASK,
         EXCHANGE_RUN_IMPORT_TASK,
         INGESTION_RUN_TASK,
@@ -148,3 +152,34 @@ async def test_build_task_handlers_idempotency_purge_logs_deleted_count(
     await container.aclose()
 
     assert logs == [{"event": "idempotency_purged", "log_level": "info", "deleted": 0}]
+
+
+async def test_build_task_handlers_guest_purge_logs_what_it_forgot(
+    settings: Settings,
+) -> None:
+    container = build_faked_container(settings, InMemoryOutboxStore(), FixedClock())
+
+    with capture_logs() as logs:
+        await build_task_handlers(container)[GUEST_PURGE_TASK](_task(GUEST_PURGE_TASK))
+    await container.aclose()
+
+    assert logs == [
+        {
+            "event": "guest_records_purged",
+            "log_level": "info",
+            "challenges": 0,
+            "submissions": 0,
+        }
+    ]
+
+
+async def test_build_task_handlers_media_sweep_logs_the_failed_count(
+    settings: Settings,
+) -> None:
+    container = build_faked_container(settings, InMemoryOutboxStore(), FixedClock())
+
+    with capture_logs() as logs:
+        await build_task_handlers(container)[MEDIA_SWEEP_TASK](_task(MEDIA_SWEEP_TASK))
+    await container.aclose()
+
+    assert logs == [{"event": "stale_uploads_swept", "log_level": "info", "failed": 0}]

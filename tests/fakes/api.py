@@ -38,6 +38,7 @@ Patterns: Fake.
 import dataclasses
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Final
 
 import httpx
@@ -69,6 +70,7 @@ from tests.fakes.exchange import (
     InMemoryExchangeUnitOfWork,
 )
 from tests.fakes.geography import (
+    InMemoryDistrictEdgeQueryService,
     InMemoryGeographyUnitOfWork,
     InMemoryPlaceQueryService,
 )
@@ -107,6 +109,7 @@ from tests.fakes.reports import (
     FakeNearbyReportsFinder,
     InMemoryReportQueryService,
     InMemoryReportsUnitOfWork,
+    SequentialGuestSecretGenerator,
 )
 from tests.fakes.tasks import RecordingTaskQueue
 from tests.fakes.uow import InMemoryUnitOfWorkFactory
@@ -135,6 +138,7 @@ from yakhnama.platform.container import (
     ExchangePorts,
     ExchangeServices,
     ExchangeWorkerPorts,
+    GuestPorts,
     IngestionPorts,
     IngestionServices,
     MediaAdapters,
@@ -143,6 +147,7 @@ from yakhnama.platform.container import (
     RecordingUnits,
     build_container,
     build_exchange_services,
+    build_guest_ports,
     build_ingestion_services,
     build_recording_services,
 )
@@ -485,6 +490,7 @@ def build_recording_services_over_fakes(
     stores: RecordingStores,
     core: CorePorts,
     impacts: InMemoryImpactsUnitOfWork,
+    guest: GuestPorts,
 ) -> tuple[RecordingUnits, RecordingReads, MediaAdapters, RecordingServices]:
     """Wire the Phase 3 use cases with the production builder over the fakes.
 
@@ -492,6 +498,8 @@ def build_recording_services_over_fakes(
         stores: The Phase 3 stores and adapter fakes.
         core: The kernel and Phase 1 and 2 ports, over the fakes.
         impacts: The impacts unit of work (claims share it with the metrics).
+        guest: The guest reporting ports (the real HMAC signer, a predictable
+            secret generator).
 
     Returns:
         The unit-of-work factories, read ports, media adapters and use cases.
@@ -523,6 +531,7 @@ def build_recording_services_over_fakes(
         mime_sniffer=stores.mime_sniffer,
         # Clean, so a test can publish media; the fake storage holds no bytes.
         malware_scanner=NoOpMalwareScanner(verdict=ScanStatus.CLEAN),
+        upload_sweep_after=timedelta(hours=1),
     )
     services = build_recording_services(
         core=core,
@@ -530,6 +539,7 @@ def build_recording_services_over_fakes(
         reads=reads,
         media=media,
         task_queue=stores.task_queue,
+        guest=guest,
     )
     return units, reads, media, services
 
@@ -583,11 +593,20 @@ def lay_recording_over(  # noqa: PLR0913  # reason: one argument per group laid 
         revise_report_handler=services.revise_report_handler,
         withdraw_report_handler=services.withdraw_report_handler,
         report_queries=services.report_queries,
+        issue_guest_challenge_handler=services.issue_guest_challenge_handler,
+        open_guest_submission_handler=services.open_guest_submission_handler,
+        request_guest_media_upload_handler=services.request_guest_media_upload_handler,
+        complete_guest_media_upload_handler=(
+            services.complete_guest_media_upload_handler
+        ),
+        submit_guest_report_handler=services.submit_guest_report_handler,
+        purge_guest_records_handler=services.purge_guest_records_handler,
         run_triage_handler=services.run_triage_handler,
         request_upload_handler=services.request_upload_handler,
         complete_upload_handler=services.complete_upload_handler,
         moderate_media_handler=services.moderate_media_handler,
         record_scan_result_handler=services.record_scan_result_handler,
+        sweep_stale_uploads_handler=services.sweep_stale_uploads_handler,
         media_queries=services.media_queries,
         event_handler_dependencies=services.event_handler_dependencies,
         event_queries=services.event_queries,
@@ -662,6 +681,9 @@ def build_test_app(  # noqa: PLR0913  # reason: one optional seed per fake repos
             impacts.impact_metrics
         ),
         place_query_service=InMemoryPlaceQueryService(geography.places),
+        district_edge_query_service=InMemoryDistrictEdgeQueryService(
+            geography.district_edge_sets
+        ),
         identity_query_service=InMemoryIdentityQueryService(identity),
     )
     stores = RecordingStores(
@@ -682,8 +704,11 @@ def build_test_app(  # noqa: PLR0913  # reason: one optional seed per fake repos
         identity=identity,
         settings=resolved_settings,
     )
+    guest = dataclasses.replace(
+        build_guest_ports(resolved_settings), secrets=SequentialGuestSecretGenerator()
+    )
     units, reads, media, services = build_recording_services_over_fakes(
-        stores=stores, core=core, impacts=impacts
+        stores=stores, core=core, impacts=impacts, guest=guest
     )
     container = lay_recording_over(
         container,

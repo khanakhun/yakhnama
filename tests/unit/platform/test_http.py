@@ -98,6 +98,7 @@ async def test_request_logging_middleware_logs_fields_without_personal_data() ->
                 headers={
                     "Authorization": "Bearer secret",
                     "X-Forwarded-For": "1.2.3.4",
+                    "Guest-Capability": "capability-value-never-logged",
                 },
             )
 

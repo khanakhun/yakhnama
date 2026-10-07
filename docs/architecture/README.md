@@ -387,6 +387,8 @@ here for what actually exists.
 - The Phase 3 recording flow, reporter privacy rules and task schedules:
   [`recording.md`](recording.md).
 - The impact-claim best-figure aggregation policy: [`best-figure.md`](best-figure.md).
+- The production image, the Compose stack and how to install and upgrade it:
+  [`deployment.md`](deployment.md) (ADR 0023).
 - The Phase 4 export/import flow and the dataset-catalog/pipeline flow:
   [`exchange.md`](exchange.md), [`ingestion.md`](ingestion.md).
 - Open questions raised while building Phases 1–4:

@@ -4,9 +4,12 @@ The upload flow, in the order a client drives it:
 
 1. ``RequestUploadHandler`` creates the asset (``requested``) and returns a
    presigned ``PUT`` for its **upload key** (``media/upload/<id>``), the only key a
-   client ever gets a URL for. Its source is the report's source
-   when the file belongs to the uploader's report, otherwise a new ``citizen``
-   source registered through the provenance facade.
+   client ever gets a URL for. The URL signs the declared type and the exact size
+   the client announced (``byte_size``), so storage refuses any other file. Its
+   source is the report's source when the file belongs to the uploader's report,
+   otherwise a new ``citizen`` source registered through the provenance facade.
+   ``RequestGuestUploadHandler`` does the same for a guest's photo, with the id
+   the guest's reserved slot names and a shorter URL lifetime (ADR 0020).
 2. ``CompleteUploadHandler`` has storage copy the upload to the private original
    (``seal_upload``), so the recorded digest describes bytes no client URL can
    overwrite, then detects the media type from the magic bytes (it must equal the
@@ -28,6 +31,10 @@ The upload flow, in the order a client drives it:
    no longer hashes to the recorded digest, nothing is published and the asset is
    quarantined (``MediaContentChangedError``).
 
+``SweepStaleUploadsHandler`` (a periodic system task) marks assets whose upload never
+completed long after their URL expired as ``failed`` and deletes their upload
+objects, so abandoned grants leave nothing behind.
+
 Storage, EXIF and MIME adapters do network I/O; they are called outside a unit of
 work where the result does not decide what is staged, and before staging where it
 does.
@@ -35,7 +42,7 @@ does.
 Patterns: Command Handler, Unit of Work, Policy, Domain Events.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.application.authorisation import (
@@ -44,10 +51,13 @@ from yakhnama.modules.media.application.authorisation import (
     uploader_policy,
 )
 from yakhnama.modules.media.application.commands import (
+    CompleteGuestUpload,
     CompleteUpload,
     ModerateMedia,
     RecordScanResult,
+    RequestGuestUpload,
     RequestUpload,
+    SweepStaleUploads,
 )
 from yakhnama.modules.media.application.dto import MediaAssetDetail, UploadGrant
 from yakhnama.modules.media.application.ports import (
@@ -68,6 +78,7 @@ from yakhnama.modules.media.domain.factories import MediaAssetFactory
 from yakhnama.modules.media.domain.value_objects import (
     MAX_MEDIA_BYTES,
     MediaAttribution,
+    MimeType,
     ScanStatus,
     StoredFile,
     UploadStatus,
@@ -75,7 +86,11 @@ from yakhnama.modules.media.domain.value_objects import (
     upload_object_key,
 )
 from yakhnama.modules.provenance.public import (
+    MarkPlatformSourceReferenced,
     MarkSourceReferenced,
+    PlatformSourceReferenceMarker,
+    PlatformSourceRegistrar,
+    RegisterPlatformSource,
     RegisterSource,
     SourceDetails,
     SourceReferenceMarker,
@@ -86,6 +101,7 @@ from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import (
     InvariantViolationError,
     PermissionDeniedError,
+    PreconditionFailedError,
     ValidationError,
 )
 from yakhnama.shared_kernel.ids import EntityId, IdGenerator
@@ -94,6 +110,8 @@ from yakhnama.shared_kernel.tasks import TaskQueue
 # Platform-written text for the source of a file uploaded without a report
 # (**proposed**); it never names the uploader.
 UPLOAD_SOURCE_TITLE = "Community media upload"
+GUEST_UPLOAD_SOURCE_TITLE = "Guest media upload"
+"""Title of the platform-owned source of a guest's photo (**proposed**, ADR 0020)."""
 
 CONTENT_CHANGED_QUARANTINE_REASON = (
     "The stored file no longer matches the digest recorded at upload."
@@ -117,6 +135,68 @@ def _require_user(actor: Actor, *, action: str) -> EntityId:
             message, details={"action": action, "policy": "IsAuthenticated"}
         )
     return actor.user_id
+
+
+def _guest_upload_source_details(now: datetime) -> SourceDetails:
+    return SourceDetails(
+        title=GUEST_UPLOAD_SOURCE_TITLE,
+        citation=f"Yakhnama guest media upload, {now:%Y-%m-%d}",
+    )
+
+
+async def _create_and_grant(  # noqa: PLR0913  # reason: one keyword per input of the shared step
+    *,
+    uow_factory: MediaUnitOfWorkFactory,
+    storage: StoragePort,
+    attribution: MediaAttribution,
+    mime_type: MimeType,
+    byte_size: int,
+    clock: Clock,
+    ids: IdGenerator,
+    asset_id: EntityId | None = None,
+    ttl: timedelta | None = None,
+) -> tuple[MediaAsset, UploadGrant]:
+    # Shared by account and guest uploads: the asset is committed before the URL
+    # is presigned, so a grant always names a stored asset.
+    async with uow_factory() as uow:
+        asset = (
+            MediaAssetFactory()
+            .request_upload(
+                attribution, mime_type, clock=clock, ids=ids, asset_id=asset_id
+            )
+            .record_into(uow)
+        )
+        await uow.media_assets.add(asset)
+        await uow.commit()
+    upload = await storage.presign_put(
+        upload_object_key(asset.id), mime_type, byte_size, ttl=ttl
+    )
+    return asset, UploadGrant(
+        asset_id=asset.id,
+        upload_url=upload.url,
+        headers=upload.headers,
+        expires_at=upload.expires_at,
+        max_bytes=MAX_MEDIA_BYTES,
+    )
+
+
+def _authorise_completion(
+    asset: MediaAsset, command: CompleteUpload | CompleteGuestUpload
+) -> None:
+    if isinstance(command, CompleteGuestUpload):
+        # The guest use case checked the capability; the asset must be the
+        # submission's own, as an account upload must be the actor's own.
+        if asset.owner_id != command.owner_id:
+            message = "the guest submission may complete only its own uploads"
+            raise PermissionDeniedError(
+                message, details={"action": "complete this upload", "reason": "owner"}
+            )
+        return
+    require_allowed(
+        uploader_policy(asset.owner_id),
+        command.actor,
+        action="complete this upload",
+    )
 
 
 async def _load_asset(uow: MediaUnitOfWork, asset_id: EntityId) -> MediaAsset:
@@ -209,30 +289,20 @@ class RequestUploadHandler:
         attribution = MediaAttribution(
             owner_id=owner_id, source_id=source_id, report_id=command.report_id
         )
-        async with self._uow_factory() as uow:
-            asset = (
-                MediaAssetFactory()
-                .request_upload(
-                    attribution, command.mime_type, clock=self._clock, ids=self._ids
-                )
-                .record_into(uow)
-            )
-            await uow.media_assets.add(asset)
-            await uow.commit()
+        asset, grant = await _create_and_grant(
+            uow_factory=self._uow_factory,
+            storage=self._storage,
+            attribution=attribution,
+            mime_type=command.mime_type,
+            byte_size=command.byte_size,
+            clock=self._clock,
+            ids=self._ids,
+        )
         if is_new_source:
             await self._source_marker(
-                MarkSourceReferenced(actor=command.actor, source_id=source_id)
+                MarkSourceReferenced(actor=command.actor, source_id=asset.source_id)
             )
-        upload = await self._storage.presign_put(
-            upload_object_key(asset.id), command.mime_type, MAX_MEDIA_BYTES
-        )
-        return UploadGrant(
-            asset_id=asset.id,
-            upload_url=upload.url,
-            headers=upload.headers,
-            expires_at=upload.expires_at,
-            max_bytes=MAX_MEDIA_BYTES,
-        )
+        return grant
 
     async def _resolve_source(
         self, command: RequestUpload, owner_id: EntityId
@@ -255,6 +325,151 @@ class RequestUploadHandler:
             )
         )
         return source.id
+
+
+class RequestGuestUploadHandler:
+    """Create the asset of a guest's reserved photo slot and grant its upload.
+
+    The asset gets the id the slot names, so a guest submission never owns an
+    asset it has no slot for (ADR 0020). Its source is a platform-owned
+    ``citizen`` source registered through ``PlatformSourceRegistrar`` (a guest has
+    no user to own one) and frozen only once the asset is stored. The upload URL
+    lives ``upload_ttl``, shorter than an account upload's.
+
+    Implements: Command Handler.
+    """
+
+    def __init__(  # noqa: PLR0913  # reason: one keyword per injected port, all required
+        self,
+        *,
+        uow_factory: MediaUnitOfWorkFactory,
+        storage: StoragePort,
+        source_registrar: PlatformSourceRegistrar,
+        source_marker: PlatformSourceReferenceMarker,
+        upload_ttl: timedelta,
+        clock: Clock,
+        ids: IdGenerator,
+    ) -> None:
+        """Create the handler.
+
+        Args:
+            uow_factory: Opens a media unit of work per call.
+            storage: Presigns the upload.
+            source_registrar: Registers the platform-owned source.
+            source_marker: Freezes that source once the asset is stored.
+            upload_ttl: Lifetime of a guest's upload URL.
+            clock: Source of timestamps and event times.
+            ids: Source of event ids.
+        """
+        self._uow_factory = uow_factory
+        self._storage = storage
+        self._source_registrar = source_registrar
+        self._source_marker = source_marker
+        self._upload_ttl = upload_ttl
+        self._clock = clock
+        self._ids = ids
+
+    async def __call__(self, command: RequestGuestUpload) -> UploadGrant:
+        """Create the asset and presign its upload.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            The asset id, upload URL, headers, expiry and size limit.
+
+        Raises:
+            ConflictError: If an asset with ``asset_id`` already exists.
+        """
+        source = await self._source_registrar(
+            RegisterPlatformSource(
+                source_type=SourceType.CITIZEN,
+                details=_guest_upload_source_details(self._clock.now()),
+            )
+        )
+        asset, grant = await _create_and_grant(
+            uow_factory=self._uow_factory,
+            storage=self._storage,
+            attribution=MediaAttribution(
+                owner_id=command.owner_id, source_id=source.id
+            ),
+            mime_type=command.mime_type,
+            byte_size=command.byte_size,
+            clock=self._clock,
+            ids=self._ids,
+            asset_id=command.asset_id,
+            ttl=self._upload_ttl,
+        )
+        await self._source_marker(
+            MarkPlatformSourceReferenced(source_id=asset.source_id)
+        )
+        return grant
+
+
+class SweepStaleUploadsHandler:
+    """Fail long-abandoned uploads and delete whatever their URLs left behind.
+
+    An asset still ``requested`` ``stale_after`` after it was created can no
+    longer be completed by an honest client (its URL expired long before), so it
+    is marked ``failed`` and its upload object, if the client wrote one, is
+    deleted. The bucket's lifecycle rule on ``media/upload/`` is the backstop for
+    objects a still-valid URL writes after the sweep.
+
+    Implements: Command Handler.
+    """
+
+    def __init__(
+        self,
+        *,
+        uow_factory: MediaUnitOfWorkFactory,
+        storage: StoragePort,
+        stale_after: timedelta,
+        clock: Clock,
+        ids: IdGenerator,
+    ) -> None:
+        """Create the handler.
+
+        Args:
+            uow_factory: Opens a media unit of work per asset.
+            storage: Deletes the upload objects.
+            stale_after: Age after which a ``requested`` asset is abandoned.
+            clock: Source of the cut-off and of event times.
+            ids: Source of event ids.
+        """
+        self._uow_factory = uow_factory
+        self._storage = storage
+        self._stale_after = stale_after
+        self._clock = clock
+        self._ids = ids
+
+    async def __call__(self, command: SweepStaleUploads) -> int:
+        """Fail one batch of abandoned uploads.
+
+        Args:
+            command: The batch size.
+
+        Returns:
+            How many assets were marked ``failed``.
+        """
+        cutoff = self._clock.now() - self._stale_after
+        async with self._uow_factory() as uow:
+            stale = await uow.media_assets.find_requested_before(
+                cutoff, command.batch_size
+            )
+        failed = 0
+        for candidate in stale:
+            # One unit of work per asset, reloaded: a completion that raced the
+            # sweep wins, and one failure does not undo the others.
+            async with self._uow_factory() as uow:
+                asset = await uow.media_assets.get(candidate.id)
+                if asset is None or asset.upload_status is not UploadStatus.REQUESTED:
+                    continue
+                change = asset.fail_upload(clock=self._clock, ids=self._ids)
+                await uow.media_assets.save(change.record_into(uow))
+                await uow.commit()
+            await self._storage.delete_upload(upload_object_key(candidate.id))
+            failed += 1
+        return failed
 
 
 class CompleteUploadHandler:
@@ -293,18 +508,22 @@ class CompleteUploadHandler:
         self._clock = clock
         self._ids = ids
 
-    async def __call__(self, command: CompleteUpload) -> MediaAssetDetail:
+    async def __call__(
+        self, command: CompleteUpload | CompleteGuestUpload
+    ) -> MediaAssetDetail:
         """Complete the upload, or return the uploader's existing identical asset.
 
         Args:
-            command: The validated command.
+            command: The validated command; a ``CompleteGuestUpload`` comes from
+                the guest use case, which checked the guest's capability.
 
         Returns:
             The completed asset; for a duplicate, the earlier asset with the same
             content. Repeating the call for a completed asset returns it again.
 
         Raises:
-            PermissionDeniedError: If the actor is not the uploader.
+            PermissionDeniedError: If the actor (or guest submission) is not the
+                uploader.
             MediaAssetNotFoundError: If the asset does not exist.
             ValidationError: If the file has not arrived (nothing changes, so the
                 client may retry), or is empty, too large, not an allowed media
@@ -316,11 +535,7 @@ class CompleteUploadHandler:
         existing: MediaAsset | None = None
         async with self._uow_factory() as uow:
             asset = await _load_asset(uow, command.asset_id)
-            require_allowed(
-                uploader_policy(asset.owner_id),
-                command.actor,
-                action="complete this upload",
-            )
+            _authorise_completion(asset, command)
             if asset.upload_status is UploadStatus.COMPLETED:
                 return MediaAssetDetail.from_entity(asset)
             stored = await self._stored_file(asset)
@@ -437,6 +652,15 @@ class RecordScanResultHandler:
         return MediaAssetDetail.from_entity(asset)
 
 
+def _check_version(expected: int | None, current: int) -> None:
+    if expected is not None and expected != current:
+        message = "the media asset has changed since the client read it"
+        raise PreconditionFailedError(
+            message,
+            details={"expected_version": expected, "current_version": current},
+        )
+
+
 class ModerateMediaHandler:
     """Record a moderator's decision and publish the public copy when allowed.
 
@@ -480,6 +704,7 @@ class ModerateMediaHandler:
                 rejection has no reason.
             MediaUploadNotCompletedError: If the upload has not completed.
             InfectedMediaError: If an infected asset would be approved.
+            PreconditionFailedError: If ``expected_version`` is not the asset's.
             MediaContentChangedError: If the original no longer hashes to its
                 recorded digest; the decision stays, the asset is quarantined and
                 nothing is published.
@@ -487,6 +712,9 @@ class ModerateMediaHandler:
         require_allowed(moderation_policy(), command.actor, action="moderate media")
         async with self._uow_factory() as uow:
             asset = await _load_asset(uow, command.asset_id)
+            # Compared inside the unit of work, so a stale approval cannot
+            # overwrite a rejection another moderator just stored.
+            _check_version(command.expected_version, asset.version)
             change = asset.moderate(
                 command.decision,
                 command.sensitivity,

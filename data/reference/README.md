@@ -63,5 +63,9 @@ guess (open question Q2).
   `desinventar` only when the mapping is certain; otherwise leave them null and write
   the candidate in `notes`. Monetary metrics need an ADR first.
 - Places: only from the chosen boundary source, with `status: sourced` and a `source`.
+  The boundary source itself (OCHA COD-AB, Q1) is pinned in
+  `data/boundaries/cod_ab_pak_gb_districts.yaml`, which is not a seeded reference file:
+  `poetry run poe load-boundaries` reads it (ADR 0021). A district added here is linked
+  there by hand.
 - Update the matching page under `docs/data-dictionary/` and run
   `poetry run pytest tests/unit/data`.

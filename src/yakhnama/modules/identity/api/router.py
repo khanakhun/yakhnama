@@ -2,7 +2,9 @@
 
 ``router`` serves ``/api/v1/me``, ``/api/v1/organizations/...`` and the
 administrator-only ``/api/v1/users/...``; ``moderation_router`` serves
-``/api/v1/moderation/...``, where every route requires ``CanModerate``.
+``/api/v1/moderation/...``, where every route requires ``CanModerate``: the ping and
+the moderator directory (``GET /moderation/moderators``, ids and display names of
+active moderators and admins, checked by ``ModeratorDirectoryQueryService``).
 
 Authorisation lives in the command handlers (``CanManageOrganization``, ``IsAdmin``
 (which also guards adding members until members can consent, Q-I9), self rules); reads
@@ -41,6 +43,7 @@ from yakhnama.modules.identity.api.schemas import (
     ListMembersParameters,
     MemberPage,
     ModerationStatus,
+    ModeratorDirectory,
     RenameOrganizationRequest,
     SuspendUserRequest,
     UpdateMeRequest,
@@ -56,9 +59,11 @@ from yakhnama.modules.identity.public import (
     CreateOrganizationHandler,
     GrantRole,
     GrantRoleHandler,
+    ListModerators,
     ListOrganizationMembers,
     MeDetail,
     MemberSummary,
+    ModeratorDirectoryQueryService,
     OrganizationDetail,
     ReinstateUser,
     ReinstateUserHandler,
@@ -753,6 +758,28 @@ async def reinstate_user(
 # --------------------------------------------------------------------------- #
 # Moderation                                                                  #
 # --------------------------------------------------------------------------- #
+
+
+@moderation_router.get("/moderators")
+async def list_moderators(
+    actor: CurrentActor, services: Services
+) -> ModeratorDirectory:
+    """List the active moderators and administrators, for assignment pickers.
+
+    Args:
+        actor: The authenticated caller; ``moderator_directory_policy`` decides.
+        services: Identity services bound by the composition root.
+
+    Returns:
+        Up to 500 entries (id and display name), by display name then id.
+
+    Raises:
+        PermissionDeniedError: If the caller is neither moderator nor admin.
+    """
+    items = await ModeratorDirectoryQueryService(
+        services.identity_query_service
+    ).list_moderators(ListModerators(actor=actor))
+    return ModeratorDirectory(items=items)
 
 
 @moderation_router.get("/ping")

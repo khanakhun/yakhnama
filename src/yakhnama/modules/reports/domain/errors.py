@@ -16,7 +16,9 @@ from yakhnama.shared_kernel.errors import (
     InvalidTransitionError,
     InvariantViolationError,
     NotFoundError,
+    PermissionDeniedError,
     ValidationError,
+    YakhnamaError,
 )
 from yakhnama.shared_kernel.ids import EntityId
 
@@ -177,4 +179,309 @@ class ReportSupersessionMismatchError(InvariantViolationError):
         return cls(
             "the successor is not the next revision of this report",
             details={"report_id": str(report_id), "successor_id": str(successor_id)},
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Guest submissions (ADR 0020). Each class has its own problem slug, mapped in  #
+# ``yakhnama.main``, so a client can tell "start again" from "try later".       #
+# --------------------------------------------------------------------------- #
+
+
+class GuestChallengeInvalidError(ValidationError):
+    """The challenge is malformed or its signature is not the platform's.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def create(cls) -> Self:
+        """Build the error.
+
+        Returns:
+            The error; it says nothing about what exactly failed to verify.
+        """
+        return cls("the challenge is not valid; request a new one")
+
+
+class GuestChallengeExpiredError(ValidationError):
+    """The challenge was redeemed after it expired.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def create(cls) -> Self:
+        """Build the error.
+
+        Returns:
+            The error.
+        """
+        return cls("the challenge has expired; request a new one")
+
+
+class GuestProofInvalidError(ValidationError):
+    """The nonce does not solve the challenge.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def create(cls) -> Self:
+        """Build the error.
+
+        Returns:
+            The error.
+        """
+        return cls("the nonce does not solve the challenge")
+
+
+class GuestChallengeSpentError(ConflictError):
+    """The challenge already opened a submission; a challenge is single-use.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def create(cls) -> Self:
+        """Build the error.
+
+        Returns:
+            The error.
+        """
+        return cls("the challenge was already used; request a new one")
+
+
+class GuestCapabilityInvalidError(PermissionDeniedError):
+    """No capability, a wrong one, or one for a submission that does not exist.
+
+    The three are not told apart, so submission ids cannot be probed.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def create(cls) -> Self:
+        """Build the error.
+
+        Returns:
+            The error.
+        """
+        return cls(
+            "the guest capability is missing or not valid for this submission",
+            details={"reason": "guest_capability"},
+        )
+
+
+class GuestCapabilityExpiredError(PermissionDeniedError):
+    """The capability was right but has expired; the guest must start again.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_submission(cls, submission_id: EntityId) -> Self:
+        """Build the error for an expired submission.
+
+        Args:
+            submission_id: The submission.
+
+        Returns:
+            The error, with the id in ``details``.
+        """
+        return cls(
+            "the guest capability has expired; start a new guest report",
+            details={"submission_id": str(submission_id)},
+        )
+
+
+class GuestMediaLimitError(ConflictError):
+    """The submission was already granted its maximum number of photos.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_submission(cls, submission_id: EntityId, maximum: int) -> Self:
+        """Build the error.
+
+        Args:
+            submission_id: The submission.
+            maximum: The limit it reached.
+
+        Returns:
+            The error, with id and limit in ``details``.
+        """
+        return cls(
+            f"a guest report may carry at most {maximum} photos",
+            details={"submission_id": str(submission_id), "max_media": maximum},
+        )
+
+
+class GuestSubmissionClosedError(ConflictError):
+    """The submission already carries its report; it accepts nothing else.
+
+    Raised for an upload after the report, and for a second, different report.
+    A retry of the same report is not an error: it returns the same receipt.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_submission(cls, submission_id: EntityId) -> Self:
+        """Build the error.
+
+        Args:
+            submission_id: The submission.
+
+        Returns:
+            The error, with the id in ``details``.
+        """
+        return cls(
+            "the guest submission already carries its report",
+            details={"submission_id": str(submission_id)},
+        )
+
+
+class GuestSubmissionLimitError(YakhnamaError):
+    """Too many guest submissions were opened in the last hour, by all guests.
+
+    The cap protects the moderators' queue when the anonymous path is flooded
+    from many addresses at once (ADR 0020). Rendered as 429 ``rate-limited``
+    with ``Retry-After`` taken from ``retry_after_seconds``.
+
+    Implements: Domain Error (proposed in ADR 0012).
+
+    Attributes:
+        retry_after_seconds: When the oldest submission in the window leaves it.
+    """
+
+    def __init__(self, message: str, *, retry_after_seconds: int) -> None:
+        """Create the error.
+
+        Args:
+            message: Human-readable explanation, safe for clients.
+            retry_after_seconds: Seconds after which a submission may succeed.
+        """
+        super().__init__(message, details={"retry_after_seconds": retry_after_seconds})
+        self.retry_after_seconds = retry_after_seconds
+
+    @classmethod
+    def retry_after(cls, seconds: int) -> Self:
+        """Build the error.
+
+        Args:
+            seconds: Seconds after which a submission may succeed; at least 1.
+
+        Returns:
+            The error.
+        """
+        return cls(
+            "too many guest reports are being started; try again later",
+            retry_after_seconds=max(1, seconds),
+        )
+
+
+class GuestMediaNotFoundError(NotFoundError):
+    """The asset was not granted to this guest submission.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_asset(cls, asset_id: EntityId) -> Self:
+        """Build the error.
+
+        Args:
+            asset_id: The asset that was asked for.
+
+        Returns:
+            The error, with the id in ``details``.
+        """
+        return cls(
+            "no such upload in this guest submission",
+            details={"media_id": str(asset_id)},
+        )
+
+
+class ReviewReasonRequiredError(ValidationError):
+    """A review mark that needs a reason arrived without one (ADR 0022).
+
+    Archiving, moving back to ``new`` and moving out of ``archived`` need a reason;
+    only a move to ``reviewed`` from ``new`` or ``reviewed`` does not.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_move(cls, from_state: str, to_state: str) -> Self:
+        """Build the error for a move without its reason.
+
+        Args:
+            from_state: The lineage's state now.
+            to_state: The state asked for.
+
+        Returns:
+            The error, with both states in ``details``.
+        """
+        return cls(
+            f"marking a report {to_state!r} from {from_state!r} requires a reason",
+            details={
+                "reason": "review_reason_required",
+                "from_state": from_state,
+                "to_state": to_state,
+            },
+        )
+
+
+class ReviewRevisionSupersededError(ConflictError):
+    """A mark names a revision older than the one the lineage was last marked on.
+
+    A moderator working from a stale page must not move the lineage's mark back to
+    an older revision (ADR 0022, amended): they reload and mark the newer one.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_revision(cls, revision: int, reviewed_revision: int) -> Self:
+        """Build the error for a mark on an older revision.
+
+        Args:
+            revision: The revision the mark names.
+            reviewed_revision: The revision the lineage's last mark was made on.
+
+        Returns:
+            The error, with both revisions in ``details``.
+        """
+        return cls(
+            f"revision {revision} is older than revision {reviewed_revision}, "
+            "which the lineage was last marked on; reload and mark that one",
+            details={
+                "reason": "review_revision_superseded",
+                "revision": revision,
+                "reviewed_revision": reviewed_revision,
+            },
+        )
+
+
+class ReportFilterForbiddenError(PermissionDeniedError):
+    """A caller who may not moderate filtered reports by a moderators-only field.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_filter(cls, name: str) -> Self:
+        """Build the error for one filter.
+
+        Args:
+            name: The query parameter, such as ``review_state``.
+
+        Returns:
+            The error, with the filter's name in ``details``.
+        """
+        return cls(
+            f"only moderators may filter reports by {name}",
+            details={"action": f"filter reports by {name}", "policy": "CanModerate"},
         )

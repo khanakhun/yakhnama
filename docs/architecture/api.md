@@ -72,19 +72,27 @@ outside FastAPI's own exception handling (`platform/http.py`, `platform/idempote
 | `invalid-idempotency-key` | 400 | `Idempotency-Key` is not a UUID. |
 | `authentication-failed` | 401 | No valid bearer token where one is required. |
 | `permission-denied` | 403 | The principal may not perform the action. |
+| `guest-capability-invalid` | 403 | No `Guest-Capability`, a wrong one, or one for another submission. |
+| `guest-capability-expired` | 403 | The `Guest-Capability` has expired; start a new guest report. |
 | `not-found` | 404 | The resource or route does not exist. |
 | `method-not-allowed` | 405 | The route exists but not for this method. |
 | `conflict` | 409 | The request conflicts with the current state. |
 | `invariant-violation` | 409 | The change would break an invariant. |
 | `invalid-transition` | 409 | The state machine forbids the transition. |
+| `guest-challenge-spent` | 409 | The proof-of-work challenge already opened a submission. |
+| `guest-media-limit` | 409 | The guest submission already has its three photos. |
+| `guest-submission-closed` | 409 | The guest submission already carries its report. |
 | `idempotency-key-reused` | 409 | The key was used with a different request. |
 | `idempotency-key-in-use` | 409 | A request with the same key is still running. |
 | `precondition-failed` | 412 | `If-Match` does not match the current version. |
 | `payload-too-large` | 413 | The body exceeds `max_request_body_bytes`. |
 | `validation-error` | 422 | The data is invalid; see `errors`. |
 | `nul-character` | 422 | A string input contains the NUL character. |
+| `guest-challenge-invalid` | 422 | The challenge is malformed or not signed by the platform. |
+| `guest-challenge-expired` | 422 | The challenge has expired; request a new one. |
+| `guest-proof-invalid` | 422 | The nonce does not solve the challenge. |
 | `precondition-required` | 428 | A conditional request came without `If-Match`. |
-| `rate-limited` | 429 | Too many requests; see `Retry-After`. |
+| `rate-limited` | 429 | Too many requests (per client, or a global hourly guest cap); see `Retry-After`. |
 | `internal-error` | 500 | An unexpected server error. |
 | `service-unavailable` | 503 | A dependency (the identity provider) is down. |
 | `http-error` | any | Any other HTTP error raised by the framework. |
@@ -154,6 +162,16 @@ Documented in `platform/etag.py`; summary:
   check it when sent, but do not yet require it (`docs/open-questions.md` Q66).
 - `If-Match` uses strong comparison only: a weak tag (`W/"..."`) never matches, and `*`
   matches any current representation.
+- Every route that sets `ETag`, `Location` or `Link` declares it in OpenAPI
+  (`platform/openapi_headers.header_responses`; every moderation route,
+  `GET /reports/{id}` and `GET /events/{id}` among them). The headers the middlewares
+  set are added to the whole document once (`declare_middleware_headers`):
+  `Retry-After` on every `429`, and on every authenticated `POST` under `/api/v1`
+  `Idempotent-Replayed` on success, the idempotency middleware's own Problem Details
+  answers where the route does not declare that status itself (`400`
+  `invalid-idempotency-key`; `409` `idempotency-key-reused` and
+  `idempotency-key-in-use`) and `Retry-After` on `409`, described as sent only with
+  `idempotency-key-in-use` (ADR 0022, amended).
 
 ## Content negotiation: GeoJSON for places
 
@@ -165,6 +183,20 @@ its centroid `Point`, or `null` when the place has none — never a placeholder 
 (`docs/open-questions.md` Q21). The list route returns a `FeatureCollection`; the detail
 route a single `Feature`. The GeoJSON form of the list route carries its next page only in
 the `Link` header, since a `FeatureCollection` has no room for `next_cursor`.
+
+## District edges: GeoJSON lines only
+
+`GET /api/v1/boundaries/district-edges` (ADR 0021) is anonymous and GeoJSON only
+(`application/geo+json`, typed in OpenAPI as `DistrictEdgeFeatureCollection`). It
+returns the lines two Gilgit-Baltistan districts share, as `LineString` or
+`MultiLineString` features with `properties.districts` (gazetteer codes, `null` for a
+district not yet in the gazetteer) and `properties.source_districts` (COD-AB codes), and a
+top-level `attribution` the consumer must show. It never returns a polygon or any part of
+the region's outer edge (Line of Control and international borders). Responses carry
+`Cache-Control: public, max-age=86400` and a strong `ETag` naming the snapshot; a
+matching `If-None-Match` (weak comparison) answers `304`. With no boundaries loaded the
+answer is `200` with no features, `attribution: null` and `max-age=300`. A request with a
+bearer token still gets `Cache-Control: no-store` from the security headers middleware.
 
 ## Rate limiting
 
@@ -205,6 +237,7 @@ checked by an identity policy (`docs/data-dictionary/identity.md`, "Policies").
 | `GET` | `/api/v1/impact-metrics/{code}` | anon | `ETag`. |
 | `GET` | `/api/v1/places` | anon | Cursor pagination; GeoJSON negotiation. |
 | `GET` | `/api/v1/places/{place_id}` | anon | `ETag`; GeoJSON negotiation. |
+| `GET` | `/api/v1/boundaries/district-edges` | anon | GeoJSON lines only (ADR 0021); `ETag`, `304`, `Cache-Control: public, max-age=86400`. |
 | `GET` | `/api/v1/me` | auth | Mirrors the user on first sight; `ETag`. |
 | `PATCH` | `/api/v1/me` | auth | Required `If-Match`; `IsSelf` implicitly (only the caller). |
 | `POST` | `/api/v1/organizations` | auth | `Idempotency-Key` optional; `201`, `Location`, `ETag`. Authorisation: any authenticated user (Q58). |
@@ -277,7 +310,7 @@ Auth column as above. `M` marks a route under `/api/v1/moderation`, requiring
 | `GET` | `/api/v1/reports/{report_id}` | auth | Exact view for the reporter and moderators; rounded, no accuracy, for organisation members; `ETag`. |
 | `POST` | `/api/v1/reports/{report_id}/revisions` | auth | Reporter only (`IsSelf`); required `If-Match`; `201`, `Location`, `ETag`. |
 | `POST` | `/api/v1/reports/{report_id}/withdrawal` | auth | Reporter only; required `If-Match`; `ETag`. |
-| `POST` | `/api/v1/media` | auth | Presigned upload grant before the report exists; `Idempotency-Key` optional; `201`, `Location`. |
+| `POST` | `/api/v1/media` | auth | Presigned upload grant before the report exists; body `{mime_type, byte_size}` (`byte_size` required, 1 to 50 MiB, `422` otherwise, signed as `Content-Length`: `PUT` exactly that many bytes); `Idempotency-Key` optional; `201`, `Location`. |
 | `POST` | `/api/v1/reports/{report_id}/media` | auth | Presigned upload grant for the caller's own report; same as above. |
 | `POST` | `/api/v1/media/{asset_id}/complete` | auth | Uploader only; safe to repeat; `ETag`. |
 | `GET` | `/api/v1/media/{asset_id}` | anon | See "Media visibility" above; `ETag`. |
@@ -308,6 +341,129 @@ Auth column as above. `M` marks a route under `/api/v1/moderation`, requiring
 | `GET` | `/api/v1/sources` | anon | Cursor pagination; optional `source_type` filter. |
 | `GET` | `/api/v1/sources/{source_id}` | anon | `ETag`. |
 | `POST` | `/api/v1/moderation/sources` | auth (policy, M) | Registers a `government`/`news`/`satellite`/`research`/`dataset` source (citizen and organisation sources are registered by the platform itself at report submission); `Idempotency-Key` optional; `201`, `Location`, `ETag`. |
+
+## Reporting channels and guest submissions
+
+Added for the web portal's reporting phase (portal plan `docs/plans/phase-2.md`,
+ADR 0019 and ADR 0020). See [`recording.md`](recording.md), "Reporting channels", for
+the whole flow.
+
+### Channels on reports
+
+Every report carries `channel`: `account`, `assisted` or `guest`, in `ReportDetail`,
+`ReportSummary` and the GeoJSON feature properties. Reports stored before channels
+existed are `account`. `GET /reports?channel=guest` is the moderators' guest queue
+(non-moderators only ever list their own reports, so the filter narrows those).
+Revisions keep the channel of the report they correct.
+
+`POST /reports` accepts an optional `assisted` object (`consent_method`: `verbal` or
+`written`; `consent_statement_version`: `^[a-z0-9][a-z0-9._-]{0,31}$`; optional
+`note`, safe text up to 500 characters). It is allowed for trusted reporters,
+moderators, and organisation members who submit for an organisation they belong to
+(`organization_id`); anyone else gets `403 permission-denied`, and an `assisted`
+object without its consent fields is `422`. `ReportDetail.assisted` is shown only
+alongside exact coordinates (the person who entered the report and moderators) and is
+`null` otherwise. `ReviseReportRequest` does not take `assisted`: a revision keeps the
+consent record unchanged. `ReportDetail.reporter_id` is `null` for a guest report.
+
+### Guest submissions
+
+A person without an account reports through five anonymous calls. Calls 3 to 5
+present the submission's capability in the **`Guest-Capability` request header**
+(never in the URL or body). None of them needs a bearer token; one that is sent and
+rejected is still `401 authentication-failed`, as everywhere. Every response under
+`/api/v1/guest-submissions` carries `Cache-Control: no-store`. A wrong or missing capability, or an unknown submission id,
+is `403 guest-capability-invalid` (the three are not told apart, so ids cannot be
+probed); an expired one is `403 guest-capability-expired`. 403 rather than 401 on
+purpose: the request carries no bearer token, and a client must not treat the answer
+as an expired session.
+
+1. `POST /guest-submissions/challenges` → `201 GuestChallengeGrant`
+   (`challenge`, `algorithm: "SHA-256"`, `salt`, `difficulty_bits`, `expires_at`).
+   Find a decimal `nonce` (at most 20 digits) such that `SHA-256(salt + nonce)`
+   (UTF-8, nonce appended) starts with `difficulty_bits` zero bits. The difficulty
+   rises with the submissions opened in the last hour (18 to 22 bits by default), so a
+   client must read `difficulty_bits` from every grant, never assume it.
+2. `POST /guest-submissions` with `{challenge, nonce}` → `201 GuestSubmissionGrant`
+   (`submission_id`, `capability`, `expires_at`, `max_media: 3`). The capability is
+   shown only here. Errors: `422 guest-challenge-invalid`, `guest-challenge-expired`,
+   `guest-proof-invalid`; `409 guest-challenge-spent` on a replay; `429 rate-limited`
+   with `Retry-After` when the hourly cap on opened submissions, or the one on filed
+   guest reports, is reached.
+3. `POST /guest-submissions/{id}/media` with `{mime_type, byte_size}` (`image/jpeg`,
+   `image/png` or `image/webp`; `byte_size` required, the file's exact size, 1 to
+   50 MiB) → `201 UploadGrant`, the same shape as an account upload. `PUT` exactly
+   `byte_size` bytes to `upload_url` with the returned headers before `expires_at`
+   (five minutes): the URL signs `Content-Type` and `Content-Length`, so any other
+   type or length is refused by storage (403). A browser sets `Content-Length` from
+   the body itself. A fourth photo is `409 guest-media-limit`; its slot is checked
+   before anything is created.
+4. `POST /guest-submissions/{id}/media/{asset_id}/complete` → `200 GuestMediaAsset`
+   (`id`, `mime_type`, `byte_size`, `upload_status`; no download links). Allowed until
+   the capability expires, also after the report was submitted (such a photo is not
+   added to the report). An asset not granted to this submission is `404 not-found`.
+5. `POST /guest-submissions/{id}/report` with the report content (the fields of
+   `POST /reports` without `client_report_id`, `organization_id` and `assisted`; at
+   most three `media_ids`, all this submission's) → `201 GuestReportReceipt`
+   (`reference` such as `YK-7KQM-3HXA`, `submitted_at`). A retry with the same
+   content returns the same receipt, also up to 24 hours after the capability expired
+   (`guest_receipt_grace_seconds`); different content is
+   `409 guest-submission-closed`, as is any upload after the report. When the hourly
+   cap on filed guest reports is reached, `429 rate-limited` with `Retry-After`.
+
+Every 429 of these routes documents `Retry-After` in OpenAPI. The guest routes stay
+under the anonymous per-client rate limit. Behind the web portal every guest shares the
+portal's address, so that limit cannot tell guests apart; the two global hourly caps
+(counted under a database lock each) and, in production, a per-client limit at the
+reverse proxy are what protect the moderators' queue (ADR 0020, Q223).
+
+### Route table (reporting channels)
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `POST` | `/api/v1/guest-submissions/challenges` | anon | Signed proof-of-work challenge; nothing stored; `201`. |
+| `POST` | `/api/v1/guest-submissions` | anon | Redeems a solved challenge once; hourly caps (`429` + `Retry-After`); `201`. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/media` | `Guest-Capability` | Up to three image upload grants; body `{mime_type, byte_size}`; `201`. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/media/{asset_id}/complete` | `Guest-Capability` | Completes one granted photo, until the capability expires. |
+| `POST` | `/api/v1/guest-submissions/{submission_id}/report` | `Guest-Capability` | The one report; retry-safe receipt (24 h after expiry); reports cap; `201`. |
+
+## Moderation console additions (ADR 0022)
+
+Report moderation is non-blocking and reversible: moderators mark a report's lineage
+(the report and all its revisions) `new`, `reviewed` or `archived` and can undo
+either; a mark never changes the report, its `ETag` or its reporter's rights. A mark
+has its own `ETag`, `"<lineage_id>:<version>"` (version `0` while the lineage was
+never marked); `If-Match` is optional on the mark (Q66, Q251) and, when sent, is
+checked inside the unit of work. The `ETag` of a mark's answer names the version the
+mark produced, from the command's result. Archiving, going back to `new` and leaving
+`archived` need a `reason` (1–500 characters of safe text; `422 validation-error`
+with `details.reason = "review_reason_required"` otherwise); marking a never-marked
+lineage `new` changes nothing and needs none. A mark on a revision older than the
+one the lineage was last marked on is refused: `409 conflict` with
+`details.reason = "review_revision_superseded"` (Q254).
+
+`GET /reports` and `GET /reports/{id}` give moderators `review`
+(`{state, updated_at, updated_by, reviewed_revision, revised_since}`) on each report;
+the listing also `triage_flags` (the distinct kinds the latest triage raised, `[]`
+when none or not triaged yet, no detail text; Q256), and the detail `linked_events`
+(`[{event_id, report_id, role}]` across the lineage, oldest first, at most 200) with
+`is_linked_events_truncated` (Q259). All are `null` for everyone else, the reporter
+included (Q240).
+
+### Route table (moderation console)
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/api/v1/reports?review_state=new\|reviewed\|archived` | auth (policy) | Moderators only (`403` for anyone else, Q243); `new` includes lineages never marked. |
+| `GET` | `/api/v1/reports?triage_flag=exif_implausible\|duplicate_suspected\|pii_detected\|spam_suspected` | auth (policy) | Moderators only (`403` for anyone else); reports whose latest triage raised that kind (GIN `ix_reports_triage_gin`, Q256). |
+| `GET` | `/api/v1/reports?reporter=me` | auth | The caller's own reports only; narrows a moderator's listing; kept in the `Link` of the next page. |
+| `GET` | `/api/v1/moderation/reports/{report_id}/review` | auth (policy, M) | `ReportReviewDetail`: the mark, the revision it was made on, `revised_since`, `version`, the 200 newest marks (`is_history_truncated`); `ETag`. |
+| `POST` | `/api/v1/moderation/reports/{report_id}/review` | auth (policy, M) | Body `{state, reason?}`; repeating the last mark changes nothing; optional `If-Match` (`412` when stale or naming another review; never `428`); `409` on a revision older than the last marked one (Q254); returns `ReportReviewDetail`; `ETag` of the version the mark produced. |
+| `POST` | `/api/v1/moderation/reports/review` | auth (policy, M) | Body `{report_ids (1–100, distinct), state, reason?}`; each lineage on its own (Q244), marked once on the newest revision the request names, every id of it getting that result (Q255); `200` with one `{report_id, lineage_id, outcome, state, version}` per report id, `outcome` one of `marked`, `unchanged`, `not_found`, `reason_required`, `conflict` (a concurrent mark, or an older revision than the last marked), `error` (any other refusal by the domain). A database failure aborts the request with `500`, the reports before it already marked. |
+| `GET` | `/api/v1/moderation/media` | auth (policy, M) | Completed uploads, oldest first; filters `moderation_status`, `scan_status`; cursor pagination, `Link`; `MediaAssetResponse` items without presigned links; `report_id` resolved for assets uploaded before their report (Q247), through `ix_reports_media_ids_gin`; the unfiltered order through `ix_media_assets_completed_created_at_id`. |
+| `POST` | `/api/v1/moderation/media/{asset_id}/decision` | auth (policy, M) | Optional `If-Match` with the asset's `ETag`, compared inside the unit of work (`412` when stale or naming another asset, Q258), so a stale approval cannot overwrite a rejection; `ETag` of the decided asset. |
+| `GET` | `/api/v1/moderation/verification-cases?target_kind=&target_id=` | auth (policy, M) | `target_id` (UUID) narrows the list to one record's case; with `target_kind` it finds an event's case in one call (Q257). |
+| `GET` | `/api/v1/moderation/moderators` | auth (policy, M) | `{items: [{id, display_name}]}`: active users with the stored `moderator` or `admin` role, at most 500 (Q248–Q250). |
 
 ## Phase 4 additions
 

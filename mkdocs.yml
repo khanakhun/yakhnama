@@ -55,6 +55,7 @@ nav:
   - Data ingestion: architecture/ingestion.md
   - Data sources: architecture/data-sources.md
   - Best figure policy: architecture/best-figure.md
+  - Production deployment: architecture/deployment.md
   - ADRs:
       - Overview: adr/README.md
       - "0001 · Modular monolith with hexagonal layers": adr/0001-modular-monolith-with-hexagonal-layers.md
@@ -75,6 +76,8 @@ nav:
       - "0016 · idempotency keys in postgresql": adr/0016-idempotency-keys-in-postgresql.md
       - "0017 · rate limiting behind a port": adr/0017-rate-limiting-behind-a-port.md
       - "0018 · safe text rules in the shared kernel": adr/0018-safe-text-rules-in-the-shared-kernel.md
+      - "0019 · reporting channels and assisted consent": adr/0019-reporting-channels-and-assisted-consent.md
+      - "0020 · guest submissions with proof of work": adr/0020-guest-submissions-with-proof-of-work.md
   - Data dictionary:
       - Overview: data-dictionary/README.md
       - Geography: data-dictionary/geography.md

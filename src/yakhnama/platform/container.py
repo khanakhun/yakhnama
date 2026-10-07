@@ -104,13 +104,22 @@ from yakhnama.modules.exchange.public import (
     RunImportHandler,
 )
 from yakhnama.modules.geography.application.handlers import (
+    LoadDistrictBoundariesHandler,
     LoadReferencePlacesHandler,
 )
 from yakhnama.modules.geography.application.ports import (
+    DistrictEdgeQueryService,
     GeographyUnitOfWorkFactory,
     PlaceQueryService,
 )
+from yakhnama.modules.geography.infrastructure.adapters.cod_ab import (
+    CodAbBoundaryLoader,
+)
+from yakhnama.modules.geography.infrastructure.adapters.shared_edges import (
+    ShapelySharedEdgeCalculator,
+)
 from yakhnama.modules.geography.infrastructure.queries import (
+    SqlAlchemyDistrictEdgeQueryService,
     SqlAlchemyPlaceQueryService,
 )
 from yakhnama.modules.geography.infrastructure.uow import (
@@ -135,7 +144,7 @@ from yakhnama.modules.identity.infrastructure.queries import (
     SqlAlchemyIdentityQueryService,
 )
 from yakhnama.modules.identity.infrastructure.uow import SqlAlchemyIdentityUnitOfWork
-from yakhnama.modules.identity.public import CanManageReferenceData
+from yakhnama.modules.identity.public import CanManageReferenceData, SeedAccountsHandler
 from yakhnama.modules.impacts.application.handlers import (
     LoadReferenceImpactMetricsHandler,
 )
@@ -207,8 +216,11 @@ from yakhnama.modules.media.public import (
     MimeSniffer,
     ModerateMediaHandler,
     RecordScanResultHandler,
+    RequestGuestUploadHandler,
     RequestUploadHandler,
     StoragePort,
+    SweepStaleUploads,
+    SweepStaleUploadsHandler,
 )
 from yakhnama.modules.provenance.infrastructure.queries import (
     SqlAlchemySourceQueryService,
@@ -218,11 +230,17 @@ from yakhnama.modules.provenance.infrastructure.uow import (
 )
 from yakhnama.modules.provenance.public import (
     AuthorisedSourceQueryService,
+    MarkPlatformSourceReferencedHandler,
     MarkSourceReferencedHandler,
     ProvenanceUnitOfWorkFactory,
+    RegisterPlatformSourceHandler,
     RegisterSourceHandler,
     SourceQueryService,
     SourceRegistrar,
+)
+from yakhnama.modules.reports.infrastructure.adapters.guest import (
+    HmacGuestChallengeSigner,
+    SecretsGuestSecretGenerator,
 )
 from yakhnama.modules.reports.infrastructure.queries import (
     SqlAlchemyNearbyReportsFinder,
@@ -231,11 +249,22 @@ from yakhnama.modules.reports.infrastructure.queries import (
 from yakhnama.modules.reports.infrastructure.uow import SqlAlchemyReportsUnitOfWork
 from yakhnama.modules.reports.public import (
     AuthorisedReportQueryService,
+    CompleteGuestMediaUploadHandler,
+    GuestChallengeSigner,
+    GuestHandlerDependencies,
+    GuestSecretGenerator,
+    GuestSubmissionLimits,
+    IssueGuestChallengeHandler,
     NearbyReportsFinder,
+    OpenGuestSubmissionHandler,
+    PurgeGuestRecords,
+    PurgeGuestRecordsHandler,
     ReportQueryService,
     ReportsUnitOfWorkFactory,
+    RequestGuestMediaUploadHandler,
     ReviseReportHandler,
     RunTriageHandler,
+    SubmitGuestReportHandler,
     SubmitReportHandler,
     WithdrawReportHandler,
 )
@@ -271,9 +300,11 @@ from yakhnama.platform.tasks.broker import build_broker
 from yakhnama.platform.tasks.handlers import (
     EXCHANGE_RUN_EXPORT_TASK,
     EXCHANGE_RUN_IMPORT_TASK,
+    GUEST_PURGE_TASK,
     IDEMPOTENCY_PURGE_TASK,
     INGESTION_RUN_TASK,
     MEDIA_SCAN_TASK,
+    MEDIA_SWEEP_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
     REPORTS_TRIAGE_TASK,
@@ -312,6 +343,7 @@ from yakhnama.platform.wiring.ingestion import ExecuteIngestionRunTaskAdapter
 from yakhnama.platform.wiring.media import ReportSourceAdapter, ScanTaskAdapter
 from yakhnama.platform.wiring.provenance import SourceCitationCheckerAdapter
 from yakhnama.platform.wiring.reports import (
+    GuestMediaGatewayAdapter,
     MediaOwnershipAdapter,
     PhotoEvidenceAdapter,
     RunTriageTaskAdapter,
@@ -320,7 +352,12 @@ from yakhnama.platform.wiring.verification import (
     ReportOwnerAdapter,
     ReviewerEligibilityAdapter,
 )
-from yakhnama.seed.application import DatasetSeedStep, SeedReferenceDataHandler
+from yakhnama.seed.application import (
+    DatasetSeedStep,
+    DemoAccountsSeedStep,
+    SeedReferenceDataHandler,
+)
+from yakhnama.seed.demo import DEMO_ORGANIZATION, demo_accounts
 from yakhnama.seed.infrastructure import YamlReferenceFileReader
 from yakhnama.shared_kernel.clock import Clock, SystemClock
 from yakhnama.shared_kernel.ids import IdGenerator, Uuid7Generator
@@ -353,6 +390,8 @@ class Container:
         hazards_uow_factory: The hazards ``UnitOfWorkFactory`` port.
         impacts_uow_factory: The impacts ``UnitOfWorkFactory`` port.
         place_query_service: The geography ``PlaceQueryService`` port.
+        district_edge_query_service: The geography ``DistrictEdgeQueryService``
+            port (the public shared district edges).
         hazard_type_query_service: The hazards ``HazardTypeQueryService`` port.
         impact_metric_query_service: The impacts ``ImpactMetricQueryService`` port.
         identity_uow_factory: The identity ``UnitOfWorkFactory`` port.
@@ -387,11 +426,20 @@ class Container:
         revise_report_handler: Revises reports.
         withdraw_report_handler: Withdraws reports.
         report_queries: Authorised report reads.
+        issue_guest_challenge_handler: Issues guest proof-of-work challenges.
+        open_guest_submission_handler: Opens guest submissions.
+        request_guest_media_upload_handler: Grants guest photo uploads.
+        complete_guest_media_upload_handler: Completes guest photo uploads.
+        submit_guest_report_handler: Submits guest reports.
+        purge_guest_records_handler: Forgets spent challenges and unfiled guest
+            submissions; run by ``reports.purge_guest_records``.
         run_triage_handler: Triages a report; run by ``reports.run_triage``.
         request_upload_handler: Grants presigned uploads.
         complete_upload_handler: Completes uploads.
         moderate_media_handler: Moderates media.
         record_scan_result_handler: Stores a scan verdict; run by ``media.scan``.
+        sweep_stale_uploads_handler: Fails abandoned uploads; run by
+            ``media.sweep_stale_uploads``.
         media_queries: Authorised media reads.
         event_handler_dependencies: What every events handler is built from.
         event_queries: Authorised events reads.
@@ -453,6 +501,7 @@ class Container:
     hazards_uow_factory: HazardsUnitOfWorkFactory
     impacts_uow_factory: ImpactsUnitOfWorkFactory
     place_query_service: PlaceQueryService
+    district_edge_query_service: DistrictEdgeQueryService
     hazard_type_query_service: HazardTypeQueryService
     impact_metric_query_service: ImpactMetricQueryService
     identity_uow_factory: IdentityUnitOfWorkFactory
@@ -483,11 +532,18 @@ class Container:
     revise_report_handler: ReviseReportHandler
     withdraw_report_handler: WithdrawReportHandler
     report_queries: AuthorisedReportQueryService
+    issue_guest_challenge_handler: IssueGuestChallengeHandler
+    open_guest_submission_handler: OpenGuestSubmissionHandler
+    request_guest_media_upload_handler: RequestGuestMediaUploadHandler
+    complete_guest_media_upload_handler: CompleteGuestMediaUploadHandler
+    submit_guest_report_handler: SubmitGuestReportHandler
+    purge_guest_records_handler: PurgeGuestRecordsHandler
     run_triage_handler: RunTriageHandler
     request_upload_handler: RequestUploadHandler
     complete_upload_handler: CompleteUploadHandler
     moderate_media_handler: ModerateMediaHandler
     record_scan_result_handler: RecordScanResultHandler
+    sweep_stale_uploads_handler: SweepStaleUploadsHandler
     media_queries: AuthorisedMediaQueryService
     event_handler_dependencies: EventHandlerDependencies
     event_queries: EventRecordQueryService
@@ -700,12 +756,64 @@ class MediaAdapters:
         exif_reader: Reads EXIF from stored originals.
         mime_sniffer: Detects stored originals' media types.
         malware_scanner: Scans stored originals.
+        upload_sweep_after: Age after which an upload that never completed is
+            failed and its upload object deleted.
     """
 
     storage: StoragePort
     exif_reader: ExifReader
     mime_sniffer: MimeSniffer
     malware_scanner: MalwareScanner
+    upload_sweep_after: timedelta
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class GuestPorts:
+    """What guest reporting needs besides the recording ports (ADR 0020).
+
+    Implements: Composition Root.
+
+    Attributes:
+        signer: Signs and verifies proof-of-work challenges.
+        secrets: Draws salts, capabilities and receipt references.
+        limits: Difficulty, lifetimes and the hourly caps.
+        upload_ttl: Lifetime of a guest's photo upload URL.
+    """
+
+    signer: GuestChallengeSigner
+    secrets: GuestSecretGenerator
+    limits: GuestSubmissionLimits
+    upload_ttl: timedelta
+
+
+def build_guest_ports(settings: Settings) -> GuestPorts:
+    """Bind the guest ports from the ``guest_*`` settings.
+
+    Args:
+        settings: Supplies the challenge secret, difficulty curve, lifetimes and
+            caps.
+
+    Returns:
+        The HMAC signer, the ``secrets`` generator, the limits and the upload URL
+        lifetime.
+    """
+    return GuestPorts(
+        signer=HmacGuestChallengeSigner(
+            settings.guest_challenge_secret.get_secret_value().encode()
+        ),
+        secrets=SecretsGuestSecretGenerator(),
+        limits=GuestSubmissionLimits(
+            difficulty_bits=settings.guest_pow_difficulty_bits,
+            difficulty_max_bits=settings.guest_pow_difficulty_max_bits,
+            difficulty_step=settings.guest_pow_difficulty_step,
+            challenge_ttl=timedelta(seconds=settings.guest_challenge_ttl_seconds),
+            capability_ttl=timedelta(seconds=settings.guest_capability_ttl_seconds),
+            opened_per_hour=settings.guest_submissions_per_hour,
+            reports_per_hour=settings.guest_reports_per_hour,
+            receipt_grace=timedelta(seconds=settings.guest_receipt_grace_seconds),
+        ),
+        upload_ttl=timedelta(seconds=settings.guest_upload_presign_ttl_seconds),
+    )
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -723,11 +831,18 @@ class RecordingServices:
         revise_report_handler: Revises reports.
         withdraw_report_handler: Withdraws reports.
         report_queries: Authorised report reads.
+        issue_guest_challenge_handler: Issues guest challenges.
+        open_guest_submission_handler: Opens guest submissions.
+        request_guest_media_upload_handler: Grants guest photo uploads.
+        complete_guest_media_upload_handler: Completes guest photo uploads.
+        submit_guest_report_handler: Submits guest reports.
+        purge_guest_records_handler: Forgets expired guest records.
         run_triage_handler: Triages a report.
         request_upload_handler: Grants presigned uploads.
         complete_upload_handler: Completes uploads.
         moderate_media_handler: Moderates media.
         record_scan_result_handler: Stores a scan verdict.
+        sweep_stale_uploads_handler: Fails abandoned uploads.
         media_queries: Authorised media reads.
         event_handler_dependencies: What every events handler is built from.
         event_queries: Authorised events reads.
@@ -744,11 +859,18 @@ class RecordingServices:
     revise_report_handler: ReviseReportHandler
     withdraw_report_handler: WithdrawReportHandler
     report_queries: AuthorisedReportQueryService
+    issue_guest_challenge_handler: IssueGuestChallengeHandler
+    open_guest_submission_handler: OpenGuestSubmissionHandler
+    request_guest_media_upload_handler: RequestGuestMediaUploadHandler
+    complete_guest_media_upload_handler: CompleteGuestMediaUploadHandler
+    submit_guest_report_handler: SubmitGuestReportHandler
+    purge_guest_records_handler: PurgeGuestRecordsHandler
     run_triage_handler: RunTriageHandler
     request_upload_handler: RequestUploadHandler
     complete_upload_handler: CompleteUploadHandler
     moderate_media_handler: ModerateMediaHandler
     record_scan_result_handler: RecordScanResultHandler
+    sweep_stale_uploads_handler: SweepStaleUploadsHandler
     media_queries: AuthorisedMediaQueryService
     event_handler_dependencies: EventHandlerDependencies
     event_queries: EventRecordQueryService
@@ -858,16 +980,18 @@ def build_media_adapters(settings: Settings, clock: Clock) -> MediaAdapters:
         exif_reader=PillowExifReader(storage.read_original),
         mime_sniffer=FiletypeMimeSniffer(storage.read_original_prefix),
         malware_scanner=build_malware_scanner(settings, storage),
+        upload_sweep_after=timedelta(seconds=settings.media_upload_sweep_after_seconds),
     )
 
 
-def build_recording_services(
+def build_recording_services(  # noqa: PLR0913  # reason: one keyword per group of ports
     *,
     core: CorePorts,
     units: RecordingUnits,
     reads: RecordingReads,
     media: MediaAdapters,
     task_queue: TaskQueue,
+    guest: GuestPorts,
 ) -> RecordingServices:
     """Wire the Phase 3 use cases to their ports and cross-module adapters.
 
@@ -878,14 +1002,50 @@ def build_recording_services(
         reads: The Phase 3 read ports.
         media: Storage and the file inspectors.
         task_queue: Schedules triage and scans.
+        guest: The guest reporting signer, secrets and limits.
 
     Returns:
         The use cases, ready to become ``Container`` fields.
     """
     clock, ids, coordinates = core.clock, core.id_generator, core.public_coordinates
     registrar = RegisterSourceHandler(units.provenance, clock, ids)
+    platform_registrar = RegisterPlatformSourceHandler(units.provenance, clock, ids)
+    platform_marker = MarkPlatformSourceReferencedHandler(units.provenance, clock, ids)
     marker = MarkSourceReferencedHandler(units.provenance, clock, ids)
     media_ownership = MediaOwnershipAdapter(reads.media)
+    complete_upload = CompleteUploadHandler(
+        uow_factory=units.media,
+        storage=media.storage,
+        exif_reader=media.exif_reader,
+        mime_sniffer=media.mime_sniffer,
+        task_queue=task_queue,
+        clock=clock,
+        ids=ids,
+    )
+    guest_dependencies = GuestHandlerDependencies(
+        uow_factory=units.reports,
+        signer=guest.signer,
+        secrets=guest.secrets,
+        media=GuestMediaGatewayAdapter(
+            request_upload=RequestGuestUploadHandler(
+                uow_factory=units.media,
+                storage=media.storage,
+                source_registrar=platform_registrar,
+                source_marker=platform_marker,
+                upload_ttl=guest.upload_ttl,
+                clock=clock,
+                ids=ids,
+            ),
+            complete_upload=complete_upload,
+        ),
+        media_checker=media_ownership,
+        source_registrar=platform_registrar,
+        source_marker=platform_marker,
+        task_queue=task_queue,
+        limits=guest.limits,
+        clock=clock,
+        ids=ids,
+    )
     report_owners = ReportOwnerAdapter(reads.reports)
     report_facts = ReportFactsAdapter(reads.reports, coordinates)
     verification_dependencies = VerificationHandlerDependencies(
@@ -925,6 +1085,16 @@ def build_recording_services(
         ),
         withdraw_report_handler=WithdrawReportHandler(units.reports, clock, ids),
         report_queries=AuthorisedReportQueryService(reads.reports, coordinates),
+        issue_guest_challenge_handler=IssueGuestChallengeHandler(guest_dependencies),
+        open_guest_submission_handler=OpenGuestSubmissionHandler(guest_dependencies),
+        request_guest_media_upload_handler=RequestGuestMediaUploadHandler(
+            guest_dependencies
+        ),
+        complete_guest_media_upload_handler=CompleteGuestMediaUploadHandler(
+            guest_dependencies
+        ),
+        submit_guest_report_handler=SubmitGuestReportHandler(guest_dependencies),
+        purge_guest_records_handler=PurgeGuestRecordsHandler(guest_dependencies),
         run_triage_handler=RunTriageHandler(
             uow_factory=units.reports,
             nearby_reports=reads.nearby_reports,
@@ -941,19 +1111,18 @@ def build_recording_services(
             clock=clock,
             ids=ids,
         ),
-        complete_upload_handler=CompleteUploadHandler(
-            uow_factory=units.media,
-            storage=media.storage,
-            exif_reader=media.exif_reader,
-            mime_sniffer=media.mime_sniffer,
-            task_queue=task_queue,
-            clock=clock,
-            ids=ids,
-        ),
+        complete_upload_handler=complete_upload,
         moderate_media_handler=ModerateMediaHandler(
             uow_factory=units.media, storage=media.storage, clock=clock, ids=ids
         ),
         record_scan_result_handler=RecordScanResultHandler(units.media, clock, ids),
+        sweep_stale_uploads_handler=SweepStaleUploadsHandler(
+            uow_factory=units.media,
+            storage=media.storage,
+            stale_after=media.upload_sweep_after,
+            clock=clock,
+            ids=ids,
+        ),
         media_queries=AuthorisedMediaQueryService(reads.media, media.storage),
         event_handler_dependencies=EventHandlerDependencies(
             uow_factory=units.events,
@@ -1400,7 +1569,12 @@ def build_container(settings: Settings) -> Container:
     reads = build_recording_reads(session_factory, core.public_coordinates)
     media = build_media_adapters(settings, clock)
     services = build_recording_services(
-        core=core, units=units, reads=reads, media=media, task_queue=task_queue
+        core=core,
+        units=units,
+        reads=reads,
+        media=media,
+        task_queue=task_queue,
+        guest=build_guest_ports(settings),
     )
     impact_metric_query_service = SqlAlchemyImpactMetricQueryService(session_factory)
     exchange_ports = build_exchange_ports(
@@ -1462,6 +1636,7 @@ def build_container(settings: Settings) -> Container:
             outbox_writer=outbox_writer,
         ),
         place_query_service=SqlAlchemyPlaceQueryService(session_factory),
+        district_edge_query_service=SqlAlchemyDistrictEdgeQueryService(session_factory),
         hazard_type_query_service=core.hazard_type_query_service,
         impact_metric_query_service=impact_metric_query_service,
         identity_uow_factory=core.identity_uow_factory,
@@ -1492,11 +1667,20 @@ def build_container(settings: Settings) -> Container:
         revise_report_handler=services.revise_report_handler,
         withdraw_report_handler=services.withdraw_report_handler,
         report_queries=services.report_queries,
+        issue_guest_challenge_handler=services.issue_guest_challenge_handler,
+        open_guest_submission_handler=services.open_guest_submission_handler,
+        request_guest_media_upload_handler=services.request_guest_media_upload_handler,
+        complete_guest_media_upload_handler=(
+            services.complete_guest_media_upload_handler
+        ),
+        submit_guest_report_handler=services.submit_guest_report_handler,
+        purge_guest_records_handler=services.purge_guest_records_handler,
         run_triage_handler=services.run_triage_handler,
         request_upload_handler=services.request_upload_handler,
         complete_upload_handler=services.complete_upload_handler,
         moderate_media_handler=services.moderate_media_handler,
         record_scan_result_handler=services.record_scan_result_handler,
+        sweep_stale_uploads_handler=services.sweep_stale_uploads_handler,
         media_queries=services.media_queries,
         event_handler_dependencies=services.event_handler_dependencies,
         event_queries=services.event_queries,
@@ -1578,11 +1762,23 @@ def build_task_handlers(container: Container) -> Mapping[str, TaskHandler]:
         deleted = await container.idempotency_store.purge_expired(container.clock.now())
         structlog.get_logger(__name__).info("idempotency_purged", deleted=deleted)
 
+    async def purge_guest_records(_task: ScheduledTask) -> None:
+        outcome = await container.purge_guest_records_handler(PurgeGuestRecords())
+        structlog.get_logger(__name__).info(
+            "guest_records_purged", **outcome.model_dump()
+        )
+
+    async def sweep_stale_uploads(_task: ScheduledTask) -> None:
+        failed = await container.sweep_stale_uploads_handler(SweepStaleUploads())
+        structlog.get_logger(__name__).info("stale_uploads_swept", failed=failed)
+
     return MappingProxyType(
         {
             OUTBOX_RELAY_TASK: relay_outbox,
             OUTBOX_PURGE_TASK: purge_outbox,
             IDEMPOTENCY_PURGE_TASK: purge_idempotency_keys,
+            GUEST_PURGE_TASK: purge_guest_records,
+            MEDIA_SWEEP_TASK: sweep_stale_uploads,
             REPORTS_TRIAGE_TASK: RunTriageTaskAdapter(container.run_triage_handler),
             MEDIA_SCAN_TASK: ScanTaskAdapter(
                 media=container.media_query_service,
@@ -1617,6 +1813,39 @@ def includes_fixture_datasets(settings: Settings) -> bool:
     return settings.environment != "production"
 
 
+DEMO_ACCOUNT_ENVIRONMENTS: frozenset[str] = frozenset({"development", "test"})
+"""Where the development demo accounts may be seeded: an allow-list, not a deny-list."""
+
+
+def build_demo_accounts_step(container: Container) -> DemoAccountsSeedStep | None:
+    """Wire the development demo accounts, or nothing where they do not belong.
+
+    The demo users exist only in the development realm (ADR 0019), and their
+    identity is ``(oidc_issuer, fixed subject)``, so the step needs the issuer.
+
+    Args:
+        container: Supplies the settings, identity unit of work, clock and ids.
+
+    Returns:
+        The step in the ``development`` and ``test`` environments with an
+        ``oidc_issuer``; ``None`` anywhere else, including any environment added
+        later.
+    """
+    settings = container.settings
+    if (
+        settings.environment not in DEMO_ACCOUNT_ENVIRONMENTS
+        or settings.oidc_issuer is None
+    ):
+        return None
+    return DemoAccountsSeedStep(
+        load=SeedAccountsHandler(
+            container.identity_uow_factory, container.clock, container.id_generator
+        ),
+        organization=DEMO_ORGANIZATION,
+        accounts=demo_accounts(settings.oidc_issuer),
+    )
+
+
 def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
     """Wire the reference-data seed to the container's ports.
 
@@ -1628,6 +1857,7 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
     ``catalog_policy`` (admins) guards on its own; synthetic fixture entries are
     included unless ``environment`` is ``production``, so a development or test
     database can run the fixture ingestion while a real catalog never lists them.
+    The development demo accounts come last (``build_demo_accounts_step``).
 
     Args:
         container: The container whose units of work, clock and ids the loads use.
@@ -1667,6 +1897,33 @@ def build_seed_handler(container: Container) -> SeedReferenceDataHandler:
             ),
             include_fixtures=includes_fixture_datasets(container.settings),
         ),
+        accounts=build_demo_accounts_step(container),
+    )
+
+
+def build_district_boundary_handler(
+    container: Container,
+) -> LoadDistrictBoundariesHandler:
+    """Wire the district boundary load to the container's ports (ADR 0021).
+
+    ``CanManageReferenceData`` (admins only) guards it, as it guards the seed; the
+    command line runs it as the same synthetic system actor. Boundary archives are
+    downloaded into ``settings.boundary_cache_dir`` when the handler runs, not now.
+
+    Args:
+        container: The container whose geography units of work, clock and ids the
+            load uses.
+
+    Returns:
+        The handler, ready to be called with ``LoadDistrictBoundaries``.
+    """
+    return LoadDistrictBoundariesHandler(
+        uow_factory=container.geography_uow_factory,
+        policy=CanManageReferenceData(),
+        loader=CodAbBoundaryLoader(container.settings.boundary_cache_dir),
+        calculator=ShapelySharedEdgeCalculator(),
+        clock=container.clock,
+        ids=container.id_generator,
     )
 
 

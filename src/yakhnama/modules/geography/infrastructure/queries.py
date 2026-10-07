@@ -22,6 +22,10 @@ Results are ranked by the best ``similarity(text_folded, form)`` over the place'
 names, then by id, and paged by keyset on ``(score, id)``: the cursor carries the last
 score (as ``repr`` of the float, which round-trips exactly) and the last id.
 
+``SqlAlchemyDistrictEdgeQueryService`` serves the newest district edge snapshot as
+its public collection (ADR 0021); it reads only ``district_edge_sets`` and
+``district_edges``, never a place footprint.
+
 Patterns: Query Service (adapter side), Specification (SQL compilation).
 """
 
@@ -46,7 +50,12 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import defer
 
-from yakhnama.modules.geography.application.dto import PlaceDetail, PlaceSummary
+from yakhnama.modules.geography.application.dto import (
+    DistrictEdgeFeatureCollection,
+    DistrictEdgeSnapshot,
+    PlaceDetail,
+    PlaceSummary,
+)
 from yakhnama.modules.geography.application.queries import SearchPlaces
 from yakhnama.modules.geography.application.specifications import (
     ActivePlaceSpecification,
@@ -60,6 +69,9 @@ from yakhnama.modules.geography.infrastructure.mappers import (
     row_to_place,
 )
 from yakhnama.modules.geography.infrastructure.orm import PlaceNameRow, PlaceRow
+from yakhnama.modules.geography.infrastructure.repositories import (
+    SqlAlchemyDistrictEdgeSetRepository,
+)
 from yakhnama.shared_kernel.errors import ValidationError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
@@ -472,6 +484,45 @@ async def _load_codes(
 
 def _parent_code(place: Place, codes: Mapping[EntityId, str]) -> str | None:
     return None if place.parent_id is None else codes[place.parent_id]
+
+
+class SqlAlchemyDistrictEdgeQueryService:
+    """PostGIS-backed implementation of ``DistrictEdgeQueryService``.
+
+    Implements: Query Service (port ``DistrictEdgeQueryService``).
+    """
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        """Create the query service.
+
+        Args:
+            session_factory: Opens one read-only session per call.
+        """
+        self._session_factory = session_factory
+
+    async def get_current_id(self) -> EntityId | None:
+        """Return the newest committed snapshot's id; one indexed row, no edges.
+
+        Returns:
+            The id, or ``None`` if none is stored.
+        """
+        async with self._session_factory() as session:
+            return await SqlAlchemyDistrictEdgeSetRepository(session).get_current_id()
+
+    async def get_current(self) -> DistrictEdgeSnapshot | None:
+        """Return the newest committed snapshot as its public collection.
+
+        Returns:
+            The snapshot's id and collection, or ``None`` if none is stored.
+        """
+        async with self._session_factory() as session:
+            edge_set = await SqlAlchemyDistrictEdgeSetRepository(session).get_current()
+        if edge_set is None:
+            return None
+        return DistrictEdgeSnapshot(
+            edge_set_id=edge_set.id,
+            collection=DistrictEdgeFeatureCollection.from_edge_set(edge_set),
+        )
 
 
 if TYPE_CHECKING:

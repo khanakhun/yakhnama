@@ -132,7 +132,7 @@ cd yakhnama
 poetry install
 cp .env.example .env
 
-poetry run poe up          # PostgreSQL 16 + PostGIS 3.5, MinIO, Keycloak 26, Redis 7
+poetry run poe up          # PostgreSQL 16 + PostGIS 3.5, MinIO, Keycloak 26, Mailpit, Redis 7
                             # (also creates the MinIO buckets via `minio-init`)
 poetry run poe migrate     # apply Alembic migrations (from Phase 1)
 poetry run poe seed        # load the versioned reference data idempotently (from Phase 1)
@@ -153,6 +153,27 @@ poetry run poe worker      # runs every task, including exchange.run_export,
                             # needs YAKHNAMA_TASK_QUEUE_BACKEND=redis
 poetry run poe scheduler   # enqueues the periodic tasks; run exactly one per deployment
 ```
+
+District boundaries for the portal's map come from OCHA COD-AB for Pakistan (ADR 0021).
+Load them once after `poe seed`, and again whenever
+`data/boundaries/cod_ab_pak_gb_districts.yaml` changes:
+
+```bash
+poetry run poe load-boundaries --dry-run   # download (once), match and report, roll back
+poetry run poe load-boundaries                # store footprints and publish the shared edges
+poetry run poe load-boundaries --allow-invalid-coverage   # publish despite overlaps or slivers (after review)
+```
+
+The first run downloads the pinned archive (about 29 MB) into
+`YAKHNAMA_BOUNDARY_CACHE_DIR` (default `.cache/boundaries`, git-ignored) and refuses any
+file whose SHA-256 is not the pinned one; later runs read the cache. Running it again with
+the same data changes nothing. Each district the link table, the archive and the gazetteer
+disagree on is logged as a `boundary_mismatch` warning (four COD-AB districts have no
+gazetteer place yet, open question Q230). Each linked district without a centroid gets
+its polygon's representative point as `centroid`, which the places routes publish (a
+centroid set by anyone else is kept). The edges are served anonymously at
+`GET /api/v1/boundaries/district-edges`: only the lines two Gilgit-Baltistan districts
+share, never the outer edge of the region, with the CC BY-IGO attribution.
 
 See `docs/architecture/recording.md` for the full report-to-event flow (submission,
 triage, media upload and moderation, event creation, impact claims, verification),
@@ -181,7 +202,7 @@ Stop the local services with `poetry run poe down`.
 ### Authentication (development)
 
 `poe up` also starts a local Keycloak with the `yakhnama` realm pre-imported from
-`docker/keycloak/yakhnama-realm.json` (roles, two demo users, dev-only passwords). Set
+`docker/keycloak/yakhnama-realm.json` (roles, four demo users, dev-only passwords). Set
 `YAKHNAMA_OIDC_ISSUER=http://127.0.0.1:8080/realms/yakhnama` in `.env` (adjust the port if
 `KEYCLOAK_HOST_PORT` was changed), then get a bearer token for the demo citizen account:
 
@@ -208,6 +229,27 @@ validation rules and the production-provider caveat, and `docs/architecture/api.
 the `/api/v1` conventions every endpoint follows (errors, pagination, idempotency,
 `ETag`/`If-Match`, rate limiting).
 
+Besides `demo-citizen` and `demo-moderator`, the realm has `demo-trusted-reporter`
+(`citizen`, `trusted_reporter`) and `demo-org-member` (`citizen`, `org_member`), whose
+passwords end in `-dev-only` too; they exist to try assisted reporting. With
+`YAKHNAMA_OIDC_ISSUER` set, `poetry run poe seed` (outside production) mirrors both,
+creates the demo organisation and makes `demo-org-member` a member of it; see
+`docs/architecture/auth.md`, "Demo users".
+
+Guest reporting (reports from people without an account, ADR 0020) is configured by the
+`YAKHNAMA_GUEST_*` settings in `.env.example`; for end-to-end tests lower
+`YAKHNAMA_GUEST_POW_DIFFICULTY_BITS` (for example to 8) and raise both
+`YAKHNAMA_GUEST_SUBMISSIONS_PER_HOUR` and `YAKHNAMA_GUEST_REPORTS_PER_HOUR`. The
+capability lifetime is now `YAKHNAMA_GUEST_CAPABILITY_TTL_SECONDS`; a `.env` file that
+still sets `YAKHNAMA_GUEST_CAPABILITY_TTL_MINUTES` is refused at startup, so rename it.
+The scheduler also runs `reports.purge_guest_records` and `media.sweep_stale_uploads`.
+
+The realm also allows self-registration with a verified email address. In development
+Keycloak sends that mail to Mailpit, whose inbox is at
+`http://127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}`. Google and Facebook sign-in stay off
+until you create their OAuth apps; `docs/architecture/auth.md`, "Sign-up and social
+sign-in", has the steps.
+
 ## Development workflow
 
 All commands run through Poetry and Poe so they behave the same locally and in CI. Every
@@ -228,7 +270,7 @@ task below is defined in `pyproject.toml` under `[tool.poe.tasks]`.
 | `poetry run poe contract` | Verify the committed OpenAPI snapshot still matches the app |
 | `poetry run poe worker` | Run a Taskiq worker for background tasks (from Phase 3; needs `YAKHNAMA_TASK_QUEUE_BACKEND=redis`) |
 | `poetry run poe scheduler` | Run the Taskiq scheduler for periodic tasks (from Phase 3; run exactly one per deployment) |
-| `poetry run poe up` / `down` | Start or stop PostGIS, MinIO, Keycloak, Redis |
+| `poetry run poe up` / `down` | Start or stop PostGIS, MinIO, Keycloak, Mailpit, Redis |
 | `poetry run poe docs` | Serve this documentation site locally (`mkdocs serve`) |
 | `poetry run poe check` | Everything CI runs, in order — green here means green in CI |
 
@@ -245,6 +287,29 @@ Install the git hooks once with `poetry run pre-commit install`; they run `ruff 
 Work proceeds in phases. Each `docs/plans/phase-N.md` is written and approved by the
 maintainer before any code of that phase is written; see `docs/plans/` for the current
 plan and `CONTRIBUTING.md` for the branch model.
+
+## Production
+
+The backend ships as one container image (`Dockerfile`) that runs the API, the Taskiq
+worker, the scheduler and the one-shot commands (migrations, reference data, district
+boundaries). `docker-compose.production.yml` runs it on one server with PostgreSQL and
+PostGIS, Redis, Keycloak, MinIO and ClamAV, every port on 127.0.0.1, behind the host's
+own reverse proxy; it is separate from the development `docker-compose.yml`.
+
+```bash
+cp production.env.example .env.production    # fill in every change-me and example.org
+docker compose -f docker-compose.production.yml --env-file .env.production build
+docker compose -f docker-compose.production.yml --env-file .env.production up -d
+docker compose -f docker-compose.production.yml --env-file .env.production run --rm migrate python -m yakhnama.seed
+```
+
+- `docs/architecture/deployment.md`: the full install and upgrade steps, the reverse-proxy
+  configuration for nginx and Caddy, measured memory and backups.
+- `docker/keycloak/production/README.md`: the production realm, derived from the
+  development one by `python -m yakhnama.platform.keycloak_realm`, and the first
+  administrator.
+- ADR 0023 records the decisions; open questions Q260 to Q265 list what the maintainer
+  still has to decide.
 
 ## Project layout
 

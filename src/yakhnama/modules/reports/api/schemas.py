@@ -3,8 +3,9 @@
 Responses are the application's DTOs as they are: ``ReportDetail`` (exact or
 rounded as the caller may see it, with ``coordinates_are_exact``) and
 ``ReportSummary`` (always rounded, never an accuracy). This module adds the request
-bodies, the query string of the listing, its page envelope and the GeoJSON
-``properties`` of a report feature. Request bodies reuse the domain's constrained
+bodies, the query string of the listing, its page envelope, the GeoJSON
+``properties`` of a report feature and the request bodies of the guest submission
+routes (ADR 0020). Request bodies reuse the domain's constrained
 types (safe text, UUIDv7 ids, WGS84 coordinates, codes), so the API and the
 commands agree on every bound and the commands validate again when built.
 
@@ -12,7 +13,7 @@ Patterns: API Schema.
 """
 
 from enum import StrEnum
-from typing import Annotated, Final, Self
+from typing import Annotated, Final, Literal, Self
 
 from pydantic import (
     AwareDatetime,
@@ -23,22 +24,34 @@ from pydantic import (
     model_validator,
 )
 
+from yakhnama.modules.reports.application.commands import PhotoByteSize
+from yakhnama.modules.reports.domain.guest_submissions import (
+    GUEST_MEDIA_MAX,
+    ProofNonce,
+)
 from yakhnama.modules.reports.domain.value_objects import (
     GPS_ACCURACY_MAX_METRES,
     MEDIA_PER_REPORT_MAX,
+    AssistedSubmission,
     ClientReportId,
     Description,
     GpsAccuracy,
     GuessedHazardCode,
+    GuestImageType,
     PlaceHint,
+    ReportChannel,
+    TriageFlagKind,
     WithdrawalReason,
 )
 from yakhnama.modules.reports.public import (
+    REVIEW_BULK_MAX,
     HazardGuess,
     ObservationPoint,
     ReportContent,
     ReportStatus,
     ReportSummary,
+    ReviewReason,
+    ReviewState,
 )
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
@@ -171,14 +184,21 @@ class SubmitReportRequest(ReportContentRequest):
             and makes a retried submission return the same report.
         organization_id: The organisation reported for, if any; the reporter must
             be a member.
+        assisted: Set to enter the report for a person without an account, with
+            their consent; allowed for trusted reporters, moderators, and
+            organisation members reporting for their organisation (ADR 0019).
     """
 
     client_report_id: ClientReportId
     organization_id: EntityId | None = None
+    assisted: AssistedSubmission | None = None
 
 
 class ReviseReportRequest(ReportContentRequest):
     """Body of ``POST /api/v1/reports/{report_id}/revisions``: the full content.
+
+    The channel and an assisted report's consent record are kept from the report
+    being corrected; they are not part of a revision.
 
     Implements: API Schema.
     """
@@ -205,11 +225,19 @@ class ListReportsParameters(BaseModel):
 
     Attributes:
         status: Only reports in this status.
+        channel: Only reports that came through this channel; ``guest`` is the
+            moderators' guest queue.
         hazard_code: Only reports whose reporter guessed this hazard type.
         bbox: ``min_lon,min_lat,max_lon,max_lat``; matched against the *rounded*
             positions.
         observed_from: Only reports observed at or after this instant (``from``).
         observed_to: Only reports observed at or before this instant (``to``).
+        review_state: Only reports whose lineage carries this review mark;
+            moderators only, 403 for anyone else (ADR 0022).
+        triage_flag: Only reports whose latest triage raised this kind of
+            flag; moderators only, 403 for anyone else.
+        reporter: ``me`` for the caller's own reports only; narrows a
+            moderator's listing to the reports they submitted themselves.
         output_format: ``json`` or ``geojson`` (query name ``format``).
         cursor: Opaque cursor from a previous page.
         limit: Page size, 1 to 200.
@@ -218,10 +246,14 @@ class ListReportsParameters(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     status: ReportStatus | None = None
+    channel: ReportChannel | None = None
     hazard_code: BoundedHazardCode | None = None
     bbox: BoundingBoxText | None = None
     observed_from: AwareDatetime | None = Field(default=None, alias="from")
     observed_to: AwareDatetime | None = Field(default=None, alias="to")
+    review_state: ReviewState | None = None
+    triage_flag: TriageFlagKind | None = None
+    reporter: Literal["me"] | None = None
     output_format: ReportFormat | None = Field(default=None, alias="format")
     cursor: Annotated[str | None, Field(max_length=MAX_CURSOR_LENGTH)] = None
     limit: Annotated[int, Field(ge=1, le=MAX_PAGE_LIMIT)] = DEFAULT_PAGE_LIMIT
@@ -278,6 +310,7 @@ class ReportFeatureProperties(BaseModel):
         place_hint: The picked place, if any.
         media_count: How many media assets are attached.
         submitted_at: When it was submitted, UTC.
+        channel: How the report reached the platform.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -290,6 +323,7 @@ class ReportFeatureProperties(BaseModel):
     place_hint: str | None
     media_count: int
     submitted_at: AwareDatetime | None
+    channel: ReportChannel
 
     @classmethod
     def from_summary(cls, summary: ReportSummary) -> Self:
@@ -310,4 +344,92 @@ class ReportFeatureProperties(BaseModel):
             place_hint=summary.place_hint,
             media_count=summary.media_count,
             submitted_at=summary.submitted_at,
+            channel=summary.channel,
         )
+
+
+class OpenGuestSubmissionRequest(BaseModel):
+    """Body of ``POST /api/v1/guest-submissions``: a solved challenge.
+
+    Implements: API Schema.
+
+    Attributes:
+        challenge: The signed challenge, exactly as issued.
+        nonce: A decimal number such that ``SHA-256(salt + nonce)`` has the
+            challenge's leading zero bits.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    challenge: Annotated[str, StringConstraints(min_length=1, max_length=512)]
+    nonce: ProofNonce
+
+
+class GuestMediaUploadRequest(BaseModel):
+    """Body of ``POST /api/v1/guest-submissions/{id}/media``.
+
+    Implements: API Schema.
+
+    Attributes:
+        mime_type: The declared image type: JPEG, PNG or WebP only.
+        byte_size: The photo's exact size in bytes, 1 to the media size cap;
+            signed into the upload URL as ``Content-Length``, so the client must
+            ``PUT`` exactly the file's bytes.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mime_type: GuestImageType
+    byte_size: PhotoByteSize
+
+
+class GuestReportRequest(ReportContentRequest):
+    """Body of ``POST /api/v1/guest-submissions/{id}/report``.
+
+    The fields of a report submitted with an account, without the client id
+    (the platform names a guest report), the organisation and the assistance
+    record; at most three photos, all uploaded through this submission.
+
+    Implements: API Schema.
+
+    Attributes:
+        media_ids: Up to three photos granted to this submission.
+    """
+
+    media_ids: tuple[EntityId, ...] = Field(default=(), max_length=GUEST_MEDIA_MAX)
+
+
+class MarkReviewRequest(BaseModel):
+    """Body of ``POST /api/v1/moderation/reports/{report_id}/review``.
+
+    Implements: API Schema.
+
+    Attributes:
+        state: ``new``, ``reviewed`` or ``archived``.
+        reason: Why, or a note, 1 to 500 characters of safe text. Required to
+            archive, to go back to ``new`` and to leave ``archived`` (422
+            otherwise); optional for ``reviewed``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    state: ReviewState
+    reason: ReviewReason | None = None
+
+
+class BulkMarkReviewRequest(BaseModel):
+    """Body of ``POST /api/v1/moderation/reports/review``: one mark, many reports.
+
+    Implements: API Schema.
+
+    Attributes:
+        report_ids: 1 to 100 distinct reports.
+        state: The mark for all of them.
+        reason: The same reason for all of them; required as for one report.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    report_ids: tuple[EntityId, ...] = Field(min_length=1, max_length=REVIEW_BULK_MAX)
+    state: ReviewState
+    reason: ReviewReason | None = None

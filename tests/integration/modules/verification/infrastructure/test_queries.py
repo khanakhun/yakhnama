@@ -116,6 +116,7 @@ def _expected(
         if (query.state is None or case.state is query.state)
         and (query.target_kind is None or case.target.kind is query.target_kind)
         and (query.assigned_to is None or case.assigned_to == query.assigned_to)
+        and (query.target_id is None or case.target.target_id == query.target_id)
     ]
 
 
@@ -144,6 +145,22 @@ async def test_verification_query_service_list_cases_applies_filters(
 
     assert [item.id for item in page.items] == _expected(stored_cases, query)
     assert page.next_cursor is None
+
+
+@pytest.mark.parametrize("is_kind_given", [True, False])
+async def test_verification_query_service_list_cases_finds_the_case_of_a_target(
+    stored_cases: list[VerificationCase],
+    queries: SqlAlchemyVerificationQueryService,
+    is_kind_given: bool,  # noqa: FBT001  # reason: pytest passes parametrised values by position
+) -> None:
+    target = stored_cases[3].target
+    kind = {"target_kind": target.kind} if is_kind_given else {}
+    query = _query(target_id=target.target_id, **kind)
+
+    page = await queries.list_cases(query)
+
+    assert [item.id for item in page.items] == [stored_cases[3].id]
+    assert _expected(stored_cases, query) == [stored_cases[3].id]
 
 
 async def test_verification_query_service_list_cases_returns_summaries(

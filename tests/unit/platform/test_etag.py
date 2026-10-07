@@ -11,6 +11,7 @@ from starlette.responses import Response
 from yakhnama.platform.etag import (
     expected_version_from_if_match,
     if_match_matches,
+    if_none_match_matches,
     make_etag,
     parse_if_match,
     require_if_match,
@@ -130,3 +131,23 @@ def test_expected_version_unusable_header_raises_precondition_failed(
 ) -> None:
     with pytest.raises(PreconditionFailedError):
         expected_version_from_if_match(header, ENTITY_ID)
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (None, False),
+        ("", False),
+        (f'"{ENTITY_ID}:1"', True),
+        (f'W/"{ENTITY_ID}:1"', True),
+        (f'"{OTHER_ID}:1", "{ENTITY_ID}:1"', True),
+        ("*", True),
+        (f'"{ENTITY_ID}:2"', False),
+    ],
+)
+def test_if_none_match_matches_uses_weak_comparison(
+    header: str | None, *, expected: bool
+) -> None:
+    result = if_none_match_matches(header, make_etag(1, ENTITY_ID))
+
+    assert result is expected

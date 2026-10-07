@@ -29,7 +29,7 @@ from yakhnama.modules.media.domain.value_objects import (
     original_object_key,
     public_object_key,
 )
-from yakhnama.shared_kernel.errors import PermissionDeniedError
+from yakhnama.shared_kernel.errors import PermissionDeniedError, PreconditionFailedError
 
 
 def event_types(harness: Harness) -> list[type]:
@@ -216,3 +216,36 @@ async def test_moderate_media_missing_asset_raises_not_found() -> None:
                 actor=MODERATOR, asset_id=MISSING_ID, decision=ModerationStatus.APPROVED
             )
         )
+
+
+async def test_moderate_media_with_stale_expected_version_raises_412_and_keeps_it() -> (
+    None
+):
+    harness = Harness()
+    asset = await harness.uploaded()
+    rejected = await harness.moderate()(
+        ModerateMedia(
+            actor=MODERATOR,
+            asset_id=asset.id,
+            decision=ModerationStatus.REJECTED,
+            sensitivity=SensitivityFlag.INJURED_OR_DECEASED,
+            reason="Shows injured people.",
+            expected_version=asset.version,
+        )
+    )
+
+    with pytest.raises(PreconditionFailedError):
+        await harness.moderate()(
+            ModerateMedia(
+                actor=MODERATOR,
+                asset_id=asset.id,
+                decision=ModerationStatus.APPROVED,
+                expected_version=asset.version,
+            )
+        )
+
+    stored = harness.uow.media_assets.committed[asset.id]
+    assert (stored.moderation_status, stored.version) == (
+        ModerationStatus.REJECTED,
+        rejected.version,
+    )

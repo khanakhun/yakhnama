@@ -48,6 +48,10 @@ REPORTS_TRIAGE_TASK: Final = "reports.run_triage"
 """Run the triage chain on one report. Payload: ``report_id`` (bound by reports)."""
 MEDIA_SCAN_TASK: Final = "media.scan"
 """Scan and process one uploaded asset. Payload: ``asset_id`` (bound by media)."""
+MEDIA_SWEEP_TASK: Final = "media.sweep_stale_uploads"
+"""Fail abandoned uploads and delete their upload objects. Payload: none."""
+GUEST_PURGE_TASK: Final = "reports.purge_guest_records"
+"""Forget spent challenges and unfiled guest submissions (ADR 0020). Payload: none."""
 EXCHANGE_RUN_EXPORT_TASK: Final = "exchange.run_export"
 """Write one export's file and sidecar. Payload: ``export_job_id`` (exchange)."""
 EXCHANGE_RUN_IMPORT_TASK: Final = "exchange.run_import"
@@ -60,7 +64,9 @@ TASK_NAMES: Final = (
     OUTBOX_PURGE_TASK,
     IDEMPOTENCY_PURGE_TASK,
     REPORTS_TRIAGE_TASK,
+    GUEST_PURGE_TASK,
     MEDIA_SCAN_TASK,
+    MEDIA_SWEEP_TASK,
     EXCHANGE_RUN_EXPORT_TASK,
     EXCHANGE_RUN_IMPORT_TASK,
     INGESTION_RUN_TASK,

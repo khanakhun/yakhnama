@@ -15,26 +15,40 @@ having been loaded here is assumed to carry exactly one change (expected version
 ``place.version - 1``), which fails safe: more changes than that report a conflict
 rather than overwrite anything.
 
+District edge snapshots are immutable: ``SqlAlchemyDistrictEdgeSetRepository`` only
+inserts them and reads the newest back.
+
 Patterns: Repository (adapter side).
 """
 
 from collections.abc import Iterable
+from typing import Final
 
 from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.dml import ReturningUpdate
 
+from yakhnama.modules.geography.domain.boundaries import DistrictEdgeSet
 from yakhnama.modules.geography.domain.entities import Place
 from yakhnama.modules.geography.domain.errors import PlaceNotFoundError
+from yakhnama.modules.geography.domain.value_objects import AdminLevel
 from yakhnama.modules.geography.infrastructure.mappers import (
     centroid_to_element,
+    edge_set_to_rows,
     geometry_to_element,
     names_to_rows,
     place_to_row,
     row_to_place,
+    rows_to_edge_set,
 )
-from yakhnama.modules.geography.infrastructure.orm import PlaceNameRow, PlaceRow
+from yakhnama.modules.geography.infrastructure.orm import (
+    DistrictCentroidRow,
+    DistrictEdgeRow,
+    DistrictEdgeSetRow,
+    PlaceNameRow,
+    PlaceRow,
+)
 from yakhnama.platform.db import is_unique_violation
 from yakhnama.shared_kernel.errors import ConflictError
 from yakhnama.shared_kernel.ids import EntityId
@@ -78,6 +92,25 @@ class SqlAlchemyPlaceRepository:
             The aggregate, or ``None`` if no place has that code.
         """
         return await self._load(PlaceRow.code == code)
+
+    async def list_at_level(self, level: AdminLevel) -> tuple[Place, ...]:
+        """Return every active place at ``level``, ordered by code.
+
+        Args:
+            level: The administrative level.
+
+        Returns:
+            The aggregates, possibly none.
+        """
+        codes = (
+            await self._session.execute(
+                select(PlaceRow.code)
+                .where(PlaceRow.level == level.value, PlaceRow.status == "active")
+                .order_by(PlaceRow.code)
+            )
+        ).scalars()
+        places = [await self.get_by_code(code) for code in codes.all()]
+        return tuple(place for place in places if place is not None)
 
     async def add(self, place: Place) -> None:
         """Insert a new place and its names.
@@ -198,3 +231,99 @@ class SqlAlchemyPlaceRepository:
             message,
             details={"code": place.code, "expected": expected, "stored": stored},
         )
+
+
+# The current snapshot is the newest; the id breaks a tie on the timestamp.
+_NEWEST_FIRST: Final = (
+    DistrictEdgeSetRow.created_at.desc(),
+    DistrictEdgeSetRow.id.desc(),
+)
+
+
+class SqlAlchemyDistrictEdgeSetRepository:
+    """PostGIS-backed implementation of ``DistrictEdgeSetRepository``.
+
+    The session belongs to the unit of work; this class never commits.
+
+    Implements: Repository (port ``DistrictEdgeSetRepository``).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Create the repository.
+
+        Args:
+            session: The unit of work's session.
+        """
+        self._session = session
+
+    async def add(self, edge_set: DistrictEdgeSet) -> None:
+        """Insert a snapshot and its edges.
+
+        Args:
+            edge_set: The snapshot.
+
+        Raises:
+            ConflictError: If a snapshot with the same id exists.
+        """
+        set_row, edge_rows, centroid_rows = edge_set_to_rows(edge_set)
+        try:
+            async with self._session.begin_nested():
+                for rows in ((set_row,), edge_rows, centroid_rows):
+                    self._session.add_all(rows)
+                    await self._session.flush()
+        except IntegrityError as error:
+            if not is_unique_violation(error):
+                raise
+            message = f"district edge set {edge_set.id} already exists"
+            raise ConflictError(message, details={"id": str(edge_set.id)}) from error
+        finally:
+            for row in (set_row, *edge_rows, *centroid_rows):
+                if row in self._session:
+                    self._session.expunge(row)
+
+    async def get_current_id(self) -> EntityId | None:
+        """Return the newest snapshot's id without loading its edges.
+
+        Returns:
+            The id ``get_current`` would return, or ``None``.
+        """
+        found: EntityId | None = await self._session.scalar(
+            select(DistrictEdgeSetRow.id).order_by(*_NEWEST_FIRST).limit(1)
+        )
+        return found
+
+    async def get_current(self) -> DistrictEdgeSet | None:
+        """Return the newest snapshot, including one staged in this transaction.
+
+        Returns:
+            The snapshot with the latest ``created_at`` (then the greatest id), or
+            ``None``.
+        """
+        set_row = (
+            await self._session.execute(
+                select(DistrictEdgeSetRow).order_by(*_NEWEST_FIRST).limit(1)
+            )
+        ).scalar_one_or_none()
+        if set_row is None:
+            return None
+        edge_rows = list(
+            (
+                await self._session.execute(
+                    select(DistrictEdgeRow).where(
+                        DistrictEdgeRow.edge_set_id == set_row.id
+                    )
+                )
+            ).scalars()
+        )
+        centroid_rows = list(
+            (
+                await self._session.execute(
+                    select(DistrictCentroidRow).where(
+                        DistrictCentroidRow.edge_set_id == set_row.id
+                    )
+                )
+            ).scalars()
+        )
+        for row in (set_row, *edge_rows, *centroid_rows):
+            self._session.expunge(row)
+        return rows_to_edge_set(set_row, edge_rows, centroid_rows)

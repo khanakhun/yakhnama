@@ -14,9 +14,11 @@ from yakhnama.platform.tasks.errors import (
 from yakhnama.platform.tasks.handlers import (
     EXCHANGE_RUN_EXPORT_TASK,
     EXCHANGE_RUN_IMPORT_TASK,
+    GUEST_PURGE_TASK,
     IDEMPOTENCY_PURGE_TASK,
     INGESTION_RUN_TASK,
     MEDIA_SCAN_TASK,
+    MEDIA_SWEEP_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
     REPORTS_TRIAGE_TASK,
@@ -47,14 +49,21 @@ def test_task_names_are_the_documented_contract() -> None:
         "outbox.purge_published",
         "idempotency.purge_expired",
         "reports.run_triage",
+        "reports.purge_guest_records",
         "media.scan",
+        "media.sweep_stale_uploads",
         "exchange.run_export",
         "exchange.run_import",
         "ingestion.run",
     )
     assert names[:3] == (OUTBOX_RELAY_TASK, OUTBOX_PURGE_TASK, IDEMPOTENCY_PURGE_TASK)
-    assert names[3:5] == (REPORTS_TRIAGE_TASK, MEDIA_SCAN_TASK)
-    assert names[5:] == (
+    assert names[3:7] == (
+        REPORTS_TRIAGE_TASK,
+        GUEST_PURGE_TASK,
+        MEDIA_SCAN_TASK,
+        MEDIA_SWEEP_TASK,
+    )
+    assert names[7:] == (
         EXCHANGE_RUN_EXPORT_TASK,
         EXCHANGE_RUN_IMPORT_TASK,
         INGESTION_RUN_TASK,

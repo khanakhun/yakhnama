@@ -26,10 +26,18 @@ from yakhnama.modules.media.domain.value_objects import (
     MAX_MEDIA_BYTES,
     ExifFacts,
     MimeType,
+    ModerationStatus,
+    ScanStatus,
     UploadStatus,
 )
 from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.pagination import (
+    CursorPayload,
+    Page,
+    PageRequest,
+    encode_cursor,
+)
 
 FAKE_STORAGE_EXPIRY = datetime(2026, 6, 1, 13, 0, tzinfo=UTC)
 """Expiry every presigned URL of ``FakeStoragePort`` carries."""
@@ -92,6 +100,29 @@ class InMemoryMediaAssetRepository:
             key=lambda asset: (asset.created_at, asset.id),
         )
         return matches[0] if matches else None
+
+    async def find_requested_before(
+        self, before: datetime, limit: int
+    ) -> Sequence[MediaAsset]:
+        """Return requested assets created before ``before``, oldest first.
+
+        Args:
+            before: The cut-off.
+            limit: Most assets returned.
+
+        Returns:
+            The assets.
+        """
+        matches = sorted(
+            (
+                asset
+                for asset in self._current().values()
+                if asset.upload_status is UploadStatus.REQUESTED
+                and asset.created_at < before
+            ),
+            key=lambda asset: (asset.created_at, asset.id),
+        )
+        return tuple(matches[:limit])
 
     async def add(self, asset: MediaAsset) -> None:
         """Stage a new asset.
@@ -167,13 +198,21 @@ class InMemoryMediaQueryService:
     Implements: Fake (of Query Service).
     """
 
-    def __init__(self, uow: InMemoryMediaUnitOfWork) -> None:
+    def __init__(
+        self,
+        uow: InMemoryMediaUnitOfWork,
+        listing_reports: Mapping[EntityId, EntityId] | None = None,
+    ) -> None:
         """Create the query service.
 
         Args:
             uow: The unit of work whose committed rows are served.
+            listing_reports: For assets uploaded before their report, the newest
+                report revision that lists each one; plays the SQL adapter's
+                lookup in ``reports``, which this fake cannot see.
         """
         self._uow = uow
+        self.listing_reports = dict(listing_reports or {})
 
     async def get_asset(self, asset_id: EntityId) -> MediaAssetRecord | None:
         """Return one committed asset.
@@ -205,6 +244,60 @@ class InMemoryMediaQueryService:
             if asset_id in committed
         )
 
+    async def list_queue(
+        self,
+        *,
+        moderation_status: ModerationStatus | None,
+        scan_status: ScanStatus | None,
+        page: PageRequest,
+    ) -> Page[MediaAssetRecord]:
+        """Page completed assets by ``(created_at, id)`` ascending.
+
+        Args:
+            moderation_status: Only assets with this status, if set.
+            scan_status: Only assets with this verdict, if set.
+            page: Page size and cursor.
+
+        Returns:
+            One page of records, ``report_id`` resolved like the SQL adapter.
+
+        Raises:
+            ValidationError: If the cursor is invalid.
+        """
+        cursor = page.decode_cursor()
+        assets = sorted(
+            (
+                asset
+                for asset in self._uow.media_assets.committed.values()
+                if asset.upload_status is UploadStatus.COMPLETED
+                and moderation_status in {None, asset.moderation_status}
+                and scan_status in {None, asset.scan_status}
+            ),
+            key=lambda asset: (asset.created_at, asset.id),
+        )
+        if cursor is not None:
+            after = (datetime.fromisoformat(cursor.sort_key), cursor.last_id)
+            assets = [asset for asset in assets if (asset.created_at, asset.id) > after]
+        window = assets[: page.limit]
+        next_cursor = None
+        if len(assets) > page.limit:
+            last = window[-1]
+            next_cursor = encode_cursor(
+                CursorPayload(sort_key=last.created_at.isoformat(), last_id=last.id)
+            )
+        return Page[MediaAssetRecord](
+            items=tuple(
+                MediaAssetRecord.from_entity(asset).model_copy(
+                    update={
+                        "report_id": asset.report_id
+                        or self.listing_reports.get(asset.id)
+                    }
+                )
+                for asset in window
+            ),
+            next_cursor=next_cursor,
+        )
+
 
 class FakeStoragePort:
     """``StoragePort`` over a dictionary of objects, recording every key used.
@@ -214,6 +307,9 @@ class FakeStoragePort:
     Attributes:
         objects: What ``head`` reports per key; tests put uploads here.
         presigned_puts: Keys presigned for upload, in order.
+        presigned_sizes: The signed size and lifetime of each presigned upload,
+            in order.
+        deleted_uploads: Upload keys deleted, in order.
         presigned_gets: Keys presigned for download, in order.
         seals: ``(upload_key, original_key)`` pairs sealed, in order.
         copies: ``(original_key, public_key)`` pairs copied, in order.
@@ -228,33 +324,53 @@ class FakeStoragePort:
         """
         self.objects: dict[str, StoredObject] = dict(objects or {})
         self.presigned_puts: list[str] = []
+        self.presigned_sizes: list[tuple[int, timedelta | None]] = []
+        self.deleted_uploads: list[str] = []
         self.presigned_gets: list[str] = []
         self.seals: list[tuple[str, str]] = []
         self.copies: list[tuple[str, str]] = []
         self.on_copy: Callable[[], None] | None = None
 
     async def presign_put(
-        self, key: str, mime_type: MimeType, max_bytes: int
+        self,
+        key: str,
+        mime_type: MimeType,
+        byte_size: int,
+        *,
+        ttl: timedelta | None = None,
     ) -> PresignedUpload:
-        """Record the key and return a fake upload URL.
+        """Record the key, size and lifetime and return a fake upload URL.
 
         Args:
             key: The object key.
             mime_type: The declared media type.
-            max_bytes: The size cap.
+            byte_size: The signed size.
+            ttl: The requested lifetime, ``None`` for the default.
 
         Returns:
-            A URL naming the key, with the content type and cap as headers.
+            A URL naming the key, with the content type and length as headers.
         """
         self.presigned_puts.append(key)
+        self.presigned_sizes.append((byte_size, ttl))
         return PresignedUpload(
             url=f"https://storage.example.test/private/{key}?signature=put",
             headers=(
                 HttpHeader(name="Content-Type", value=mime_type.value),
-                HttpHeader(name="X-Max-Bytes", value=str(max_bytes)),
+                HttpHeader(name="Content-Length", value=str(byte_size)),
             ),
-            expires_at=FAKE_STORAGE_EXPIRY,
+            expires_at=FAKE_STORAGE_EXPIRY
+            if ttl is None
+            else FAKE_STORAGE_EXPIRY - timedelta(hours=1) + ttl,
         )
+
+    async def delete_upload(self, key: str) -> None:
+        """Record the deletion and forget the object at ``key``.
+
+        Args:
+            key: The upload key.
+        """
+        self.deleted_uploads.append(key)
+        self.objects.pop(key, None)
 
     async def head(self, key: str) -> StoredObject | None:
         """Return the arranged object at ``key``.

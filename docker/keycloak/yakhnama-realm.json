@@ -2,7 +2,32 @@
   "realm": "yakhnama",
   "enabled": true,
   "sslRequired": "none",
-  "registrationAllowed": false,
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": false,
+  "verifyEmail": true,
+  "resetPasswordAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "editUsernameAllowed": false,
+  "rememberMe": false,
+  "passwordPolicy": "length(8) and maxLength(128) and notUsername and notEmail",
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "quickLoginCheckMilliSeconds": 1000,
+  "minimumQuickLoginWaitSeconds": 60,
+  "smtpServer": {
+    "host": "mailpit",
+    "port": "1025",
+    "from": "no-reply@yakhnama.local",
+    "fromDisplayName": "Yakhnama (development)",
+    "auth": "false",
+    "ssl": "false",
+    "starttls": "false"
+  },
   "accessTokenLifespan": 900,
   "defaultSignatureAlgorithm": "RS256",
   "components": {
@@ -11,7 +36,7 @@
         "providerId": "declarative-user-profile",
         "config": {
           "kc.user.profile.config": [
-            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}]}"
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"required\":{\"roles\":[\"user\"]},\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}]}"
           ]
         }
       }
@@ -110,11 +135,106 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "yakhnama-web",
+      "name": "Yakhnama web portal",
+      "description": "DEVELOPMENT REGISTRATION of the web portal. Public client for its server-side BFF: authorization code flow, PKCE S256 required, no client secret. URIs: localhost:3000 (dev) and :3100 (e2e) only; production waits for hosting (open question Q212).",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "http://localhost:3000/auth/callback",
+        "http://localhost:3100/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:3100"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*##http://localhost:3100/*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "audience-yakhnama-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "yakhnama-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "google",
+      "providerId": "google",
+      "displayName": "Google",
+      "enabled": "${KC_GOOGLE_ENABLED:false}",
+      "trustEmail": true,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "linkOnly": false,
+      "hideOnLogin": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "${KC_GOOGLE_CLIENT_ID:}",
+        "clientSecret": "${KC_GOOGLE_CLIENT_SECRET:}",
+        "defaultScope": "openid profile email",
+        "syncMode": "IMPORT",
+        "guiOrder": "1"
+      }
+    },
+    {
+      "alias": "facebook",
+      "providerId": "facebook",
+      "displayName": "Facebook",
+      "enabled": "${KC_FACEBOOK_ENABLED:false}",
+      "trustEmail": true,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "linkOnly": false,
+      "hideOnLogin": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "${KC_FACEBOOK_CLIENT_ID:}",
+        "clientSecret": "${KC_FACEBOOK_CLIENT_SECRET:}",
+        "defaultScope": "email",
+        "syncMode": "IMPORT",
+        "guiOrder": "2"
+      }
     }
   ],
   "users": [
     {
       "username": "demo-citizen",
+      "email": "demo-citizen@example.invalid",
       "enabled": true,
       "emailVerified": true,
       "requiredActions": [],
@@ -129,6 +249,7 @@
     },
     {
       "username": "demo-moderator",
+      "email": "demo-moderator@example.invalid",
       "enabled": true,
       "emailVerified": true,
       "requiredActions": [],
@@ -140,6 +261,38 @@
         }
       ],
       "realmRoles": ["citizen", "moderator"]
+    },
+    {
+      "id": "7e0a1c52-3b8d-4f6e-9a21-5c0de0000001",
+      "username": "demo-trusted-reporter",
+      "email": "demo-trusted-reporter@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo-trusted-reporter-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["citizen", "trusted_reporter"]
+    },
+    {
+      "id": "7e0a1c52-3b8d-4f6e-9a21-5c0de0000002",
+      "username": "demo-org-member",
+      "email": "demo-org-member@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo-org-member-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["citizen", "org_member"]
     }
   ]
 }

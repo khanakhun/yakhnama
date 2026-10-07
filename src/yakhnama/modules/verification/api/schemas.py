@@ -68,6 +68,8 @@ class ListCasesParameters(BaseModel):
         state: Only cases currently in this state.
         target_kind: Only cases about reports, events or claims.
         assigned_to: Only cases assigned to this reviewer.
+        target_id: Only the case of this report, event or claim; with
+            ``target_kind``, it finds one record's case in one call.
         cursor: Opaque cursor from a previous page.
         limit: Page size, 1 to 200.
     """
@@ -77,6 +79,7 @@ class ListCasesParameters(BaseModel):
     state: VerificationState | None = None
     target_kind: TargetKind | None = None
     assigned_to: EntityId | None = None
+    target_id: EntityId | None = None
     cursor: Annotated[str | None, Field(max_length=MAX_CURSOR_LENGTH)] = None
     limit: Annotated[int, Field(ge=1, le=MAX_PAGE_LIMIT)] = DEFAULT_PAGE_LIMIT
 

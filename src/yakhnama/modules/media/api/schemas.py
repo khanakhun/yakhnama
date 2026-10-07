@@ -14,9 +14,9 @@ test keeps them equal to the enum until the names are told apart at the source
 Patterns: API Schema.
 """
 
-from typing import Final, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from yakhnama.modules.media.domain.value_objects import (
     ByteSize,
@@ -33,6 +33,11 @@ from yakhnama.modules.media.public import (
     UploadStatus,
 )
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.pagination import (
+    DEFAULT_PAGE_LIMIT,
+    MAX_CURSOR_LENGTH,
+    MAX_PAGE_LIMIT,
+)
 
 ModerationStatusName = Literal["pending", "approved", "rejected", "quarantined"]
 """The values of the media ``ModerationStatus`` enum, spelled out for OpenAPI."""
@@ -61,11 +66,15 @@ class RequestUploadRequest(BaseModel):
     Attributes:
         mime_type: The declared media type, from the allow-list; the file's
             content is checked against it again when the upload completes.
+        byte_size: The file's exact size in bytes, 1 to ``MAX_MEDIA_BYTES``. The
+            upload URL signs it as ``Content-Length``, so storage refuses a body
+            of any other length; the client must ``PUT`` exactly the file.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mime_type: MimeType
+    byte_size: ByteSize
 
 
 class ModerateMediaRequest(BaseModel):
@@ -146,3 +155,56 @@ class MediaAssetResponse(BaseModel):
             original_download=detail.original_download,
             version=detail.version,
         )
+
+
+class ListMediaQueueParameters(BaseModel):
+    """Query string of ``GET /api/v1/moderation/media``.
+
+    Implements: API Schema.
+
+    Attributes:
+        moderation_status: Only assets with this moderation status.
+        scan_status: Only assets with this scan verdict.
+        cursor: Opaque cursor from a previous page.
+        limit: Page size, 1 to 200.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    moderation_status: ModerationStatusName | None = None
+    scan_status: ScanStatus | None = None
+    cursor: Annotated[str | None, Field(max_length=MAX_CURSOR_LENGTH)] = None
+    limit: Annotated[int, Field(ge=1, le=MAX_PAGE_LIMIT)] = DEFAULT_PAGE_LIMIT
+
+    def moderation_status_value(self) -> ModerationStatus | None:
+        """Return the moderation filter as the domain enum.
+
+        Returns:
+            The status, or ``None`` when no filter was sent.
+        """
+        return (
+            None
+            if self.moderation_status is None
+            else ModerationStatus(self.moderation_status)
+        )
+
+
+class MediaQueuePage(BaseModel):
+    """One page of the moderators' media queue, oldest first, without links.
+
+    Every item's ``public_download`` and ``original_download`` are ``null``; a
+    moderator gets the links of one asset from ``GET /api/v1/media/{asset_id}``.
+    ``report_id`` is the asset's own report or, for a photo uploaded before its
+    report existed, the newest report revision that lists it.
+
+    Implements: API Schema.
+
+    Attributes:
+        items: The assets on this page.
+        next_cursor: Cursor of the next page, or ``None`` on the last page.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    items: tuple[MediaAssetResponse, ...] = Field(max_length=MAX_PAGE_LIMIT)
+    next_cursor: str | None = Field(max_length=MAX_CURSOR_LENGTH)

@@ -3,12 +3,14 @@
 Patterns: Command.
 """
 
-from typing import Self
+from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.media.domain.value_objects import (
+    PUBLISHABLE_MIME_TYPES,
+    ByteSize,
     MimeType,
     ModerationReason,
     ModerationStatus,
@@ -29,6 +31,8 @@ class RequestUpload(BaseModel):
             file uploaded before its report is submitted.
         mime_type: The media type the uploader declares; checked again against
             the file's content at completion.
+        byte_size: The file's exact size; signed into the upload URL, so storage
+            refuses a file of any other length.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -36,6 +40,7 @@ class RequestUpload(BaseModel):
     actor: Actor
     report_id: EntityId | None = None
     mime_type: MimeType
+    byte_size: ByteSize
 
 
 class CompleteUpload(BaseModel):
@@ -51,6 +56,61 @@ class CompleteUpload(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     actor: Actor
+    asset_id: EntityId
+
+
+class RequestGuestUpload(BaseModel):
+    """Ask for a presigned upload of one photo owned by a guest submission.
+
+    Internal: no endpoint accepts it. The reports module's guest use case sends
+    it through its ``GuestMediaGateway`` port after checking the guest's
+    capability and photo limit (ADR 0020). The asset is owned by the submission,
+    not by a user, and only images (whose public copy can be stripped of
+    metadata) are accepted.
+
+    Implements: Command.
+
+    Attributes:
+        owner_id: The guest submission that will own the asset.
+        asset_id: The id the guest's reserved photo slot names; the asset gets
+            exactly this id.
+        mime_type: The declared image type; checked again against the file's
+            content at completion.
+        byte_size: The file's exact size, signed into the upload URL.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    owner_id: EntityId
+    asset_id: EntityId
+    mime_type: MimeType
+    byte_size: ByteSize
+
+    @model_validator(mode="after")
+    def _images_only(self) -> Self:
+        if self.mime_type not in PUBLISHABLE_MIME_TYPES:
+            message = "a guest may upload only JPEG, PNG or WebP images"
+            raise ValueError(message)
+        return self
+
+
+class CompleteGuestUpload(BaseModel):
+    """Tell the platform the photo behind a guest submission's asset was uploaded.
+
+    Internal, like ``RequestGuestUpload``: the guest use case has checked the
+    capability; ``CompleteUploadHandler`` checks that the submission owns the
+    asset.
+
+    Implements: Command.
+
+    Attributes:
+        owner_id: The guest submission.
+        asset_id: The asset the upload URL was granted for.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    owner_id: EntityId
     asset_id: EntityId
 
 
@@ -97,6 +157,8 @@ class ModerateMedia(BaseModel):
         decision: ``approved`` or ``rejected``.
         sensitivity: The sensitivity flag.
         reason: Why; required for a rejection.
+        expected_version: The asset's version the moderator last saw, from
+            ``If-Match``; not checked when ``None`` (Q66).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -106,3 +168,20 @@ class ModerateMedia(BaseModel):
     decision: ModerationStatus
     sensitivity: SensitivityFlag = SensitivityFlag.NONE
     reason: ModerationReason | None = None
+    expected_version: Annotated[int, Field(ge=1)] | None = None
+
+
+class SweepStaleUploads(BaseModel):
+    """Fail the uploads whose grant lapsed long ago and delete their upload objects.
+
+    A system command, sent by the periodic ``media.sweep_stale_uploads`` task.
+
+    Implements: Command.
+
+    Attributes:
+        batch_size: Most assets handled in one run; the next run continues.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch_size: int = Field(default=100, ge=1, le=1000)

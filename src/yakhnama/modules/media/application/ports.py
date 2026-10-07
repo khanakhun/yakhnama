@@ -11,6 +11,7 @@ Patterns: Repository (port side), Unit of Work, Query Service, Adapter (port sid
 """
 
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from typing import Final, Protocol
 
 from yakhnama.modules.media.application.dto import (
@@ -23,9 +24,11 @@ from yakhnama.modules.media.domain.entities import MediaAsset
 from yakhnama.modules.media.domain.value_objects import (
     ExifFacts,
     MimeType,
+    ModerationStatus,
     ScanStatus,
 )
 from yakhnama.shared_kernel.ids import EntityId
+from yakhnama.shared_kernel.pagination import Page, PageRequest
 from yakhnama.shared_kernel.uow import UnitOfWork, UnitOfWorkFactory
 
 SCAN_TASK: Final = "media.scan"
@@ -61,6 +64,20 @@ class MediaAssetRepository(Protocol):
 
         Returns:
             The oldest such asset, or ``None``.
+        """
+        ...
+
+    async def find_requested_before(
+        self, before: datetime, limit: int
+    ) -> Sequence[MediaAsset]:
+        """Return assets still waiting for their upload, created before ``before``.
+
+        Args:
+            before: Only assets created earlier than this instant, UTC.
+            limit: Most assets returned, oldest first.
+
+        Returns:
+            The assets in ``requested`` state, oldest first.
         """
         ...
 
@@ -137,6 +154,34 @@ class MediaQueryService(Protocol):
         """
         ...
 
+    async def list_queue(
+        self,
+        *,
+        moderation_status: ModerationStatus | None,
+        scan_status: ScanStatus | None,
+        page: PageRequest,
+    ) -> Page[MediaAssetRecord]:
+        """Return one page of completed uploads, oldest first, for moderators.
+
+        Ordered by ``created_at`` ascending, then by id; the cursor's
+        ``sort_key`` is ``created_at`` in ISO 8601 and its ``last_id`` the last
+        asset's id. Each record's ``report_id`` is the asset's own, or, for an
+        asset uploaded before its report existed, the id of the newest report
+        revision that lists it (``None`` if no report lists it yet).
+
+        Args:
+            moderation_status: Only assets with this status, if set.
+            scan_status: Only assets with this scan verdict, if set.
+            page: Page size and cursor.
+
+        Returns:
+            Up to ``page.limit`` records and the next cursor, if any.
+
+        Raises:
+            ValidationError: If the cursor is invalid.
+        """
+        ...
+
 
 class StoragePort(Protocol):
     """Object storage with a private bucket for originals and a public one.
@@ -145,7 +190,12 @@ class StoragePort(Protocol):
     """
 
     async def presign_put(
-        self, key: str, mime_type: MimeType, max_bytes: int
+        self,
+        key: str,
+        mime_type: MimeType,
+        byte_size: int,
+        *,
+        ttl: timedelta | None = None,
     ) -> PresignedUpload:
         """Return a presigned upload for ``key`` in the private bucket.
 
@@ -153,17 +203,26 @@ class StoragePort(Protocol):
         the URL stays valid until it expires, so whatever it covers can be
         overwritten after completion.
 
-        The URL is bound to the content type and caps the size at ``max_bytes``
-        (for example with a presigned POST policy or a signed content-length
-        range), so storage itself refuses a larger file.
+        The URL is bound to the content type and to the exact ``byte_size`` (a
+        signed ``Content-Length``), so storage itself refuses a file of any other
+        length.
 
         Args:
-            key: The original's object key.
+            key: The upload key.
             mime_type: The declared media type.
-            max_bytes: Largest accepted file.
+            byte_size: The file's exact size, which the upload must send.
+            ttl: How long the URL works; ``None`` for the adapter's default.
 
         Returns:
             The URL, required headers and expiry.
+        """
+        ...
+
+    async def delete_upload(self, key: str) -> None:
+        """Delete the object at an upload key, if any; idempotent.
+
+        Args:
+            key: An upload key (``upload_object_key``); nothing else is deleted.
         """
         ...
 

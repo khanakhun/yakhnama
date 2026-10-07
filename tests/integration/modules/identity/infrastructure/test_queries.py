@@ -1,4 +1,4 @@
-"""The SQL identity query service against real PostGIS, including member paging."""
+"""The SQL identity query service against real PostGIS: members and moderators."""
 
 from datetime import UTC, datetime, timedelta
 from typing import Final
@@ -15,6 +15,7 @@ from yakhnama.modules.identity.application.dto import (
     MeDetail,
     MembershipSummary,
     MemberSummary,
+    ModeratorSummary,
     OrganizationDetail,
 )
 from yakhnama.modules.identity.application.queries import ListOrganizationMembers
@@ -27,6 +28,7 @@ from yakhnama.modules.identity.domain.value_objects import (
     OrganizationRole,
     OrganizationStatus,
     Role,
+    UserStatus,
 )
 from yakhnama.modules.identity.infrastructure.queries import (
     SqlAlchemyIdentityQueryService,
@@ -290,3 +292,52 @@ def test_decode_since_with_offset_returns_aware_instant() -> None:
     decoded = decode_since(CREATED.isoformat())
 
     assert decoded == CREATED
+
+
+# --------------------------------------------------------------------------- #
+# The moderator directory                                                     #
+# --------------------------------------------------------------------------- #
+
+
+async def test_list_moderators_returns_active_moderators_and_admins_by_name(
+    identity_uow_factory: IdentityFactory, service: SqlAlchemyIdentityQueryService
+) -> None:
+    zara = _user(roles=frozenset({Role.CITIZEN, Role.MODERATOR}), display_name="Zara")
+    amin = _user(roles=frozenset({Role.CITIZEN, Role.ADMIN}), display_name="Amin")
+    unnamed = _user(roles=frozenset({Role.CITIZEN, Role.MODERATOR}), display_name=None)
+    citizen = _user(roles=frozenset({Role.CITIZEN}), display_name="Citizen")
+    trusted = _user(
+        roles=frozenset({Role.CITIZEN, Role.TRUSTED_REPORTER}), display_name="Trust"
+    )
+    suspended = _user(
+        roles=frozenset({Role.CITIZEN, Role.MODERATOR}),
+        display_name="Gone",
+        status=UserStatus.SUSPENDED,
+        status_reason="Test suspension",
+    )
+    await _store(
+        identity_uow_factory,
+        users=(zara, amin, unnamed, citizen, trusted, suspended),
+    )
+
+    entries = await service.list_moderators(10)
+
+    assert entries == (
+        ModeratorSummary(id=amin.id, display_name="Amin"),
+        ModeratorSummary(id=zara.id, display_name="Zara"),
+        ModeratorSummary(id=unnamed.id, display_name=None),
+    )
+
+
+async def test_list_moderators_stops_at_the_limit(
+    identity_uow_factory: IdentityFactory, service: SqlAlchemyIdentityQueryService
+) -> None:
+    moderators = tuple(
+        _user(roles=frozenset({Role.CITIZEN, Role.MODERATOR}), display_name=f"M{index}")
+        for index in range(3)
+    )
+    await _store(identity_uow_factory, users=moderators)
+
+    entries = await service.list_moderators(2)
+
+    assert [entry.display_name for entry in entries] == ["M0", "M1"]

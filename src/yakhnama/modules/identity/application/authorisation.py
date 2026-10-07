@@ -7,7 +7,8 @@ refused is the audit log's business, not the client's (``AGENTS.md`` §5).
 
 The read rules below are **proposed defaults** (see the task report's open
 questions): anyone may read an organisation's public detail; only its members and
-platform administrators may list its members, because the list shows display names.
+platform administrators may list its members, because the list shows display names;
+only moderators may read the moderator directory, which exists for assigning cases.
 
 Patterns: Policy.
 """
@@ -15,6 +16,7 @@ Patterns: Policy.
 from yakhnama.modules.identity.domain.policies import (
     ActorPolicy,
     AuthorisationPolicy,
+    CanModerate,
     CanReadVerifiedData,
     IsAdmin,
     IsAuthenticated,
@@ -79,3 +81,13 @@ def member_list_policy(organization_id: EntityId) -> ActorPolicy:
         ``IsAdmin() | IsMemberOf(organization_id)``.
     """
     return IsAdmin() | IsMemberOf(organization_id)
+
+
+def moderator_directory_policy() -> ActorPolicy:
+    """Return who may read the moderator directory: moderators (**proposed**).
+
+    Returns:
+        ``CanModerate()``: the directory names people, and only those who assign
+        verification cases need it.
+    """
+    return CanModerate()

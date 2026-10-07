@@ -19,7 +19,10 @@ import pydantic
 import yaml
 from pydantic import BaseModel
 
-from yakhnama.modules.geography.public import PlaceReferenceFile
+from yakhnama.modules.geography.public import (
+    DistrictBoundarySource,
+    PlaceReferenceFile,
+)
 from yakhnama.modules.hazards.public import HazardTypeReferenceFile
 from yakhnama.modules.impacts.public import ImpactMetricReferenceFile
 from yakhnama.modules.ingestion.public import DatasetReferenceFile
@@ -117,6 +120,23 @@ class YamlReferenceFileReader:
                 not match ``DatasetReferenceFile``.
         """
         return self._load(DATASETS_FILE, DatasetReferenceFile)
+
+    def read_district_boundary_source(self, file_name: str) -> DistrictBoundarySource:
+        """Parse and validate a district boundary source file (ADR 0021).
+
+        Read only by ``python -m yakhnama.seed.boundaries``, not by the seed.
+
+        Args:
+            file_name: The file's name inside the reader's directory.
+
+        Returns:
+            The pinned boundary source with its district links.
+
+        Raises:
+            ValidationError: If the file is missing, unreadable, not YAML or does
+                not match ``DistrictBoundarySource``.
+        """
+        return self._load(file_name, DistrictBoundarySource)
 
     def _load[ModelT: BaseModel](self, file_name: str, model: type[ModelT]) -> ModelT:
         # Every re-raise uses ``from None``: a chained cause would carry the YAML or

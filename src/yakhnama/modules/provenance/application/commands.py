@@ -1,15 +1,22 @@
 """Write requests accepted by the provenance command handlers.
 
-Every command carries the ``actor`` the request runs as. ``UpdateSourceDetails``
+Every command carries the ``actor`` the request runs as, except
+``RegisterPlatformSource``, which the platform sends on its own behalf (ADR 0020).
+``UpdateSourceDetails``
 accepts an optional ``expected_version``: the API fills it from ``If-Match`` and the
 handler raises ``PreconditionFailedError`` (HTTP 412) when the stored version differs.
 
 Patterns: Command.
 """
 
-from pydantic import BaseModel, ConfigDict
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from yakhnama.modules.identity.public import Actor
+from yakhnama.modules.provenance.application.authorisation import (
+    SELF_REGISTERED_SOURCE_TYPES,
+)
 from yakhnama.modules.provenance.domain.value_objects import (
     RecordVersion,
     SourceDetails,
@@ -76,4 +83,57 @@ class MarkSourceReferenced(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     actor: Actor
+    source_id: EntityId
+
+
+class RegisterPlatformSource(BaseModel):
+    """Register a source the platform owns, for a fact it records itself.
+
+    Internal: no endpoint accepts it. The reports module sends it through the
+    ``PlatformSourceRegistrar`` port for a guest report or a guest upload, which
+    has no user to own a source; the guest use case has checked the guest's
+    capability first (ADR 0020). Only the types any user may register
+    (``citizen``, ``organisation``) are accepted, so this path can never mint a
+    higher-ranked source.
+
+    Implements: Command.
+
+    Attributes:
+        source_type: ``citizen`` or ``organisation``.
+        details: Title, citation and the optional descriptive fields; written by
+            the platform, never copied from what a guest typed.
+        source_id: The id the caller reserved for the source, or ``None`` for a
+            fresh one. With an id the command is idempotent: registering it again
+            returns the platform source that already has it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source_type: SourceType
+    details: SourceDetails
+    source_id: EntityId | None = None
+
+    @model_validator(mode="after")
+    def _only_self_registered_types(self) -> Self:
+        if self.source_type not in SELF_REGISTERED_SOURCE_TYPES:
+            message = "the platform registers only citizen or organisation sources"
+            raise ValueError(message)
+        return self
+
+
+class MarkPlatformSourceReferenced(BaseModel):
+    """Freeze a platform-owned source because a fact now cites it.
+
+    Internal, like ``RegisterPlatformSource``: sent once the citing guest report
+    or guest upload is committed, so a source is never frozen for a fact that
+    was not stored (ADR 0020).
+
+    Implements: Command.
+
+    Attributes:
+        source_id: The platform source.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     source_id: EntityId

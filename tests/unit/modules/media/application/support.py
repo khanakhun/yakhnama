@@ -140,7 +140,7 @@ class Harness:
         """Request, upload and complete one asset owned by ``actor_id``."""
         actor = OWNER if actor_id == OWNER_ID else OTHER_CITIZEN
         grant = await self.request()(
-            RequestUpload(actor=actor, mime_type=MimeType.JPEG)
+            RequestUpload(actor=actor, mime_type=MimeType.JPEG, byte_size=1024)
         )
         self.upload(grant.asset_id, sha256)
         return await self.complete()(

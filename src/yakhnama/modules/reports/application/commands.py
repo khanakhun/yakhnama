@@ -7,16 +7,42 @@ API fills it from ``If-Match`` and the handler raises ``PreconditionFailedError`
 Patterns: Command.
 """
 
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated, Final
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from yakhnama.modules.identity.public import Actor
+from yakhnama.modules.media.public import MAX_MEDIA_BYTES
+from yakhnama.modules.reports.domain.guest_submissions import ProofNonce
+from yakhnama.modules.reports.domain.reviews import (
+    ReviewReason,
+    ReviewState,
+)
 from yakhnama.modules.reports.domain.value_objects import (
+    AssistedSubmission,
     ClientReportId,
+    GuestImageType,
     ReportContent,
     ReportVersion,
     WithdrawalReason,
 )
 from yakhnama.shared_kernel.ids import EntityId
+
+CHALLENGE_TEXT_MAX_LENGTH: Final = 512
+CAPABILITY_TEXT_MAX_LENGTH: Final = 256
+
+ChallengeText = Annotated[
+    str, StringConstraints(min_length=1, max_length=CHALLENGE_TEXT_MAX_LENGTH)
+]
+"""A signed challenge as the client returns it; verified by ``GuestChallengeSigner``."""
+
+CapabilityText = Annotated[
+    str, StringConstraints(max_length=CAPABILITY_TEXT_MAX_LENGTH)
+]
+"""A capability as presented; only its digest is ever compared, never its format."""
+
+PhotoByteSize = Annotated[int, Field(ge=1, le=MAX_MEDIA_BYTES)]
+"""A guest photo's exact size in bytes, signed into its upload URL."""
 
 
 class SubmitReport(BaseModel):
@@ -31,6 +57,8 @@ class SubmitReport(BaseModel):
         content: What the reporter observed.
         organization_id: The organisation the reporter reports for, if any; the
             reporter must belong to it.
+        assisted: Set when the actor enters the report for a person without an
+            account, with that person's consent (ADR 0019).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -39,6 +67,7 @@ class SubmitReport(BaseModel):
     client_report_id: ClientReportId
     content: ReportContent
     organization_id: EntityId | None = None
+    assisted: AssistedSubmission | None = None
 
 
 class ReviseReport(BaseModel):
@@ -81,6 +110,65 @@ class WithdrawReport(BaseModel):
     expected_version: ReportVersion | None = None
 
 
+REVIEW_BULK_MAX: Final = 100
+"""Most reports one bulk mark may name (``MarkReportReviews``)."""
+
+
+class MarkReportReview(BaseModel):
+    """Mark a report's lineage ``new``, ``reviewed`` or ``archived`` (ADR 0022).
+
+    The report itself is not changed: not its status, content or reporter rights.
+
+    Implements: Command.
+
+    Attributes:
+        actor: The moderator.
+        report_id: The revision the moderator looked at.
+        state: The mark.
+        reason: Why, or a note; required to archive, to go back to ``new`` and to
+            leave ``archived``.
+        expected_version: The review's version the client last saw, from
+            ``If-Match`` (0 while the lineage was never marked); not checked when
+            ``None``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    report_id: EntityId
+    state: ReviewState
+    reason: ReviewReason | None = None
+    expected_version: Annotated[int, Field(ge=0)] | None = None
+
+
+class MarkReportReviews(BaseModel):
+    """Apply one mark to many reports, each on its own (ADR 0022).
+
+    Implements: Command.
+
+    Attributes:
+        actor: The moderator.
+        report_ids: The reports, 1 to ``REVIEW_BULK_MAX`` distinct ids.
+        state: The mark.
+        reason: Why; the same for every report.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    report_ids: tuple[EntityId, ...] = Field(min_length=1, max_length=REVIEW_BULK_MAX)
+    state: ReviewState
+    reason: ReviewReason | None = None
+
+    @field_validator("report_ids", mode="after")
+    @classmethod
+    def _check_distinct(cls, value: tuple[EntityId, ...]) -> tuple[EntityId, ...]:
+        if len(set(value)) != len(value):
+            message = "report_ids must not repeat an id"
+            raise ValueError(message)
+        return value
+
+
 class RunTriage(BaseModel):
     """Run the triage chain over one report and store its suggestions.
 
@@ -97,3 +185,97 @@ class RunTriage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     report_id: EntityId
+
+
+class IssueGuestChallenge(BaseModel):
+    """Issue a signed proof-of-work challenge to an anonymous caller (ADR 0020).
+
+    Implements: Command.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class OpenGuestSubmission(BaseModel):
+    """Redeem a solved challenge for one guest submission and its capability.
+
+    Implements: Command.
+
+    Attributes:
+        challenge: The signed challenge, exactly as issued.
+        nonce: The guest's answer to it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    challenge: ChallengeText
+    nonce: ProofNonce
+
+
+class RequestGuestMediaUpload(BaseModel):
+    """Ask for a presigned upload of one photo for a guest submission.
+
+    Implements: Command.
+
+    Attributes:
+        submission_id: The guest submission.
+        capability: The capability the guest presented, or ``None``.
+        mime_type: The declared image type.
+        byte_size: The photo's exact size; storage refuses any other length.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    submission_id: EntityId
+    capability: CapabilityText | None
+    mime_type: GuestImageType
+    byte_size: PhotoByteSize
+
+
+class CompleteGuestMediaUpload(BaseModel):
+    """Tell the platform a guest's photo was uploaded.
+
+    Implements: Command.
+
+    Attributes:
+        submission_id: The guest submission.
+        capability: The capability the guest presented, or ``None``.
+        asset_id: The asset the upload was granted for.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    submission_id: EntityId
+    capability: CapabilityText | None
+    asset_id: EntityId
+
+
+class SubmitGuestReport(BaseModel):
+    """Submit the one report of a guest submission; a retry returns its receipt.
+
+    Implements: Command.
+
+    Attributes:
+        submission_id: The guest submission.
+        capability: The capability the guest presented, or ``None``.
+        content: What the guest observed; ``media_ids`` must be photos granted
+            to this submission.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    submission_id: EntityId
+    capability: CapabilityText | None
+    content: ReportContent
+
+
+class PurgeGuestRecords(BaseModel):
+    """Forget spent challenges and unfiled guest submissions past their retention.
+
+    A system command, sent by the periodic ``reports.purge_guest_records`` task
+    (ADR 0020, Q226).
+
+    Implements: Command.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")

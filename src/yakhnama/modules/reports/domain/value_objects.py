@@ -126,6 +126,83 @@ class ReportStatus(StrEnum):
     WITHDRAWN = "withdrawn"
 
 
+GuestImageType = Literal["image/jpeg", "image/png", "image/webp"]
+"""The media types a guest may upload (``guest_submissions.GUEST_IMAGE_TYPES``)."""
+
+
+class ReportChannel(StrEnum):
+    """How a report reached the platform (ADR 0019).
+
+    - ``account``: the observer submitted it with their own account;
+    - ``assisted``: someone with an account entered it for a person without
+      one, and recorded that person's consent;
+    - ``guest``: a person without an account submitted it after a proof-of-work
+      check (ADR 0020).
+
+    Every revision keeps the channel of the report it corrects. Moderators read
+    the ``guest`` channel as a queue of its own.
+
+    Implements: Value Object.
+    """
+
+    ACCOUNT = "account"
+    GUEST = "guest"
+    ASSISTED = "assisted"
+
+
+class ConsentMethod(StrEnum):
+    """How the assisted person gave consent to the report being entered.
+
+    Implements: Value Object.
+    """
+
+    VERBAL = "verbal"
+    WRITTEN = "written"
+
+
+CONSENT_STATEMENT_VERSION_PATTERN: Final = r"^[a-z0-9][a-z0-9._-]{0,31}$"
+ConsentStatementVersion = Annotated[
+    str, StringConstraints(pattern=CONSENT_STATEMENT_VERSION_PATTERN)
+]
+"""Version of the consent statement read to or by the assisted person.
+
+The statement itself lives with the client that shows it (the web portal keeps it
+in its message catalogues); the report stores only which version was used, such as
+``2026-10-05`` or ``v1``.
+"""
+
+ASSISTANCE_NOTE_MAX_LENGTH: Final = 500
+AssistanceNote = Annotated[
+    str, *safe_text(ASSISTANCE_NOTE_MAX_LENGTH, allow_line_breaks=True)
+]
+"""A private note by the assisting person, 1 to 500 characters of safe text.
+
+Shown only to the person who entered the report and to moderators; never in a
+listing, an event or a log.
+"""
+
+
+class AssistedSubmission(BaseModel):
+    """What an assisted report records about the assistance and the consent.
+
+    It never identifies the assisted person: no name, contact or account. The
+    person who entered the report is the report's reporter.
+
+    Implements: Value Object.
+
+    Attributes:
+        consent_method: How the assisted person consented.
+        consent_statement_version: Which consent statement they agreed to.
+        note: A private note by the assisting person, if any.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    consent_method: ConsentMethod
+    consent_statement_version: ConsentStatementVersion
+    note: AssistanceNote | None = None
+
+
 REVISION_NUMBER_MAX: Final = 1000
 """Technical bound on revisions per report chain, far above any real correction."""
 
@@ -300,16 +377,24 @@ class ReportContent(BaseModel):
 
 
 class ReportAttribution(BaseModel):
-    """Who a report comes from: the reporter, their organisation and the source.
+    """Who a report comes from: reporter, organisation, source and channel.
 
-    Kept together because every revision of a report inherits all three unchanged.
+    Kept together because every revision of a report inherits all of them
+    unchanged. ``reporter_id`` is the principal accountable for the report: the
+    user who entered it for the ``account`` and ``assisted`` channels, and the
+    guest submission that carried it for the ``guest`` channel (ADR 0020). Both
+    kinds of id come from the platform's one UUIDv7 generator, so a guest
+    submission's id never equals a user's and "the reporter" policies never match
+    a guest report.
 
     Implements: Value Object.
 
     Attributes:
-        reporter_id: The reporting user.
+        reporter_id: The reporting user, or the guest submission.
         organization_id: The organisation the user reported for, or ``None``.
         source_id: The ``provenance`` source record the report is attributed to.
+        channel: How the report reached the platform.
+        assisted: The assistance and consent record, exactly for ``assisted``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -317,3 +402,34 @@ class ReportAttribution(BaseModel):
     reporter_id: EntityId
     organization_id: EntityId | None = None
     source_id: EntityId
+    channel: ReportChannel = ReportChannel.ACCOUNT
+    assisted: AssistedSubmission | None = None
+
+    @model_validator(mode="after")
+    def _check_channel(self) -> Self:
+        check_channel_fields(self.channel, self.assisted, self.organization_id)
+        return self
+
+
+def check_channel_fields(
+    channel: ReportChannel,
+    assisted: AssistedSubmission | None,
+    organization_id: EntityId | None,
+) -> None:
+    """Check that the channel and its fields agree.
+
+    Args:
+        channel: The report's channel.
+        assisted: Its assistance record, if any.
+        organization_id: The organisation it was reported for, if any.
+
+    Raises:
+        ValueError: If ``assisted`` is set for another channel than ``assisted``
+            or missing for it, or a guest report names an organisation.
+    """
+    if (assisted is None) == (channel is ReportChannel.ASSISTED):
+        message = "assisted must be set exactly for an assisted report"
+        raise ValueError(message)
+    if channel is ReportChannel.GUEST and organization_id is not None:
+        message = "a guest report is never reported for an organisation"
+        raise ValueError(message)

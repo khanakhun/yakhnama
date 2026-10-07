@@ -19,17 +19,23 @@ from yakhnama.modules.provenance.application.authorisation import (
     source_read_policy,
 )
 from yakhnama.modules.provenance.application.commands import (
+    MarkPlatformSourceReferenced,
     MarkSourceReferenced,
+    RegisterPlatformSource,
     RegisterSource,
     UpdateSourceDetails,
 )
 from yakhnama.modules.provenance.application.dto import SourceDetail, SourceSummary
 from yakhnama.modules.provenance.application.handlers import (
+    MarkPlatformSourceReferencedHandler,
     MarkSourceReferencedHandler,
+    RegisterPlatformSourceHandler,
     RegisterSourceHandler,
     UpdateSourceDetailsHandler,
 )
 from yakhnama.modules.provenance.application.ports import (
+    PlatformSourceReferenceMarker,
+    PlatformSourceRegistrar,
     ProvenanceUnitOfWork,
     ProvenanceUnitOfWorkFactory,
     SourceCitationChecker,
@@ -65,10 +71,16 @@ __all__ = [
     "InvalidSourceUrlError",
     "Licence",
     "ListSources",
+    "MarkPlatformSourceReferenced",
+    "MarkPlatformSourceReferencedHandler",
     "MarkSourceReferenced",
     "MarkSourceReferencedHandler",
+    "PlatformSourceReferenceMarker",
+    "PlatformSourceRegistrar",
     "ProvenanceUnitOfWork",
     "ProvenanceUnitOfWorkFactory",
+    "RegisterPlatformSource",
+    "RegisterPlatformSourceHandler",
     "RegisterSource",
     "RegisterSourceHandler",
     "Source",

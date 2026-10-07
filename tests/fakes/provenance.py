@@ -5,9 +5,10 @@ uniqueness and optimistic-concurrency rules the SQL adapter promises in
 ``yakhnama.modules.provenance.application.ports``. The query service reads only
 committed rows through the same specifications the SQL adapter compiles.
 ``FakeSourceCitationChecker`` answers from an arranged set of cited sources.
-``FakeSourceRegistrar`` and ``FakeSourceReferenceMarker`` stand in for the
-provenance handlers when another module's handler is under test; they record every
-command they receive.
+``FakeSourceRegistrar``, ``FakeSourceReferenceMarker``,
+``FakePlatformSourceRegistrar`` and ``FakePlatformSourceReferenceMarker`` stand in
+for the provenance handlers when another module's handler is under test; they record
+every command they receive.
 
 Patterns: Fake.
 """
@@ -19,13 +20,15 @@ from tests.fakes.clock import FrozenClock
 from tests.fakes.ids import SequentialIdGenerator
 from tests.fakes.uow import InMemoryUnitOfWork
 from yakhnama.modules.provenance.application.commands import (
+    MarkPlatformSourceReferenced,
     MarkSourceReferenced,
+    RegisterPlatformSource,
     RegisterSource,
 )
 from yakhnama.modules.provenance.application.dto import SourceDetail, SourceSummary
 from yakhnama.modules.provenance.domain.entities import Source
 from yakhnama.modules.provenance.domain.factories import SourceFactory
-from yakhnama.modules.provenance.domain.value_objects import SourceOwner
+from yakhnama.modules.provenance.domain.value_objects import SYSTEM_OWNER, SourceOwner
 from yakhnama.shared_kernel.errors import ConflictError, NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
@@ -290,6 +293,110 @@ class FakeSourceRegistrar:
         )
         self.registered.append(source)
         return SourceDetail.from_entity(source)
+
+
+class FakePlatformSourceRegistrar:
+    """``PlatformSourceRegistrar`` that builds unreferenced, ownerless sources.
+
+    Registering a reserved ``source_id`` again returns the source already built,
+    as the real handler does.
+
+    Implements: Fake (of Command Handler).
+
+    Attributes:
+        commands: Every command received, in order.
+        registered: Every source built, in order (each id once).
+    """
+
+    def __init__(self) -> None:
+        """Create the registrar."""
+        self.commands: list[RegisterPlatformSource] = []
+        self.registered: list[Source] = []
+        self._clock = FrozenClock(FAKE_REGISTRAR_NOW)
+        self._ids = SequentialIdGenerator(seed=7101)
+
+    async def __call__(self, command: RegisterPlatformSource) -> SourceDetail:
+        """Register the source in memory, unreferenced.
+
+        Args:
+            command: The registration.
+
+        Returns:
+            The new (or already registered) source's detail view.
+        """
+        self.commands.append(command)
+        existing = next(
+            (item for item in self.registered if item.id == command.source_id), None
+        )
+        if existing is not None:
+            return SourceDetail.from_entity(existing)
+        source = (
+            SourceFactory()
+            .register(
+                command.source_type,
+                command.details,
+                SYSTEM_OWNER,
+                clock=self._clock,
+                ids=self._ids,
+                source_id=command.source_id,
+            )
+            .state
+        )
+        self.registered.append(source)
+        return SourceDetail.from_entity(source)
+
+
+class FakePlatformSourceReferenceMarker:
+    """``PlatformSourceReferenceMarker`` that records which sources were frozen.
+
+    Implements: Fake (of Command Handler).
+
+    Attributes:
+        commands: Every command received, in order.
+        registrar: Where the platform sources are looked up.
+    """
+
+    def __init__(self, registrar: FakePlatformSourceRegistrar) -> None:
+        """Create the marker.
+
+        Args:
+            registrar: The fake registrar whose sources may be marked.
+        """
+        self.commands: list[MarkPlatformSourceReferenced] = []
+        self.registrar = registrar
+
+    @property
+    def marked_ids(self) -> tuple[EntityId, ...]:
+        """Return the marked source ids, in order."""
+        return tuple(command.source_id for command in self.commands)
+
+    async def __call__(self, command: MarkPlatformSourceReferenced) -> SourceDetail:
+        """Record the mark.
+
+        Args:
+            command: The source.
+
+        Returns:
+            The source, as referenced.
+
+        Raises:
+            NotFoundError: If the registrar never registered the source.
+        """
+        self.commands.append(command)
+        source = next(
+            (
+                item
+                for item in self.registrar.registered
+                if item.id == command.source_id
+            ),
+            None,
+        )
+        if source is None:
+            message = f"source {command.source_id} was not registered"
+            raise NotFoundError(message)
+        return SourceDetail.from_entity(source).model_copy(
+            update={"is_referenced": True}
+        )
 
 
 class FakeSourceReferenceMarker:

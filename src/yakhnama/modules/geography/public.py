@@ -3,14 +3,19 @@
 Other modules and the seed orchestrator import only this file. It re-exports the
 values other contexts may hold (``PlaceCode``, ``AdminLevel``), the read side
 (queries, DTOs, the query-service port) and what the reference-data seed needs (the
-load command, its report and the reference file model). Nothing from infrastructure
-is exported.
+load commands, their reports and the reference file models, district boundaries
+included, and the error a load raises for an invalid coverage). Nothing from
+infrastructure is exported.
 
 Patterns: Facade.
 """
 
-from yakhnama.modules.geography.application.commands import LoadReferencePlaces
+from yakhnama.modules.geography.application.commands import (
+    LoadDistrictBoundaries,
+    LoadReferencePlaces,
+)
 from yakhnama.modules.geography.application.dto import (
+    BoundaryLoadReport,
     LoadReport,
     PlaceDetail,
     PlaceSummary,
@@ -18,6 +23,8 @@ from yakhnama.modules.geography.application.dto import (
 )
 from yakhnama.modules.geography.application.ports import PlaceQueryService
 from yakhnama.modules.geography.application.queries import GetPlace, SearchPlaces
+from yakhnama.modules.geography.domain.boundaries import DistrictBoundarySource
+from yakhnama.modules.geography.domain.errors import BoundaryCoverageInvalidError
 from yakhnama.modules.geography.domain.reference import PlaceReferenceFile
 from yakhnama.modules.geography.domain.value_objects import (
     AdminLevel,
@@ -28,7 +35,11 @@ from yakhnama.modules.geography.domain.value_objects import (
 
 __all__ = [
     "AdminLevel",
+    "BoundaryCoverageInvalidError",
+    "BoundaryLoadReport",
+    "DistrictBoundarySource",
     "GetPlace",
+    "LoadDistrictBoundaries",
     "LoadReferencePlaces",
     "LoadReport",
     "PlaceCode",

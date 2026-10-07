@@ -15,6 +15,7 @@ from yakhnama.shared_kernel.errors import (
     InvalidTransitionError,
     InvariantViolationError,
     NotFoundError,
+    ValidationError,
 )
 from yakhnama.shared_kernel.ids import EntityId
 
@@ -78,3 +79,43 @@ class PlaceRetiredError(InvalidTransitionError):
 
     Implements: Domain Error (proposed in ADR 0012).
     """
+
+
+class BoundarySourceError(ValidationError):
+    """A boundary file could not be obtained or does not match its description.
+
+    Raised when the download fails, the file's SHA-256 is not the pinned one, the
+    archive lacks the named member, or its content is not the expected GeoJSON.
+    ``details`` carries only codes, digests and counts, never file content.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+
+class BoundaryCoverageInvalidError(ValidationError):
+    """A region's district polygons do not form a valid coverage; nothing is published.
+
+    The polygons overlap, or leave a gap narrower than the outline clearance between
+    them (a digitising error rather than unmapped land). Shared edges computed from
+    such a coverage may miss stretches or follow the gap's sides, so a load refuses to
+    publish them unless the operator explicitly allows it (ADR 0021). ``details``
+    carries the source district codes whose outlines are invalid.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_districts(cls, source_codes: tuple[str, ...]) -> Self:
+        """Build the error for the districts whose outlines break the coverage.
+
+        Args:
+            source_codes: The dataset's codes of those districts, sorted.
+
+        Returns:
+            The error, with ``reason`` and the codes in ``details``.
+        """
+        return cls(
+            "the district polygons do not form a valid coverage (overlaps, or gaps "
+            "narrower than the outline clearance)",
+            details={"reason": "invalid_coverage", "districts": list(source_codes)},
+        )

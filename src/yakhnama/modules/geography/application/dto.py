@@ -2,17 +2,27 @@
 
 DTOs are frozen and carry only values readers need. ``from_entity`` builds them from
 the aggregate for in-memory implementations; the SQL query service builds them from
-selected columns instead, with the same field meanings. Geometry is not part of these
-DTOs: boundaries can hold many thousands of positions and get their own read model
-once a boundary source is chosen (open question Q1).
+selected columns instead, with the same field meanings. A place's footprint is not
+part of these DTOs: a boundary can hold many thousands of positions and its outer
+edge may trace a border that must never be drawn. The only boundary read model is
+the shared district edges (``DistrictEdgeFeatureCollection``, ADR 0021).
 
 Patterns: DTO.
 """
 
-from typing import Final, Self
+from typing import Final, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from yakhnama.modules.geography.domain.boundaries import (
+    BoundaryAttribution,
+    DistrictEdgeSet,
+    DistrictMatch,
+    EdgeGeoJson,
+    Sha256Hex,
+    SharedEdge,
+    SourceDistrictCode,
+)
 from yakhnama.modules.geography.domain.entities import PLACE_MAX_NAMES, Place
 from yakhnama.modules.geography.domain.value_objects import (
     AdminLevel,
@@ -222,3 +232,198 @@ class LoadReport(BaseModel):
     def is_unchanged(self) -> bool:
         """Return ``True`` if the load created and updated nothing."""
         return not self.created and not self.updated
+
+
+class DistrictEdgeProperties(BaseModel):
+    """The ``properties`` of one shared-edge feature.
+
+    Implements: DTO.
+
+    Attributes:
+        districts: The gazetteer codes of the two districts, ``null`` for a
+            district the gazetteer does not have yet.
+        source_districts: The same two districts' codes in the boundary dataset,
+            in the same order.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    districts: tuple[PlaceCode | None, PlaceCode | None]
+    source_districts: tuple[SourceDistrictCode, SourceDistrictCode]
+
+
+class DistrictEdgeFeature(BaseModel):
+    """One shared edge as a GeoJSON ``Feature`` (RFC 7946).
+
+    Implements: DTO.
+
+    Attributes:
+        type: Always ``Feature``.
+        geometry: A LineString or MultiLineString; never a polygon.
+        properties: Which districts the edge separates.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["Feature"]
+    geometry: EdgeGeoJson
+    properties: DistrictEdgeProperties
+
+
+class DistrictEdgeFeatureCollection(BaseModel):
+    """Every shared district edge as a GeoJSON ``FeatureCollection``.
+
+    ``attribution`` is a foreign member (RFC 7946 §6.1) every consumer must show
+    with the lines; it is ``null`` only when no boundaries are loaded, and then
+    ``features`` is empty.
+
+    Implements: DTO.
+
+    Attributes:
+        type: Always ``FeatureCollection``.
+        features: One feature per pair of districts that share an edge.
+        attribution: The source, licence and version of the data.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["FeatureCollection"]
+    features: tuple[DistrictEdgeFeature, ...]
+    attribution: BoundaryAttribution | None
+
+    @classmethod
+    def empty(cls) -> Self:
+        """Return the collection served while no boundaries are loaded.
+
+        Returns:
+            A collection without features or attribution.
+        """
+        return cls(type="FeatureCollection", features=(), attribution=None)
+
+    @classmethod
+    def from_edge_set(cls, edge_set: DistrictEdgeSet) -> Self:
+        """Build the published collection of an edge set.
+
+        Args:
+            edge_set: The snapshot.
+
+        Returns:
+            One feature per edge, in the snapshot's order, with its attribution.
+        """
+        return cls(
+            type="FeatureCollection",
+            features=tuple(
+                DistrictEdgeFeature(
+                    type="Feature",
+                    geometry=edge.geometry.geojson,
+                    properties=DistrictEdgeProperties(
+                        districts=edge.place_codes,
+                        source_districts=edge.source_codes,
+                    ),
+                )
+                for edge in edge_set.edges
+            ),
+            attribution=edge_set.attribution,
+        )
+
+
+class DistrictEdgeSnapshot(BaseModel):
+    """The current edge set's identity and its published collection.
+
+    Implements: DTO.
+
+    Attributes:
+        edge_set_id: The snapshot's id; it names the representation in ``ETag``.
+        collection: What the public route returns.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    edge_set_id: EntityId
+    collection: DistrictEdgeFeatureCollection
+
+
+class SharedEdgeComputation(BaseModel):
+    """What the shared-edge calculation produced from one boundary set.
+
+    Implements: DTO.
+
+    Attributes:
+        edges: The shared edges, sorted by pair of districts.
+        is_coverage_valid: Whether the polygons formed a clean coverage (no
+            overlaps, matching vertices on shared edges, no gap between districts
+            narrower than the outline clearance); edges from an invalid coverage
+            may miss stretches where the polygons do not meet.
+        invalid_coverage_districts: The dataset codes of the districts whose
+            outlines break the coverage, sorted; empty when it is valid.
+        dropped_parts: Line parts dropped as too short to draw.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    edges: tuple[SharedEdge, ...]
+    is_coverage_valid: bool
+    invalid_coverage_districts: tuple[SourceDistrictCode, ...] = ()
+    dropped_parts: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _check_coverage_agrees(self) -> Self:
+        if self.is_coverage_valid and self.invalid_coverage_districts:
+            message = "a valid coverage has no invalid districts"
+            raise ValueError(message)
+        return self
+
+
+class BoundaryLoadReport(BaseModel):
+    """What one district boundary load did, for the operator.
+
+    Implements: DTO.
+
+    Attributes:
+        dry_run: Whether every change was rolled back.
+        dataset_version: The dataset's own version.
+        sha256: The digest of the file that was read.
+        region_code: The region's code in the dataset.
+        districts_in_source: How many districts of the region the file has.
+        match: How they line up with the link table and the gazetteer.
+        is_coverage_valid: Whether the polygons formed a clean coverage.
+        invalid_coverage_districts: The districts that break it, if any; a load
+            with any is refused unless the operator allowed it.
+        dropped_parts: Line parts dropped as too short to draw.
+        edges: How many shared edges the snapshot holds.
+        edges_with_unlinked_district: Of those, how many touch an unlinked district.
+        positions: The vertex count of every edge together.
+        payload_bytes: The size of the public route's JSON body.
+        geometry_updated: Places whose footprint was set or replaced.
+        geometry_unchanged: Places whose footprint already matched.
+        centroid_updated: Places whose centroid was set (or replaced, when the
+            previous load had set it) to the district's representative point.
+        centroid_unchanged: Places whose centroid already was that point.
+        centroid_kept: Places whose centroid came from another source and was
+            left alone.
+        edge_set_id: The current snapshot after the load.
+        is_edge_set_created: Whether this load added that snapshot.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dry_run: bool
+    dataset_version: str
+    sha256: Sha256Hex
+    region_code: SourceDistrictCode
+    districts_in_source: int = Field(ge=0)
+    match: DistrictMatch
+    is_coverage_valid: bool
+    invalid_coverage_districts: tuple[SourceDistrictCode, ...] = ()
+    dropped_parts: int = Field(ge=0)
+    edges: int = Field(ge=0)
+    edges_with_unlinked_district: int = Field(ge=0)
+    positions: int = Field(ge=0)
+    payload_bytes: int = Field(ge=0)
+    geometry_updated: tuple[PlaceCode, ...]
+    geometry_unchanged: tuple[PlaceCode, ...]
+    centroid_updated: tuple[PlaceCode, ...]
+    centroid_unchanged: tuple[PlaceCode, ...]
+    centroid_kept: tuple[PlaceCode, ...]
+    edge_set_id: EntityId
+    is_edge_set_created: bool

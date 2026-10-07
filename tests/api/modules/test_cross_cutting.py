@@ -22,6 +22,7 @@ ANONYMOUS_OPERATIONS: Final = frozenset(
         ("get", "/api/v1/impact-metrics/{code}"),
         ("get", "/api/v1/places"),
         ("get", "/api/v1/places/{place_id}"),
+        ("get", "/api/v1/boundaries/district-edges"),
         ("get", "/api/v1/organizations/{organization_id}"),
         # Phase 3: the public record and its provenance.
         ("get", "/api/v1/events"),
@@ -39,6 +40,13 @@ ANONYMOUS_OPERATIONS: Final = frozenset(
         ("get", "/api/v1/ingestion-runs/{run_id}"),
         ("get", "/api/v1/observations"),
         ("get", "/api/v1/raster-assets"),
+        # Phase 2 of the portal: guest reporting, which a capability guards instead
+        # of a bearer token (ADR 0020).
+        ("post", "/api/v1/guest-submissions/challenges"),
+        ("post", "/api/v1/guest-submissions"),
+        ("post", "/api/v1/guest-submissions/{submission_id}/media"),
+        ("post", "/api/v1/guest-submissions/{submission_id}/media/{asset_id}/complete"),
+        ("post", "/api/v1/guest-submissions/{submission_id}/report"),
     }
 )
 

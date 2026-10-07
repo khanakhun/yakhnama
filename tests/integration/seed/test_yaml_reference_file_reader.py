@@ -226,3 +226,14 @@ def test_reader_directory_in_place_of_file_raises_validation_error_unreadable(
     assert caught.value.details["reason"] == "unreadable"
     assert caught.value.details["error_type"] == "IsADirectoryError"
     assert str(tmp_path) not in _error_text(caught.value)
+
+
+def test_reader_reads_the_committed_district_boundary_source() -> None:
+    path = REFERENCE_DIRECTORY.parent / "boundaries" / "cod_ab_pak_gb_districts.yaml"
+
+    source = YamlReferenceFileReader(path.parent).read_district_boundary_source(
+        path.name
+    )
+
+    assert source.dataset == "cod-ab-pak"
+    assert source.region_code == "PK3"

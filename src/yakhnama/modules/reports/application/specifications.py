@@ -16,7 +16,12 @@ Patterns: Specification.
 from datetime import datetime
 
 from yakhnama.modules.reports.application.dto import ReportRecord
-from yakhnama.modules.reports.domain.value_objects import ReportStatus
+from yakhnama.modules.reports.domain.reviews import ReviewState
+from yakhnama.modules.reports.domain.value_objects import (
+    ReportChannel,
+    ReportStatus,
+    TriageFlagKind,
+)
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.privacy import PublicCoordinatePolicy
 from yakhnama.shared_kernel.specification import Specification
@@ -55,6 +60,42 @@ class ReportStatusSpecification(Specification[ReportRecord]):
             ``True`` if the statuses are equal.
         """
         return candidate.status is self._status
+
+
+class ReportChannelSpecification(Specification[ReportRecord]):
+    """Matches reports that reached the platform through one channel.
+
+    ``channel=guest`` is the moderators' guest queue (ADR 0020).
+
+    Implements: Specification.
+
+    Attributes:
+        channel: The channel to match.
+    """
+
+    def __init__(self, channel: ReportChannel) -> None:
+        """Create the specification.
+
+        Args:
+            channel: The channel to match.
+        """
+        self._channel = channel
+
+    @property
+    def channel(self) -> ReportChannel:
+        """Return the channel to match."""
+        return self._channel
+
+    def is_satisfied_by(self, candidate: ReportRecord) -> bool:
+        """Tell whether ``candidate`` came through the channel.
+
+        Args:
+            candidate: The report to test.
+
+        Returns:
+            ``True`` if the channels are equal.
+        """
+        return candidate.channel is self._channel
 
 
 class ReportHazardCodeSpecification(Specification[ReportRecord]):
@@ -240,3 +281,77 @@ class ReportReporterSpecification(Specification[ReportRecord]):
             ``True`` if the reporter ids are equal.
         """
         return candidate.reporter_id == self._reporter_id
+
+
+class ReportReviewStateSpecification(Specification[ReportRecord]):
+    """Matches reports whose lineage carries one review mark (moderators only).
+
+    A lineage nobody has marked is ``new``, so ``new`` matches reports without a
+    stored review as well (ADR 0022).
+
+    Implements: Specification.
+
+    Attributes:
+        state: The mark to match.
+    """
+
+    def __init__(self, state: ReviewState) -> None:
+        """Create the specification.
+
+        Args:
+            state: The mark to match.
+        """
+        self._state = state
+
+    @property
+    def state(self) -> ReviewState:
+        """Return the mark to match."""
+        return self._state
+
+    def is_satisfied_by(self, candidate: ReportRecord) -> bool:
+        """Tell whether ``candidate``'s lineage carries the mark.
+
+        Args:
+            candidate: The report to test.
+
+        Returns:
+            ``True`` if the stored state (``new`` without one) is the state.
+        """
+        review = candidate.review
+        current = ReviewState.NEW if review is None else review.state
+        return current is self._state
+
+
+class ReportTriageFlagSpecification(Specification[ReportRecord]):
+    """Matches reports whose latest triage raised one kind of flag (moderators only).
+
+    Implements: Specification.
+
+    Attributes:
+        kind: The flag kind to match.
+    """
+
+    def __init__(self, kind: TriageFlagKind) -> None:
+        """Create the specification.
+
+        Args:
+            kind: The flag kind to match.
+        """
+        self._kind: TriageFlagKind = kind
+
+    @property
+    def kind(self) -> TriageFlagKind:
+        """Return the flag kind to match."""
+        return self._kind
+
+    def is_satisfied_by(self, candidate: ReportRecord) -> bool:
+        """Tell whether ``candidate``'s triage raised a flag of the kind.
+
+        Args:
+            candidate: The report to test.
+
+        Returns:
+            ``False`` for a report not triaged yet.
+        """
+        triage = candidate.triage
+        return triage is not None and self._kind in triage.kinds

@@ -3,7 +3,8 @@
 **Submission** (``SubmitReportHandler``) spans three modules that never share a
 transaction, so it runs as ordered steps, each safe to repeat:
 
-1. the policy is checked before anything is read (deny by default);
+1. the policy is checked before anything is read (deny by default); an assisted
+   submission (ADR 0019) also needs ``CanReportOnBehalf``;
 2. if a report with the client's id exists, the call is a retry: the stored
    report is returned and nothing else happens (no source, no event, no task);
 3. the attached media are checked to be the reporter's own;
@@ -24,10 +25,18 @@ the robust trigger).
 **Corrections** follow the domain's two-step pattern: ``revise`` returns the new
 revision and ``mark_superseded`` the old one, both saved in one unit of work.
 
+**Review marks** (ADR 0022) change only the lineage's ``ReportReview``, never the
+report: ``MarkReportReviewHandler`` loads the report to learn its lineage and
+revision, checks ``expected_version`` against the review (0 while unmarked)
+inside the unit of work, and records the mark. ``MarkReportReviewsHandler``
+applies one mark to many reports, each in its own unit of work, and reports what
+happened to each instead of failing them all.
+
 Patterns: Command Handler, Unit of Work, Policy, Domain Events, Chain of
 Responsibility.
 """
 
+from collections.abc import Iterable, Sequence
 from typing import Final
 
 from yakhnama.modules.provenance.public import (
@@ -39,18 +48,27 @@ from yakhnama.modules.provenance.public import (
     SourceType,
 )
 from yakhnama.modules.reports.application.authorisation import (
+    assisted_submit_policy,
     reporter_policy,
     require_allowed,
     require_user,
+    review_policy,
     submit_policy,
 )
 from yakhnama.modules.reports.application.commands import (
+    MarkReportReview,
+    MarkReportReviews,
     ReviseReport,
     RunTriage,
     SubmitReport,
     WithdrawReport,
 )
-from yakhnama.modules.reports.application.dto import ReportDetail
+from yakhnama.modules.reports.application.dto import (
+    BulkReviewResult,
+    ReportDetail,
+    ReviewMarkResult,
+    ReviewOutcome,
+)
 from yakhnama.modules.reports.application.ports import (
     RUN_TRIAGE_TASK,
     MediaOwnershipChecker,
@@ -61,8 +79,20 @@ from yakhnama.modules.reports.application.ports import (
 )
 from yakhnama.modules.reports.application.queries import FindNearbyReports
 from yakhnama.modules.reports.domain.entities import Report
-from yakhnama.modules.reports.domain.errors import ReportNotFoundError
-from yakhnama.modules.reports.domain.factories import ReportFactory
+from yakhnama.modules.reports.domain.errors import (
+    ReportNotFoundError,
+    ReviewReasonRequiredError,
+)
+from yakhnama.modules.reports.domain.factories import (
+    ReportFactory,
+    ReportReviewFactory,
+)
+from yakhnama.modules.reports.domain.reviews import (
+    LineagePosition,
+    ReportReview,
+    ReviewMarkRequest,
+    ReviewState,
+)
 from yakhnama.modules.reports.domain.triage import (
     DUPLICATE_DISTANCE_METRES,
     DUPLICATE_TIME_WINDOW,
@@ -72,14 +102,17 @@ from yakhnama.modules.reports.domain.triage import (
 )
 from yakhnama.modules.reports.domain.value_objects import (
     ReportAttribution,
+    ReportChannel,
     ReportContent,
     TriageResult,
 )
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import (
     ConflictError,
+    InvariantViolationError,
     PermissionDeniedError,
     PreconditionFailedError,
+    YakhnamaError,
 )
 from yakhnama.shared_kernel.ids import EntityId, IdGenerator
 from yakhnama.shared_kernel.tasks import TaskQueue
@@ -93,14 +126,27 @@ CITIZEN_SOURCE_TITLE: Final = "Community report"
 ORGANISATION_SOURCE_TITLE: Final = "Organisation report"
 CITIZEN_SOURCE_CITATION: Final = "Yakhnama community report"
 ORGANISATION_SOURCE_CITATION: Final = "Yakhnama organisation report"
+# An assisted report's source says that the observation came through someone who
+# entered it for the observer (ADR 0019); it still names nobody.
+ASSISTED_CITIZEN_SOURCE_TITLE: Final = "Assisted community report"
+ASSISTED_ORGANISATION_SOURCE_TITLE: Final = "Assisted organisation report"
+ASSISTED_CITIZEN_SOURCE_CITATION: Final = "Yakhnama assisted community report"
+ASSISTED_ORGANISATION_SOURCE_CITATION: Final = "Yakhnama assisted organisation report"
+
+_SOURCE_DETAILS: Final = {
+    (False, False): (CITIZEN_SOURCE_TITLE, CITIZEN_SOURCE_CITATION),
+    (True, False): (ORGANISATION_SOURCE_TITLE, ORGANISATION_SOURCE_CITATION),
+    (False, True): (ASSISTED_CITIZEN_SOURCE_TITLE, ASSISTED_CITIZEN_SOURCE_CITATION),
+    (True, True): (
+        ASSISTED_ORGANISATION_SOURCE_TITLE,
+        ASSISTED_ORGANISATION_SOURCE_CITATION,
+    ),
+}
 
 
-def _source_details(*, is_organisation: bool) -> SourceDetails:
-    if is_organisation:
-        return SourceDetails(
-            title=ORGANISATION_SOURCE_TITLE, citation=ORGANISATION_SOURCE_CITATION
-        )
-    return SourceDetails(title=CITIZEN_SOURCE_TITLE, citation=CITIZEN_SOURCE_CITATION)
+def _source_details(*, is_organisation: bool, is_assisted: bool) -> SourceDetails:
+    title, citation = _SOURCE_DETAILS[is_organisation, is_assisted]
+    return SourceDetails(title=title, citation=citation)
 
 
 async def _load_report(uow: ReportsUnitOfWork, report_id: EntityId) -> Report:
@@ -121,11 +167,22 @@ def _check_version(expected: int | None, current: int) -> None:
         )
 
 
-async def _require_own_media(
+async def require_own_media(
     checker: MediaOwnershipChecker, content: ReportContent, reporter_id: EntityId
 ) -> None:
-    # Attaching someone else's asset would publish their photo under this report
-    # and feed their EXIF position into this report's triage.
+    """Refuse content that attaches media the reporter did not upload.
+
+    Attaching someone else's asset would publish their photo under this report
+    and feed their EXIF position into this report's triage.
+
+    Args:
+        checker: Answers who owns the assets.
+        content: The report content.
+        reporter_id: The reporter: a user, or a guest submission.
+
+    Raises:
+        PermissionDeniedError: If an attached asset is not the reporter's.
+    """
     if content.media_ids and not await checker.is_owned_by(
         content.media_ids, reporter_id
     ):
@@ -135,9 +192,17 @@ async def _require_own_media(
         )
 
 
-async def _enqueue_triage(task_queue: TaskQueue, report_id: EntityId) -> None:
-    # The key names the report, so a repeated enqueue of the same revision is
-    # recognisable; a new revision has a new id and is triaged on its own.
+async def enqueue_triage(task_queue: TaskQueue, report_id: EntityId) -> None:
+    """Schedule the triage of one report revision.
+
+    The idempotency key names the report, so a repeated enqueue of the same
+    revision is recognisable; a new revision has a new id and is triaged on its
+    own.
+
+    Args:
+        task_queue: The task queue.
+        report_id: The report revision.
+    """
     await task_queue.enqueue(
         RUN_TRIAGE_TASK,
         {"report_id": report_id},
@@ -192,7 +257,8 @@ class SubmitReportHandler:
 
         Raises:
             PermissionDeniedError: If the actor is anonymous, not a member of the
-                named organisation, or attaches media they did not upload.
+                named organisation, may not report on behalf of someone else, or
+                attaches media they did not upload.
             ConflictError: If the client id was used before by another reporter,
                 with other content or for another organisation, or concurrently.
         """
@@ -202,11 +268,17 @@ class SubmitReportHandler:
             command.actor,
             action="submit reports",
         )
+        if command.assisted is not None:
+            require_allowed(
+                assisted_submit_policy(command.organization_id),
+                command.actor,
+                action="report on behalf of another person",
+            )
         async with self._uow_factory() as uow:
             existing = await uow.reports.get(command.client_report_id)
         if existing is not None:
             return self._replay(existing, command)
-        await _require_own_media(self._media_checker, command.content, reporter_id)
+        await require_own_media(self._media_checker, command.content, reporter_id)
         source = await self._source_registrar(
             RegisterSource(
                 actor=command.actor,
@@ -216,7 +288,8 @@ class SubmitReportHandler:
                     else SourceType.ORGANISATION
                 ),
                 details=_source_details(
-                    is_organisation=command.organization_id is not None
+                    is_organisation=command.organization_id is not None,
+                    is_assisted=command.assisted is not None,
                 ),
                 organization_id=command.organization_id,
             )
@@ -225,6 +298,12 @@ class SubmitReportHandler:
             reporter_id=reporter_id,
             organization_id=command.organization_id,
             source_id=source.id,
+            channel=(
+                ReportChannel.ACCOUNT
+                if command.assisted is None
+                else ReportChannel.ASSISTED
+            ),
+            assisted=command.assisted,
         )
         async with self._uow_factory() as uow:
             report = (
@@ -243,16 +322,18 @@ class SubmitReportHandler:
         await self._source_marker(
             MarkSourceReferenced(actor=command.actor, source_id=source.id)
         )
-        await _enqueue_triage(self._task_queue, report.id)
+        await enqueue_triage(self._task_queue, report.id)
         return ReportDetail.for_reporter(report)
 
     @staticmethod
     def _replay(existing: Report, command: SubmitReport) -> ReportDetail:
-        # A retry carries the same reporter, organisation and content. Anything else
-        # is a different report reusing the id, refused without saying whose it is.
+        # A retry carries the same reporter, organisation, assistance and content.
+        # Anything else is a different report reusing the id, refused without
+        # saying whose it is.
         is_retry = (
             existing.reporter_id == command.actor.user_id
             and existing.organization_id == command.organization_id
+            and existing.assisted == command.assisted
             and existing.revision == 1
             and existing.content == command.content
         )
@@ -319,7 +400,7 @@ class ReviseReportHandler:
                 action="revise this report",
             )
             _check_version(command.expected_version, current.version)
-            await _require_own_media(
+            await require_own_media(
                 self._media_checker, command.content, current.reporter_id
             )
             revision = current.revise(
@@ -331,7 +412,7 @@ class ReviseReportHandler:
             await uow.reports.add(revision)
             await uow.reports.save(superseded)
             await uow.commit()
-        await _enqueue_triage(self._task_queue, revision.id)
+        await enqueue_triage(self._task_queue, revision.id)
         return ReportDetail.for_reporter(revision)
 
 
@@ -469,3 +550,217 @@ class RunTriageHandler:
                 await uow.reports.save(change.record_into(uow))
             await uow.commit()
         return result
+
+
+class MarkReportReviewHandler:
+    """Mark a report's lineage ``new``, ``reviewed`` or ``archived``; moderators only.
+
+    The report is read, never written: its status, content and its reporter's
+    rights do not change (ADR 0022).
+
+    Implements: Command Handler.
+    """
+
+    def __init__(
+        self, uow_factory: ReportsUnitOfWorkFactory, clock: Clock, ids: IdGenerator
+    ) -> None:
+        """Create the handler.
+
+        Args:
+            uow_factory: Opens a reports unit of work per call.
+            clock: Source of the mark's time.
+            ids: Source of mark and event ids.
+        """
+        self._uow_factory = uow_factory
+        self._clock = clock
+        self._ids = ids
+
+    async def __call__(self, command: MarkReportReview) -> ReviewMarkResult:
+        """Record the mark, or nothing if it repeats the last one.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            ``marked`` or ``unchanged``, with the lineage, its state and the
+            review's version afterwards.
+
+        Raises:
+            PermissionDeniedError: If the actor may not moderate.
+            ReportNotFoundError: If the report does not exist.
+            PreconditionFailedError: If ``expected_version`` is stale.
+            ReviewReasonRequiredError: If the move needs a reason and has none.
+            ReviewRevisionSupersededError: If the report is a revision older than
+                the one the lineage was last marked on.
+            ConflictError: If another mark of the lineage was stored meanwhile.
+        """
+        require_allowed(review_policy(), command.actor, action="mark reports")
+        actor_id = require_user(command.actor, action="mark reports")
+        async with self._uow_factory() as uow:
+            report = await _load_report(uow, command.report_id)
+            lineage_id = await uow.reports.lineage_of(report.id)
+            if lineage_id is None:
+                message = "a stored report has no lineage"
+                raise InvariantViolationError(
+                    message, details={"report_id": str(report.id)}
+                )
+            review = await uow.report_reviews.get(lineage_id)
+            _check_version(
+                command.expected_version, 0 if review is None else review.version
+            )
+            request = ReviewMarkRequest(
+                state=command.state,
+                reason=command.reason,
+                report_id=report.id,
+                revision=report.revision,
+                actor_id=actor_id,
+            )
+            stored, outcome = await self._mark(uow, lineage_id, review, request)
+            await uow.commit()
+        return ReviewMarkResult(
+            report_id=report.id,
+            lineage_id=lineage_id,
+            outcome=outcome,
+            state=ReviewState.NEW if stored is None else stored.state,
+            version=0 if stored is None else stored.version,
+        )
+
+    async def locate(
+        self, report_ids: Sequence[EntityId]
+    ) -> tuple[LineagePosition, ...]:
+        """Return the lineage and revision of each stored report, in one read.
+
+        Args:
+            report_ids: Any revisions.
+
+        Returns:
+            One position per stored id; missing ids are left out.
+        """
+        async with self._uow_factory() as uow:
+            return await uow.reports.lineage_positions(report_ids)
+
+    async def _mark(
+        self,
+        uow: ReportsUnitOfWork,
+        lineage_id: EntityId,
+        review: ReportReview | None,
+        request: ReviewMarkRequest,
+    ) -> tuple[ReportReview | None, ReviewOutcome]:
+        if review is None:
+            first = ReportReviewFactory().first_mark(
+                lineage_id, request, clock=self._clock, ids=self._ids
+            )
+            if first is None:
+                return None, ReviewOutcome.UNCHANGED
+            created = first.record_into(uow)
+            await uow.report_reviews.add(created)
+            return created, ReviewOutcome.MARKED
+        change = review.mark(request, clock=self._clock, ids=self._ids)
+        if not change.events:
+            return review, ReviewOutcome.UNCHANGED
+        changed = change.record_into(uow)
+        await uow.report_reviews.save(changed)
+        return changed, ReviewOutcome.MARKED
+
+
+class MarkReportReviewsHandler:
+    """Apply one mark to many reports, each on its own; moderators only.
+
+    Not atomic on purpose: one report that is missing, needs a reason it was not
+    given (for example an archived one being marked ``reviewed``), is being
+    marked by someone else at the same moment or is refused by the domain for
+    any other reason must not keep the others from being marked. Every report
+    gets its own result. Only a failure outside the domain (the database going
+    away) aborts the batch, with the reports before it already marked.
+
+    Revisions of one lineage are collapsed (ADR 0022, amended): the lineage is
+    marked once, on the newest revision the request names, and every id of it
+    gets that one result.
+
+    Implements: Command Handler.
+    """
+
+    def __init__(self, mark_one: MarkReportReviewHandler) -> None:
+        """Create the handler.
+
+        Args:
+            mark_one: Marks one report and locates revisions in their lineages.
+        """
+        self._mark_one = mark_one
+
+    async def __call__(self, command: MarkReportReviews) -> BulkReviewResult:
+        """Mark every lineage once and say what happened to each report.
+
+        Args:
+            command: The validated command.
+
+        Returns:
+            One result per report, in request order.
+
+        Raises:
+            PermissionDeniedError: If the actor may not moderate; checked once,
+                before any report is read.
+        """
+        require_allowed(review_policy(), command.actor, action="mark reports")
+        positions = {
+            position.report_id: position
+            for position in await self._mark_one.locate(command.report_ids)
+        }
+        newest = _newest_per_lineage(positions.values())
+        by_lineage: dict[EntityId, ReviewMarkResult] = {}
+        results: list[ReviewMarkResult] = []
+        # One after the other, not gathered: each opens its own unit of work and
+        # the order of the results is the order of the request.
+        for report_id in command.report_ids:
+            position = positions.get(report_id)
+            if position is None:
+                results.append(await self._mark(command, report_id))
+                continue
+            lineage_result = by_lineage.get(position.lineage_id)
+            if lineage_result is None:
+                lineage_result = await self._mark(command, newest[position.lineage_id])
+                by_lineage[position.lineage_id] = lineage_result
+            results.append(lineage_result.model_copy(update={"report_id": report_id}))
+        return BulkReviewResult(items=tuple(results))
+
+    async def _mark(
+        self, command: MarkReportReviews, report_id: EntityId
+    ) -> ReviewMarkResult:
+        failure: ReviewOutcome
+        try:
+            return await self._mark_one(
+                MarkReportReview(
+                    actor=command.actor,
+                    report_id=report_id,
+                    state=command.state,
+                    reason=command.reason,
+                )
+            )
+        except ReportNotFoundError:
+            failure = ReviewOutcome.NOT_FOUND
+        except ReviewReasonRequiredError:
+            failure = ReviewOutcome.REASON_REQUIRED
+        except ConflictError:
+            failure = ReviewOutcome.CONFLICT
+        except YakhnamaError:
+            # Any other domain refusal stays this report's: its unit of work
+            # rolled back, and the others go on.
+            failure = ReviewOutcome.ERROR
+        return ReviewMarkResult(
+            report_id=report_id,
+            lineage_id=None,
+            outcome=failure,
+            state=None,
+            version=None,
+        )
+
+
+def _newest_per_lineage(
+    positions: Iterable[LineagePosition],
+) -> dict[EntityId, EntityId]:
+    newest: dict[EntityId, LineagePosition] = {}
+    for position in positions:
+        current = newest.get(position.lineage_id)
+        if current is None or position.revision > current.revision:
+            newest[position.lineage_id] = position
+    return {lineage_id: found.report_id for lineage_id, found in newest.items()}

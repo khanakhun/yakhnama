@@ -13,14 +13,19 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from yakhnama.modules.identity.application.dto import MemberSummary
+from yakhnama.modules.identity.application.dto import MemberSummary, ModeratorSummary
 from yakhnama.modules.identity.domain.value_objects import (
     DisplayName,
     OrganizationName,
     OrganizationSlug,
     StatusReason,
 )
-from yakhnama.modules.identity.public import OrganizationRole, OrganizationType, Role
+from yakhnama.modules.identity.public import (
+    MODERATOR_DIRECTORY_MAX,
+    OrganizationRole,
+    OrganizationType,
+    Role,
+)
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import (
     DEFAULT_PAGE_LIMIT,
@@ -184,3 +189,20 @@ class ModerationStatus(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     status: Literal["ok"] = "ok"
+
+
+class ModeratorDirectory(BaseModel):
+    """Body of ``GET /api/v1/moderation/moderators``: who a case can be assigned to.
+
+    Active moderators and administrators, by display name then id, at most 500.
+    Each entry is an id and an optional display name; no e-mail, issuer or subject.
+
+    Implements: API Schema.
+
+    Attributes:
+        items: The directory entries.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    items: tuple[ModeratorSummary, ...] = Field(max_length=MODERATOR_DIRECTORY_MAX)

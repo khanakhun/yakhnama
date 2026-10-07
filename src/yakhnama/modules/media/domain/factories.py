@@ -12,7 +12,7 @@ from yakhnama.modules.media.domain.value_objects import (
 )
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.events import AggregateChange
-from yakhnama.shared_kernel.ids import IdGenerator
+from yakhnama.shared_kernel.ids import EntityId, IdGenerator
 
 
 class MediaAssetFactory:
@@ -28,6 +28,7 @@ class MediaAssetFactory:
         *,
         clock: Clock,
         ids: IdGenerator,
+        asset_id: EntityId | None = None,
     ) -> AggregateChange[MediaAsset]:
         """Create an asset in ``requested`` state with its private original key.
 
@@ -39,13 +40,15 @@ class MediaAssetFactory:
             mime_type: The media type the uploader declares; checked again against
                 the file's content at completion.
             clock: Source of every timestamp.
-            ids: Source of the asset id and the event id.
+            ids: Source of the asset id (unless given) and the event id.
+            asset_id: The id to give the asset, when the caller reserved it in
+                advance (a guest's photo slot names its asset, ADR 0020).
 
         Returns:
             The new asset and ``UploadRequested``.
         """
         now = clock.now()
-        asset_id = ids.new_id()
+        asset_id = ids.new_id() if asset_id is None else asset_id
         asset = MediaAsset(
             id=asset_id,
             owner_id=attribution.owner_id,

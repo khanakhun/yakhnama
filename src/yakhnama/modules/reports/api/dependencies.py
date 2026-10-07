@@ -22,15 +22,23 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from yakhnama.modules.identity.public import (
     Actor,
+    CanModerate,
     EnsureUserFromPrincipal,
     EnsureUserFromPrincipalHandler,
     ExternalIdentity,
     IdentityUnitOfWorkFactory,
     Role,
+    require_allowed,
 )
 from yakhnama.modules.reports.public import (
     AuthorisedReportQueryService,
+    CompleteGuestMediaUploadHandler,
+    IssueGuestChallengeHandler,
+    OpenGuestSubmissionHandler,
+    ReportsUnitOfWorkFactory,
+    RequestGuestMediaUploadHandler,
     ReviseReportHandler,
+    SubmitGuestReportHandler,
     SubmitReportHandler,
     WithdrawReportHandler,
 )
@@ -79,6 +87,11 @@ class ReportsApiServices(Protocol):
         ...
 
     @property
+    def reports_uow_factory(self) -> ReportsUnitOfWorkFactory:
+        """Return the reports unit-of-work factory, for the review use cases."""
+        ...
+
+    @property
     def submit_report_handler(self) -> SubmitReportHandler:
         """Return the submit-report use case."""
         ...
@@ -96,6 +109,33 @@ class ReportsApiServices(Protocol):
     @property
     def report_queries(self) -> AuthorisedReportQueryService:
         """Return the authorised report query service."""
+        ...
+
+    @property
+    def issue_guest_challenge_handler(self) -> IssueGuestChallengeHandler:
+        """Return the guest challenge use case."""
+        ...
+
+    @property
+    def open_guest_submission_handler(self) -> OpenGuestSubmissionHandler:
+        """Return the open-guest-submission use case."""
+        ...
+
+    @property
+    def request_guest_media_upload_handler(self) -> RequestGuestMediaUploadHandler:
+        """Return the guest upload-grant use case."""
+        ...
+
+    @property
+    def complete_guest_media_upload_handler(
+        self,
+    ) -> CompleteGuestMediaUploadHandler:
+        """Return the guest upload-completion use case."""
+        ...
+
+    @property
+    def submit_guest_report_handler(self) -> SubmitGuestReportHandler:
+        """Return the guest report use case."""
         ...
 
 
@@ -168,3 +208,44 @@ async def current_actor(
 
 
 CurrentActor = Annotated[Actor, Depends(current_actor)]
+
+
+def moderator_actor(actor: CurrentActor) -> Actor:
+    """Return the caller's actor if they may moderate.
+
+    Every ``/moderation`` route depends on this before anything is read, so a
+    non-moderator learns nothing about the resource.
+
+    Args:
+        actor: The authenticated caller.
+
+    Returns:
+        The same actor.
+
+    Raises:
+        PermissionDeniedError: If ``CanModerate`` refuses the caller.
+    """
+    require_allowed(CanModerate(), actor, action="use the moderation API")
+    return actor
+
+
+ModeratorActor = Annotated[Actor, Depends(moderator_actor)]
+
+
+def require_valid_credentials(request: Request) -> None:
+    """Refuse a request whose bearer token was presented but rejected.
+
+    The guest routes need no token; this keeps the API-wide rule that a rejected
+    token is never treated as an anonymous call (``platform/auth/resolution.py``),
+    without declaring the bearer scheme on them.
+
+    Args:
+        request: The current request, after principal resolution.
+
+    Raises:
+        YakhnamaError: The stored ``AuthenticationError`` (401) or the identity
+            provider's 503.
+    """
+    error = get_principal_resolution(request.scope).error
+    if error is not None:
+        raise error

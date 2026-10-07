@@ -118,7 +118,8 @@ class MediaAsset(BaseModel):
 
     Attributes:
         id: Stable identity (UUIDv7).
-        owner_id: The uploading user.
+        owner_id: The uploading user, or the guest submission that owns a
+            guest's photo (ADR 0020); both are UUIDv7 ids from one generator.
         report_id: The report the asset belongs to, or ``None``.
         source_id: The ``provenance`` source the asset is attributed to.
         original_key: Storage key of the private original.

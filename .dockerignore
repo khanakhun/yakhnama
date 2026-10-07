@@ -1,0 +1,24 @@
+# Build context of the production image (Dockerfile, ADR 0023). Allow-list: everything
+# is excluded, then only what the image copies is let back in. A new runtime file must
+# be added here and to the Dockerfile together.
+*
+
+!pyproject.toml
+!poetry.lock
+!README.md
+!LICENSE
+!alembic.ini
+!src/
+!migrations/
+!data/reference/
+!data/boundaries/
+!data/fixtures/ingestion/
+
+# Never, even inside the allowed directories.
+**/__pycache__/
+**/*.py[cod]
+**/.mypy_cache/
+**/.ruff_cache/
+**/.pytest_cache/
+**/.env
+**/.env.*

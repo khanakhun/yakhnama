@@ -14,6 +14,14 @@ withdrawals carry the reporter's ``If-Match`` into the command's
 ``expected_version``, so a stale tag is refused inside the unit of work (412), and
 a missing one is 428.
 
+``moderation_router`` serves the moderators' review marks (ADR 0022) under
+``/api/v1/moderation/reports``: reading a lineage's mark and history, marking one
+report and marking many. A mark is versioned on its own (ETag
+``"<lineage_id>:<version>"``, version 0 while unmarked) and never changes the report
+or its ETag. ``If-Match`` is optional on these routes, as on the other moderation
+routes (Q66); when sent, it is checked against the review's version inside the
+unit of work, so a concurrent mark cannot slip in between (unlike Q155).
+
 Errors are never mapped here: handlers and query services raise ``YakhnamaError``
 subclasses and the exception handlers in ``main.py`` render Problem Details.
 
@@ -27,9 +35,15 @@ from uuid import UUID
 from fastapi import APIRouter, Header, Query, Response, status
 from geojson_pydantic import Feature, FeatureCollection, Point
 
-from yakhnama.modules.reports.api.dependencies import CurrentActor, Services
+from yakhnama.modules.reports.api.dependencies import (
+    CurrentActor,
+    ModeratorActor,
+    Services,
+)
 from yakhnama.modules.reports.api.schemas import (
+    BulkMarkReviewRequest,
     ListReportsParameters,
+    MarkReviewRequest,
     ReportFeatureProperties,
     ReportFormat,
     ReportPage,
@@ -38,14 +52,22 @@ from yakhnama.modules.reports.api.schemas import (
     WithdrawReportRequest,
 )
 from yakhnama.modules.reports.public import (
+    BulkReviewResult,
     GetReport,
+    GetReportReview,
     ListReports,
+    MarkReportReview,
+    MarkReportReviewHandler,
+    MarkReportReviews,
+    MarkReportReviewsHandler,
     ReportDetail,
+    ReportReviewDetail,
     ReviseReport,
     SubmitReport,
     WithdrawReport,
 )
 from yakhnama.platform.etag import expected_version_from_if_match, make_etag, set_etag
+from yakhnama.platform.openapi_headers import ETAG, LINK, LOCATION, header_responses
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
 
@@ -74,16 +96,24 @@ _COMMON_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_429_TOO_MANY_REQUESTS: _PROBLEM,
     status.HTTP_503_SERVICE_UNAVAILABLE: _PROBLEM,
 }
-_CHANGE_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
+_OPTIONAL_IF_MATCH_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_404_NOT_FOUND: _PROBLEM,
     status.HTTP_409_CONFLICT: _PROBLEM,
     status.HTTP_412_PRECONDITION_FAILED: _PROBLEM,
+}
+_CHANGE_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
+    **_OPTIONAL_IF_MATCH_RESPONSES,
     status.HTTP_428_PRECONDITION_REQUIRED: _PROBLEM,
 }
 
 ReportFeature = Feature[Point, ReportFeatureProperties]
 
 router = APIRouter(prefix=API_PREFIX, tags=["reports"], responses=_COMMON_RESPONSES)
+moderation_router = APIRouter(
+    prefix=f"{API_PREFIX}/moderation",
+    tags=["moderation"],
+    responses=_COMMON_RESPONSES,
+)
 
 AcceptHeader = Annotated[str | None, Header(max_length=ACCEPT_MAX_LENGTH)]
 IfMatch = Annotated[
@@ -92,6 +122,17 @@ IfMatch = Annotated[
         alias="If-Match",
         max_length=IF_MATCH_MAX_LENGTH,
         description='The report\'s ETag, for example "<id>:3".',
+    ),
+]
+ReviewIfMatch = Annotated[
+    str | None,
+    Header(
+        alias="If-Match",
+        max_length=IF_MATCH_MAX_LENGTH,
+        description=(
+            'Optional: the review\'s ETag, for example "<lineage_id>:2" '
+            "(version 0 while the lineage was never marked)."
+        ),
     ),
 ]
 IdempotencyKey = Annotated[
@@ -135,6 +176,7 @@ def _detail_response(response: Response, detail: ReportDetail) -> ReportDetail:
     responses={
         status.HTTP_400_BAD_REQUEST: _PROBLEM,
         status.HTTP_409_CONFLICT: _PROBLEM,
+        **header_responses(status.HTTP_201_CREATED, LOCATION, ETAG),
     },
 )
 async def submit_report(
@@ -146,8 +188,13 @@ async def submit_report(
 ) -> ReportDetail:
     """Submit a report; a retry with the same ``client_report_id`` returns it again.
 
+    With ``assisted`` the caller enters the report for a person without an
+    account and records their consent (trusted reporters, moderators, and
+    organisation members reporting for their organisation; others get 403).
+
     Args:
-        body: The client id, the observation and the optional organisation.
+        body: The client id, the observation, the optional organisation and the
+            optional assistance record.
         actor: The authenticated reporter.
         response: Used to set ``Location`` and ``ETag``.
         services: Use cases bound by the composition root.
@@ -163,6 +210,7 @@ async def submit_report(
             client_report_id=body.client_report_id,
             content=body.to_content(),
             organization_id=body.organization_id,
+            assisted=body.assisted,
         )
     )
     response.headers[LOCATION_HEADER] = f"{REPORTS_PATH}/{detail.id}"
@@ -172,7 +220,12 @@ async def submit_report(
 @router.get(
     "/reports",
     response_model=ReportPage,
-    responses={status.HTTP_200_OK: _GEOJSON_ALTERNATIVE},
+    responses={
+        status.HTTP_200_OK: {
+            **_GEOJSON_ALTERNATIVE,
+            **header_responses(status.HTTP_200_OK, LINK)[status.HTTP_200_OK],
+        }
+    },
 )
 async def list_reports(
     parameters: Annotated[ListReportsParameters, Query()],
@@ -183,7 +236,11 @@ async def list_reports(
 ) -> ReportPage | Response:
     """List reports with rounded positions, as JSON or GeoJSON.
 
-    Moderators see every report; anyone else only their own.
+    Moderators see every report, each lineage's review mark and each report's
+    triage flag kinds; anyone else only their own, without either.
+    ``channel=guest`` is the moderators' queue of reports from people without an
+    account; ``review_state`` and ``triage_flag`` (moderators only) their review
+    queues; ``reporter=me`` narrows any listing to the caller's own.
 
     Args:
         parameters: Validated filters, format, cursor and limit.
@@ -200,10 +257,14 @@ async def list_reports(
         ListReports(
             actor=actor,
             status=parameters.status,
+            channel=parameters.channel,
             hazard_code=parameters.hazard_code,
             bbox=parameters.bounding_box(),
             observed_from=parameters.observed_from,
             observed_to=parameters.observed_to,
+            review_state=parameters.review_state,
+            triage_flag=parameters.triage_flag,
+            is_own_only=parameters.reporter is not None,
             page=PageRequest(limit=parameters.limit, cursor=parameters.cursor),
         )
     )
@@ -236,7 +297,13 @@ async def list_reports(
     return ReportPage(items=page.items, next_cursor=page.next_cursor)
 
 
-@router.get("/reports/{report_id}", responses={status.HTTP_404_NOT_FOUND: _PROBLEM})
+@router.get(
+    "/reports/{report_id}",
+    responses={
+        status.HTTP_404_NOT_FOUND: _PROBLEM,
+        **header_responses(status.HTTP_200_OK, ETAG),
+    },
+)
 async def get_report(
     report_id: EntityId,
     actor: CurrentActor,
@@ -253,7 +320,8 @@ async def get_report(
 
     Returns:
         The exact view for the reporter and moderators, the rounded view for
-        members of the report's organisation.
+        members of the report's organisation. Moderators also get the review
+        mark and the linked events.
 
     Raises:
         ReportNotFoundError: If the report does not exist or the caller may not
@@ -268,7 +336,10 @@ async def get_report(
 @router.post(
     "/reports/{report_id}/revisions",
     status_code=status.HTTP_201_CREATED,
-    responses=_CHANGE_RESPONSES,
+    responses={
+        **_CHANGE_RESPONSES,
+        **header_responses(status.HTTP_201_CREATED, LOCATION, ETAG),
+    },
 )
 async def revise_report(  # noqa: PLR0913  # reason: FastAPI injects each input
     *,
@@ -308,7 +379,10 @@ async def revise_report(  # noqa: PLR0913  # reason: FastAPI injects each input
     return _detail_response(response, detail)
 
 
-@router.post("/reports/{report_id}/withdrawal", responses=_CHANGE_RESPONSES)
+@router.post(
+    "/reports/{report_id}/withdrawal",
+    responses={**_CHANGE_RESPONSES, **header_responses(status.HTTP_200_OK, ETAG)},
+)
 async def withdraw_report(  # noqa: PLR0913  # reason: FastAPI injects each input
     *,
     report_id: EntityId,
@@ -344,3 +418,149 @@ async def withdraw_report(  # noqa: PLR0913  # reason: FastAPI injects each inpu
         )
     )
     return _detail_response(response, detail)
+
+
+def _review_response(
+    response: Response, review: ReportReviewDetail
+) -> ReportReviewDetail:
+    set_etag(response, make_etag(review.version, review.lineage_id))
+    return review
+
+
+def _mark_handler(services: Services) -> MarkReportReviewHandler:
+    return MarkReportReviewHandler(
+        services.reports_uow_factory, services.clock, services.id_generator
+    )
+
+
+@moderation_router.get(
+    "/reports/{report_id}/review",
+    responses={
+        status.HTTP_404_NOT_FOUND: _PROBLEM,
+        **header_responses(status.HTTP_200_OK, ETAG),
+    },
+)
+async def get_report_review(
+    report_id: EntityId,
+    actor: ModeratorActor,
+    response: Response,
+    services: Services,
+) -> ReportReviewDetail:
+    """Return the review mark of a report's lineage and its history.
+
+    Args:
+        report_id: Any revision of the lineage.
+        actor: The moderator.
+        response: Used to set the review's ``ETag``.
+        services: Use cases bound by the composition root.
+
+    Returns:
+        The current mark, whether the lineage was revised since, and up to 200
+        marks, newest first.
+    """
+    review = await services.report_queries.get_review(
+        GetReportReview(actor=actor, report_id=report_id)
+    )
+    return _review_response(response, review)
+
+
+@moderation_router.post(
+    "/reports/{report_id}/review",
+    responses={
+        **_OPTIONAL_IF_MATCH_RESPONSES,
+        **header_responses(status.HTTP_200_OK, ETAG),
+    },
+)
+async def mark_report_review(  # noqa: PLR0913  # reason: FastAPI injects each input
+    *,
+    report_id: EntityId,
+    body: MarkReviewRequest,
+    actor: ModeratorActor,
+    response: Response,
+    services: Services,
+    if_match: ReviewIfMatch = None,
+) -> ReportReviewDetail:
+    """Mark a report's lineage ``new``, ``reviewed`` or ``archived``.
+
+    The report is not changed: its status, its ETag and its reporter's rights
+    stay as they were. Repeating the last mark changes nothing.
+
+    Args:
+        report_id: The revision the moderator looked at.
+        body: The mark and its reason.
+        actor: The moderator.
+        response: Used to set the review's new ``ETag``.
+        services: Use cases bound by the composition root.
+        if_match: Optional: the review's ETag the mark is based on.
+
+    Returns:
+        The review after the mark, with its history. The ``ETag`` names the
+        version this mark produced (or found, when it changed nothing), taken
+        from the command's result: should another moderator's mark land between
+        this commit and the read of the history, the body already shows it and
+        an ``If-Match`` with this ETag answers 412, so nobody overwrites a mark
+        they were not shown.
+
+    Raises:
+        PreconditionFailedError: If ``If-Match`` is stale or names another
+            review (412).
+        ReviewRevisionSupersededError: If the report is older than the revision
+            the lineage was last marked on (409).
+        ReviewReasonRequiredError: If the move needs a reason (422).
+    """
+    expected_version = None
+    if if_match is not None:
+        # Only the lineage id is needed to read the tag; the version itself is
+        # compared inside the command's unit of work.
+        current = await services.report_queries.get_review(
+            GetReportReview(actor=actor, report_id=report_id)
+        )
+        expected_version = expected_version_from_if_match(if_match, current.lineage_id)
+    result = await _mark_handler(services)(
+        MarkReportReview(
+            actor=actor,
+            report_id=report_id,
+            state=body.state,
+            reason=body.reason,
+            expected_version=expected_version,
+        )
+    )
+    review = await services.report_queries.get_review(
+        GetReportReview(actor=actor, report_id=report_id)
+    )
+    lineage_id = review.lineage_id if result.lineage_id is None else result.lineage_id
+    version = review.version if result.version is None else result.version
+    set_etag(response, make_etag(version, lineage_id))
+    return review
+
+
+@moderation_router.post("/reports/review")
+async def mark_report_reviews(
+    body: BulkMarkReviewRequest,
+    actor: ModeratorActor,
+    services: Services,
+) -> BulkReviewResult:
+    """Apply one mark to up to 100 reports, each on its own.
+
+    Not atomic: every report gets its own outcome (``marked``, ``unchanged``,
+    ``not_found``, ``reason_required``, ``conflict`` or ``error``), in request
+    order, and one refusal never keeps the others from being marked. Revisions
+    of one lineage are marked once, on the newest one named, and share its
+    result.
+
+    Args:
+        body: The reports, the mark and its reason.
+        actor: The moderator.
+        services: Use cases bound by the composition root.
+
+    Returns:
+        One result per report.
+    """
+    return await MarkReportReviewsHandler(_mark_handler(services))(
+        MarkReportReviews(
+            actor=actor,
+            report_ids=body.report_ids,
+            state=body.state,
+            reason=body.reason,
+        )
+    )

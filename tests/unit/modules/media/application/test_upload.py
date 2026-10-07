@@ -45,7 +45,9 @@ from yakhnama.shared_kernel.errors import PermissionDeniedError, ValidationError
 async def test_request_upload_without_report_registers_and_cites_source() -> None:
     harness = Harness()
 
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.PNG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.PNG, byte_size=1024)
+    )
 
     asset = harness.uow.media_assets.committed[grant.asset_id]
     [registration] = harness.registrar.commands
@@ -61,7 +63,9 @@ async def test_request_upload_without_report_registers_and_cites_source() -> Non
 async def test_request_upload_grants_presigned_put_for_the_upload_key_only() -> None:
     harness = Harness()
 
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.PNG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.PNG, byte_size=1024)
+    )
 
     assert harness.storage.presigned_puts == [upload_object_key(grant.asset_id)]
     assert original_object_key(grant.asset_id) not in grant.upload_url
@@ -74,7 +78,9 @@ async def test_request_upload_for_own_report_uses_report_source() -> None:
     harness = Harness()
 
     grant = await harness.request()(
-        RequestUpload(actor=OWNER, report_id=REPORT_ID, mime_type=MimeType.JPEG)
+        RequestUpload(
+            actor=OWNER, report_id=REPORT_ID, mime_type=MimeType.JPEG, byte_size=1024
+        )
     )
 
     asset = harness.uow.media_assets.committed[grant.asset_id]
@@ -97,6 +103,7 @@ async def test_request_upload_for_foreign_or_missing_report_raises_denied(
                     "actor": OTHER_CITIZEN,
                     "report_id": report_id,
                     "mime_type": MimeType.JPEG,
+                    "byte_size": 1024,
                 }
             )
         )
@@ -110,7 +117,9 @@ async def test_request_upload_anonymous_raises_permission_denied() -> None:
 
     with pytest.raises(PermissionDeniedError):
         await harness.request()(
-            RequestUpload(actor=Actor.anonymous(), mime_type=MimeType.JPEG)
+            RequestUpload(
+                actor=Actor.anonymous(), mime_type=MimeType.JPEG, byte_size=1024
+            )
         )
 
     assert harness.registrar.commands == []
@@ -123,7 +132,9 @@ async def test_request_upload_anonymous_raises_permission_denied() -> None:
 
 async def test_complete_upload_stored_file_completes_and_enqueues_scan() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
     digest = harness.upload(grant.asset_id)
 
     result = await harness.complete()(
@@ -144,7 +155,9 @@ async def test_complete_upload_stored_file_completes_and_enqueues_scan() -> None
 
 async def test_complete_upload_seals_the_upload_into_the_private_original() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
     harness.upload(grant.asset_id)
 
     await harness.complete()(CompleteUpload(actor=OWNER, asset_id=grant.asset_id))
@@ -159,7 +172,9 @@ async def test_complete_upload_seals_the_upload_into_the_private_original() -> N
 
 async def test_complete_upload_other_type_than_declared_marks_failed() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.PNG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.PNG, byte_size=1024)
+    )
     harness.upload(grant.asset_id)
 
     with pytest.raises(ValidationError) as raised:
@@ -184,7 +199,9 @@ async def test_complete_upload_repeated_returns_asset_without_second_scan() -> N
 
 async def test_complete_upload_before_file_arrived_raises_and_changes_nothing() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
     events_before = len(harness.uow.committed_events)
 
     with pytest.raises(ValidationError) as raised:
@@ -198,7 +215,9 @@ async def test_complete_upload_before_file_arrived_raises_and_changes_nothing() 
 
 async def test_complete_upload_disallowed_type_marks_failed_and_raises() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
     harness.upload(grant.asset_id)
     del harness.sniffer.types[original_object_key(grant.asset_id)]
 
@@ -214,7 +233,9 @@ async def test_complete_upload_disallowed_type_marks_failed_and_raises() -> None
 
 async def test_complete_upload_empty_file_marks_failed_and_raises() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
     harness.upload(grant.asset_id)
     key = upload_object_key(grant.asset_id)
     harness.storage.objects[key] = harness.storage.objects[key].model_copy(
@@ -233,7 +254,9 @@ async def test_complete_upload_empty_file_marks_failed_and_raises() -> None:
 
 async def test_complete_upload_after_failure_raises_not_pending() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
     harness.storage.objects[original_object_key(grant.asset_id)] = StoredObject(
         sha256="a" * 64, byte_size=0
     )
@@ -246,7 +269,9 @@ async def test_complete_upload_after_failure_raises_not_pending() -> None:
 
 async def test_complete_upload_by_other_user_raises_permission_denied() -> None:
     harness = Harness()
-    grant = await harness.request()(RequestUpload(actor=OWNER, mime_type=MimeType.JPEG))
+    grant = await harness.request()(
+        RequestUpload(actor=OWNER, mime_type=MimeType.JPEG, byte_size=1024)
+    )
     harness.upload(grant.asset_id)
 
     with pytest.raises(PermissionDeniedError):

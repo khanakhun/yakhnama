@@ -6,6 +6,12 @@ GeoJSON (RFC 7946) whose geometry is the place's centroid (``null`` when unknown
 anything else returns JSON. ``?format=`` wins over ``Accept`` so a link can pin the
 representation, and every response says ``Vary: Accept`` for caches.
 
+``GET /boundaries/district-edges`` (ADR 0021) is GeoJSON only: the lines two
+Gilgit-Baltistan districts share, never a polygon and never the region's outer edge,
+with the data's attribution. It is public reference data that changes only when an
+operator loads boundaries, so it carries ``Cache-Control: public`` for a day, an
+``ETag`` naming the snapshot, and answers ``If-None-Match`` with ``304``.
+
 Errors are never mapped here: query services and this router raise
 ``YakhnamaError`` subclasses and the exception handlers in ``main.py`` render
 Problem Details.
@@ -17,6 +23,7 @@ from typing import Annotated, Any, Final
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
+from fastapi.responses import JSONResponse
 from geojson_pydantic import Feature, FeatureCollection, Point
 
 from yakhnama.modules.geography.api.dependencies import (
@@ -30,9 +37,12 @@ from yakhnama.modules.geography.api.schemas import (
     PlaceFormat,
     PlacePage,
 )
-from yakhnama.modules.geography.application.dto import PlaceDetail
+from yakhnama.modules.geography.application.dto import (
+    DistrictEdgeFeatureCollection,
+    PlaceDetail,
+)
 from yakhnama.modules.geography.application.queries import SearchPlaces
-from yakhnama.platform.etag import ETAG_HEADER, make_etag
+from yakhnama.platform.etag import ETAG_HEADER, if_none_match_matches, make_etag
 from yakhnama.shared_kernel.errors import NotFoundError
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
@@ -43,6 +53,12 @@ LINK_HEADER: Final = "Link"
 VARY_HEADER: Final = "Vary"
 ACCEPT_MAX_LENGTH: Final = 1024
 NOT_FOUND_MESSAGE: Final = "No place has this id."
+CACHE_CONTROL_HEADER: Final = "Cache-Control"
+DISTRICT_EDGES_CACHE_CONTROL: Final = "public, max-age=86400"
+"""A day: the edges change only when an operator loads new boundaries."""
+EMPTY_DISTRICT_EDGES_CACHE_CONTROL: Final = "public, max-age=300"
+"""Five minutes, so a first load of boundaries shows up soon (**proposed**)."""
+IF_NONE_MATCH_MAX_LENGTH: Final = 1024
 
 # Any: the value type of FastAPI's own ``responses`` argument.
 _PROBLEM: Final[dict[str, Any]] = {
@@ -69,6 +85,19 @@ router = APIRouter(
 )
 
 AcceptHeader = Annotated[str | None, Header(max_length=ACCEPT_MAX_LENGTH)]
+IfNoneMatchHeader = Annotated[str | None, Header(max_length=IF_NONE_MATCH_MAX_LENGTH)]
+
+
+class GeoJsonResponse(JSONResponse):
+    """A JSON body served as ``application/geo+json`` (RFC 7946).
+
+    Declaring it as a route's ``response_class`` puts the route's response model
+    under that media type in OpenAPI, so the GeoJSON is fully typed for clients.
+
+    Implements: API Schema.
+    """
+
+    media_type = GEOJSON_MEDIA_TYPE
 
 
 def wants_geojson(output_format: PlaceFormat | None, accept: str | None) -> bool:
@@ -203,3 +232,83 @@ async def get_place(
         return _geojson_response(feature.model_dump_json(), headers)
     response.headers.update(headers)
     return detail
+
+
+_DISTRICT_EDGES_HEADERS: Final[dict[str, Any]] = {
+    ETAG_HEADER: {
+        "description": (
+            "Strong tag naming the current snapshot; absent while no boundaries "
+            "are loaded."
+        ),
+        "schema": {"type": "string"},
+    },
+    CACHE_CONTROL_HEADER: {
+        "description": (
+            f"`{DISTRICT_EDGES_CACHE_CONTROL}` for a snapshot, "
+            f"`{EMPTY_DISTRICT_EDGES_CACHE_CONTROL}` while none is loaded; "
+            "`no-store` when the request carried a bearer token."
+        ),
+        "schema": {"type": "string"},
+    },
+}
+
+
+@router.get(
+    "/boundaries/district-edges",
+    response_model=DistrictEdgeFeatureCollection,
+    response_class=GeoJsonResponse,
+    responses={
+        status.HTTP_200_OK: {"headers": _DISTRICT_EDGES_HEADERS},
+        status.HTTP_304_NOT_MODIFIED: {
+            "description": "The representation named by If-None-Match is current",
+            "headers": _DISTRICT_EDGES_HEADERS,
+        },
+    },
+)
+async def get_district_edges(
+    services: Services, if_none_match: IfNoneMatchHeader = None
+) -> Response:
+    """Return the lines Gilgit-Baltistan districts share, as GeoJSON.
+
+    Only edges shared by two districts are returned; the region's outer edge,
+    which traces international borders and the Line of Control, never is. Draw
+    the lines with the ``attribution``. While no boundaries are loaded the
+    collection is empty and ``attribution`` is ``null``.
+
+    Args:
+        services: Query services bound by the composition root.
+        if_none_match: A cached ``ETag``; when it is current the answer is ``304``.
+
+    Returns:
+        The ``FeatureCollection``, or an empty ``304``.
+    """
+    query_service = services.district_edge_query_service
+    if if_none_match is not None:
+        # Revalidation is the common request; it is answered from the snapshot id
+        # alone, without reading a single edge.
+        current_id = await query_service.get_current_id()
+        if current_id is not None:
+            headers = _district_edges_headers(current_id)
+            if if_none_match_matches(if_none_match, headers[ETAG_HEADER]):
+                return Response(
+                    status_code=status.HTTP_304_NOT_MODIFIED, headers=headers
+                )
+    snapshot = await query_service.get_current()
+    if snapshot is None:
+        return GeoJsonResponse(
+            DistrictEdgeFeatureCollection.empty().model_dump(mode="json"),
+            headers={CACHE_CONTROL_HEADER: EMPTY_DISTRICT_EDGES_CACHE_CONTROL},
+        )
+    headers = _district_edges_headers(snapshot.edge_set_id)
+    return Response(
+        content=snapshot.collection.model_dump_json(),
+        media_type=GEOJSON_MEDIA_TYPE,
+        headers=headers,
+    )
+
+
+def _district_edges_headers(edge_set_id: EntityId) -> dict[str, str]:
+    return {
+        ETAG_HEADER: make_etag(1, edge_set_id),
+        CACHE_CONTROL_HEADER: DISTRICT_EDGES_CACHE_CONTROL,
+    }

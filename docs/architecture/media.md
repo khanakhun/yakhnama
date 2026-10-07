@@ -50,8 +50,14 @@ sequenceDiagram
 
 1. **Presigned PUT.** `S3StoragePort.presign_put` signs a `PUT` into the private bucket
    for the **upload key** `media/upload/<id>` only (it refuses any other key). The URL
-   is bound to the declared `Content-Type`; a request with any other type is refused
-   by storage (403).
+   is bound to the declared `Content-Type` and to the exact size the client announced
+   in the grant request (`byte_size`, signed as `Content-Length`); a request with any
+   other type or length is refused by storage (403, checked against MinIO in
+   `tests/integration`). The grant returns both headers. A browser sets
+   `Content-Length` itself from the body and forbids scripts to set it, so a browser
+   client sends the exact file and lists only `Content-Type`; other clients send both.
+   A guest's URL lives `guest_upload_presign_ttl_seconds` (default 300), an account
+   upload's `storage_presign_ttl_seconds`.
 2. **Complete and seal.** A presigned `PUT` stays valid until it expires, and S3
    overwrites, so the upload key can be replaced after completion. `seal_upload`
    therefore copies it server-side to the original key `media/original/<id>`, which
@@ -116,18 +122,30 @@ UTC (**proposed**, Q-M11).
 | `malware_scanner` | Adapter | Verdict | Status |
 |-------------------|---------|---------|--------|
 | `noop` (default) | `NoOpMalwareScanner` | `unavailable` (nothing is publishable); may be built with `clean` for a local publication walkthrough | Development and tests only. Logs `malware_scanner_disabled` when built; the production guard refuses it. |
-| `clamav` | `ClamAvScanner` over `tcp_connector(clamav_host, clamav_port)` | `clean`, `infected`, or `unavailable` on a connection error, timeout or error reply | **Unverified against a real clamd** (Q-M12). The `INSTREAM` framing is unit tested against a fake stream, and against a loopback stand-in server in the integration tests. |
+| `clamav` | `ClamAvScanner` over `tcp_connector(clamav_host, clamav_port)` | `clean`, `infected`, or `unavailable` on a connection error, timeout or error reply | Verified by hand against `clamav/clamav:1.4` on 2026-10-07 (clean, EICAR, a 52 MiB stream; ADR 0023), not yet by an automated test (Q-M12). The `INSTREAM` framing is unit tested against a fake stream, and against a loopback stand-in server in the integration tests. |
 
 clamd's `StreamMaxLength` defaults to 25 MB, below the 50 MiB upload cap. Operators must
-raise it to at least `50M`, or larger files get `unavailable`, not `clean`.
+raise it to at least `50M`, or larger files get `unavailable`, not `clean`;
+`docker-compose.production.yml` sets `55M`.
 
 ## Limits and costs
 
-- **Size.** 50 MiB (`MAX_MEDIA_BYTES`, Q-M2). S3 cannot cap a presigned `PUT`, so the cap
-  is a client contract checked on completion: `head` reports the real size without
-  downloading an oversize object, and `CompleteUploadHandler` rejects it. Such an object
-  gets the placeholder digest `OVERSIZE_SHA256` (Q-M14) and stays in the private bucket
-  until a clean-up job exists.
+- **Size.** 50 MiB (`MAX_MEDIA_BYTES`, Q-M2). The grant request announces the exact size
+  (1 to 50 MiB, `422` above), and the presigned `PUT` signs it as `Content-Length`, so
+  storage refuses any other length. The cap is still checked on completion, as defence
+  in depth against a storage that ignored the signature: `head` reports the real size
+  without downloading an oversize object, and `CompleteUploadHandler` rejects it. Such
+  an object gets the placeholder digest `OVERSIZE_SHA256` (Q-M14).
+- **Abandoned uploads.** The periodic task `media.sweep_stale_uploads` (every
+  `media_upload_sweep_interval_seconds`, default 900) marks assets still `requested`
+  `media_upload_sweep_after_seconds` (default 7 200, longer than every upload URL and
+  guest capability) after their grant as `failed` and deletes their upload objects. The
+  private bucket also carries a lifecycle rule that expires `media/upload/` objects
+  after one day (the smallest unit S3 lifecycle rules have), which catches objects a
+  still-valid URL writes after a seal or a sweep. `docker-compose.yml` sets it on the
+  development bucket (`mc ilm import`); **production must configure the same rule** on
+  its private bucket (on AWS: a lifecycle rule with prefix `media/upload/` and
+  `Expiration.Days = 1`).
 - **Reads per upload.** One server-side copy to seal, one full read to hash, one full read for EXIF, one 8 KiB range
   read, one full read to scan, and one full read and write to publish. Each full read is
   capped at 50 MiB in memory. Re-encoding runs in a worker thread so it does not block
@@ -163,4 +181,4 @@ raise it to at least `50M`, or larger files get `unavailable`, not `clean`.
 | Q-M17 | Presigned URL lifetime. | 15 minutes. | no |
 | Q-M18 | Is quality-95 re-encoding and dropping ICC profiles acceptable for the public copy? | Yes; the original keeps full fidelity. | no |
 | Q-M19 | Image decoding limits. | 50 MP per frame, 200 frames, 100 MP in total (about 400 MB as RGBA). A 108 or 200 MP phone photo stays private: its public copy is refused. | no |
-| Q-M20 | Orphaned upload keys. A still-valid presigned URL can recreate `media/upload/<id>` after sealing, and abandoned uploads are never completed. | A bucket lifecycle rule that expires `media/upload/` objects after one day. | no |
+| Q-M20 | Orphaned upload keys. A still-valid presigned URL can recreate `media/upload/<id>` after sealing, and abandoned uploads are never completed. | Done for uploads that never complete (the stale-upload sweep) and for the prefix (a lifecycle rule expiring `media/upload/` after one day, set in `docker-compose.yml`, required in production). Completed originals that no report cites (reportless uploads, duplicates, guest photos completed after their report, Q228) are kept until a retention is decided. | no |

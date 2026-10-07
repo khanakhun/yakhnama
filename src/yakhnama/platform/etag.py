@@ -13,7 +13,9 @@ resource never matches. Routes that return a single aggregate set it with
   is race-free.
 
 ``If-Match`` uses the strong comparison: a weak tag (``W/"..."``) never matches, and
-``*`` matches any current representation.
+``*`` matches any current representation. ``If-None-Match`` on cacheable reads uses
+the weak comparison (RFC 9110 §13.1.2): ``if_none_match_matches`` lets a route
+answer ``304 Not Modified``.
 
 Patterns: none from the catalog; module-level functions only.
 """
@@ -31,6 +33,7 @@ from yakhnama.shared_kernel.errors import (
 
 ETAG_HEADER: Final = "ETag"
 IF_MATCH_HEADER: Final = "If-Match"
+IF_NONE_MATCH_HEADER: Final = "If-None-Match"
 ANY_TAG: Final = "*"
 WEAK_PREFIX: Final = "W/"
 # Versions are counters; 18 digits stays within a signed 64-bit integer.
@@ -96,6 +99,25 @@ def if_match_matches(header: str, current_etag: str) -> bool:
     """
     tags = parse_if_match(header)
     return ANY_TAG in tags or current_etag in tags
+
+
+def if_none_match_matches(header: str | None, current_etag: str) -> bool:
+    """Tell whether an ``If-None-Match`` value names the current representation.
+
+    The comparison is weak (RFC 9110 §13.1.2): ``W/`` prefixes are ignored on both
+    sides, because a cache revalidating a read may hold a weakened tag.
+
+    Args:
+        header: The raw ``If-None-Match`` value, or ``None`` when absent.
+        current_etag: The resource's current tag.
+
+    Returns:
+        ``True`` for ``*`` or when a listed tag equals ``current_etag`` weakly.
+    """
+    if header is None:
+        return False
+    tags = {tag.removeprefix(WEAK_PREFIX) for tag in parse_if_match(header)}
+    return ANY_TAG in tags or current_etag.removeprefix(WEAK_PREFIX) in tags
 
 
 def require_if_match(request: Request, current_etag: str) -> None:

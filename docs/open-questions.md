@@ -30,7 +30,13 @@ for Pakistan, via HDX (Humanitarian Data Exchange).
 
 **Blocking:** no
 
-**Status:** open
+**Status:** answered (maintainer decision, 2026-10-05) and implemented. OCHA COD-AB for
+Pakistan via HDX (dataset `cod-ab-pak`, licence CC BY-IGO as stated on HDX), Gilgit-Baltistan
+districts only. The portal map draws **district lines only**: no international boundary and
+no Line of Control, so the API publishes only the edges two Gilgit-Baltistan districts share,
+never a polygon and never the outer edge of the district set. Built in ADR 0021: the pinned
+source file `data/boundaries/cod_ab_pak_gb_districts.yaml`, `poetry run poe load-boundaries`,
+and `GET /api/v1/boundaries/district-edges`. Follow-ups: Q230 to Q239.
 
 ---
 
@@ -189,7 +195,12 @@ assisted submission when the reports module is built.
 
 **Blocking:** no
 
-**Status:** open
+**Status:** decided (maintainer, 2026-10-05): both. **Guest reports** without an account,
+with up to three photos, behind a self-hosted proof-of-work check and no third-party
+CAPTCHA (ADR 0020); and **assisted reports**, entered by a trusted reporter, a moderator
+or an organisation member for their organisation on behalf of a person without an
+account, with that person's consent recorded (ADR 0019). Every report now carries a
+`channel` (`account`, `assisted`, `guest`). Follow-up questions: Q218–Q228.
 
 ---
 
@@ -254,7 +265,10 @@ or the module's `application/` code.
 - **Why it matters:** `AdminLevel` ordering is used to validate every `Place.parent_id`; adding or removing a level later re-validates every place.
 - **Proposed default:** Keep `division` between `province_or_region` and `district`.
 - **Blocking:** no
-- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G1)
+- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G1). COD-AB (Q1) has no
+  division level (ADM1 province, ADM2 district, ADM3 tehsil), so divisions stay a gazetteer
+  addition without a boundary source; the district boundary load decides region membership
+  by ancestry, so it works with or without the level.
 
 ## Q17 — Place code scheme
 
@@ -294,7 +308,9 @@ or the module's `application/` code.
 - **Why it matters:** A placeholder rectangle is not a boundary; using it as geometry would misrepresent the place's real footprint.
 - **Proposed default:** No. `bbox` stays in the reference file only; `geometry` waits for the boundary source (Q1).
 - **Blocking:** no
-- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G6)
+- **Status:** open (raised in `docs/data-dictionary/geography.md`, Q-G6). Since 2026-10-05
+  `geometry` of a linked district comes from COD-AB (ADR 0021), so a `bbox` is never needed
+  as a stand-in for those places.
 
 ## Q22 — How do textual name citations become provenance `Source` records?
 
@@ -462,7 +478,10 @@ or the module's `application/` code.
 - **Why it matters:** It depends on the boundary source decision (Q1); building it earlier risks a wrong shape.
 - **Proposed default:** Defer `BoundaryLoader` until Q1 (boundary source) is decided.
 - **Blocking:** no
-- **Status:** open (raised from the T9 report)
+- **Status:** answered and implemented (2026-10-05, after the maintainer decided Q1). The
+  `BoundaryLoader` port (`geography/application/ports.py`) is implemented by
+  `CodAbBoundaryLoader`, with `SharedEdgeCalculator`, `DistrictEdgeSetRepository` and
+  `DistrictEdgeQueryService` beside it (ADR 0021). (raised from the T9 report)
 
 ## Q43 — What the reference-data loaders apply in place versus skip
 
@@ -671,7 +690,12 @@ questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
 - **Why it matters:** Q3 proposes rounding public coordinates to protect reporter locations; reference-data places (administrative centroids, not reporter locations) may not need the same protection, but the setting currently has no effect anywhere.
 - **Proposed default:** None for reference-data centroids specifically; apply `public_coordinate_decimals` when reporter- or event-linked coordinates are served, from Phase 3, and have the security reviewer confirm whether administrative centroids need it too.
 - **Blocking:** no
-- **Status:** open (raised from the T7 report)
+- **Status:** open (raised from the T7 report). The district edges route (ADR 0021) serves
+  administrative lines, not reporter positions, rounded to 5 decimals for size only;
+  `public_coordinate_decimals` does not apply to them. Since the same change the ten
+  linked districts have centroids (their COD-AB representative points, Q239), served
+  here at full precision; they are administrative points, not reporter locations, so
+  the proposed default (no rounding for reference-data centroids) still holds.
 
 ## Q68 — Self-hosting the Scalar bundle with an integrity hash
 
@@ -702,8 +726,9 @@ questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
 - **Question:** The development realm's user-profile component (`docker/keycloak/yakhnama-realm.json`) is customised to drop the default `firstName`/`lastName` requirements and make `email` optional (Keycloak does not allow removing the `email` attribute entirely). Should this override be kept as the realm evolves?
 - **Why it matters:** The override exists only so demo users need no personal data, matching the backend's rule of storing none (`AGENTS.md` §5); if the realm is later extended or replaced, this constraint has to travel with it.
 - **Proposed default:** Keep it, and carry the same constraint (no required name or email) into whatever production identity provider is chosen (Q5).
+- **Update (2026-09-30):** With self-registration open, `email` is now required for the `user` role (Keycloak needs an address to verify and to reset a password with), while names stay dropped. The address lives only in Keycloak; the backend still stores none. The demo users carry placeholder `@example.invalid` addresses.
 - **Blocking:** no
-- **Status:** open (raised from the T4 report; see also `docs/architecture/auth.md`, "The `yakhnama` realm")
+- **Status:** open (raised from the T4 report; see also `docs/architecture/auth.md`, "The `yakhnama` realm" and "Sign-up and social sign-in")
 
 ## Q72 — Audience value for the API (`aud` claim)
 
@@ -742,6 +767,7 @@ questions (`docs/plans/phase-2.md` §7), recorded here in the standard format.
 - **Question:** What idempotency scope applies to an anonymous caller's `POST`?
 - **Why it matters:** `IdempotencyMiddleware` scopes reservations to `Principal.scope_key()`, which only an authenticated caller has.
 - **Proposed default:** None: anonymous `POST`s are rejected with 401 before idempotency would matter, since every creating route requires an account (Q10).
+- **Update (2026-10-05):** Q10 is decided, and the guest routes (`/api/v1/guest-submissions`, ADR 0020) are anonymous `POST`s. `IdempotencyMiddleware` still ignores them. They carry their own retry safety instead: a challenge is single-use (`409 guest-challenge-spent` on a replay), and the report is answered with the same receipt when the same content is sent again. The upload grant is the one step without it (Q224). Proposed: keep `Idempotency-Key` for authenticated callers only.
 - **Blocking:** no
 - **Status:** open (raised in the Phase 2 plan, §7 Q5)
 
@@ -1070,9 +1096,9 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 
 - **Question:** `ClamAvScanner` is unit tested against a fake stream and a loopback stand-in, but not yet verified against a real `clamd`.
 - **Why it matters:** A protocol mismatch (framing, size limits) would only surface once real malware scanning is relied on in production.
-- **Proposed default:** Verify against `clamav/clamav` before production; not yet done.
+- **Proposed default:** Verify against `clamav/clamav` before production. Done by hand on 2026-10-07 against `clamav/clamav:1.4` in the production stack (ADR 0023): a clean file, the EICAR test file (`infected`) and a 52 MiB stream (`clean`, with `StreamMaxLength 55M`) gave the expected verdicts. No automated test against a real clamd exists yet.
 - **Blocking:** yes, before production
-- **Status:** open (raised in `docs/architecture/media.md`, Q-M12)
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M12; verified by hand, proposed to close)
 
 ## Q117 — PDF and MP4 metadata not stripped
 
@@ -1551,8 +1577,9 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 - **Question:** Account-creation limits?
 - **Why it matters:** Any valid token from the provider creates a user on first sight; self-registration at the provider would let anyone create accounts at will.
 - **Proposed default:** Deferred to Phase 4: rate-limit first-sight mirroring per provider subject range, or require an invitation for non-citizen roles.
+- **What applies now (2026-09-30):** The maintainer opened self-registration on purpose (residents must not be blocked from reporting because sign-up was hard), so "anyone can create an account" is now the intended behaviour, not a gap. Every new account gets only `citizen`; every other role is still granted by an administrator. The development realm limits abuse with: email verification before the first sign-in of a username/password account (`verifyEmail`), one account per address (`duplicateEmailsAllowed: false`), temporary brute-force lockout (5 failures, 60 s growing to 15 minutes, reset after 12 hours), a password policy (8 to 128 characters, not the username or address), and Google and Facebook accounts, which carry the provider's own sign-up checks. Nothing yet limits how many accounts one person or bot registers with throwaway addresses: Keycloak's registration flow has no CAPTCHA enabled and no per-IP limit, and first-sight mirroring still accepts any valid token. See `docs/architecture/auth.md`, "Sign-up and social sign-in".
 - **Blocking:** no (explicitly deferred from Phase 2 with the lead's acceptance; the maintainer may pull it forward)
-- **Status:** deferred to Phase 4
+- **Status:** deferred to Phase 4; before production, decide on registration bot protection (Keycloak's reCAPTCHA or a proxy rate limit on `/realms/yakhnama/login-actions/registration`) and on the report-submission limits per new account
 
 ## Q177 — IPv6 rate-limit keys
 
@@ -2125,3 +2152,749 @@ entry.
   reject unknown codes explicitly instead.
 - **Blocking:** no
 - **Status:** open (raised from the Phase 4 adapter report, T5b)
+
+## Q212 — Production registration of the `yakhnama-web` client
+
+- **Question:** Which redirect URIs, post-logout redirect URIs and web origins does the
+  web portal's OIDC client `yakhnama-web` get in production, and on which identity
+  provider? The realm export registers it only for two local origins: the Next.js dev
+  server on `http://localhost:3000` and the end-to-end test server on
+  `http://localhost:3100` (callback `<origin>/auth/callback`, post-logout `<origin>/*`,
+  web origin `<origin>`).
+- **Why it matters:** The authorization code flow only redirects to URIs registered
+  exactly on the client; the portal cannot sign anyone in on a real domain until they
+  exist, and a too-broad pattern (a wildcard host or path) would let an attacker steer
+  authorization codes to a URL they control. The portal's hosting must also run a Node
+  server for its backend-for-frontend (web portal plan Q-W3).
+- **Proposed default:** Register the exact `https` callback and origin of the chosen
+  portal domain on the production provider (Q5), keep PKCE `S256` required and direct
+  access grants off, never reuse the `localhost` entries, and add
+  `YAKHNAMA_CORS_ALLOW_ORIGINS` for that origin only if the browser ever calls the API
+  directly.
+- **Blocking:** no (blocks only a production deployment of the portal)
+- **Status:** open (raised by the web portal's Phase 0, task T8)
+
+## Q213 — Production SMTP provider for Keycloak's mail
+
+- **Question:** Which SMTP relay sends Keycloak's address-verification and password-reset
+  mail in production, from which domain and address?
+- **Why it matters:** Self-registration requires a verified address (Q176), so an account
+  cannot be finished without mail. Mail from a domain without SPF, DKIM and DMARC lands in
+  spam or is dropped, and people who are not confident with technology will not look
+  there. Development uses Mailpit, which delivers nothing.
+- **Proposed default:** A transactional relay with a free tier and a data-processing
+  agreement (for example Amazon SES or Brevo), sending from `no-reply@` on the project's
+  own domain with SPF, DKIM and DMARC, TLS and authentication on; the password kept in
+  Keycloak's vault, never in the realm file.
+- **Blocking:** no (blocks production sign-up only)
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q214 — Ownership of the Google and Facebook sign-in apps, and Meta's app review
+
+- **Question:** Who owns the Google Cloud project and the Meta app behind "Continue with
+  Google" and "Continue with Facebook", and who completes Google's brand verification and
+  Meta's Business Verification and App Review?
+- **Why it matters:** Both providers tie the app, its consent screen and its secret to an
+  account; if a volunteer's personal account owns them, the project loses sign-in when that
+  person leaves. Meta may refuse live mode for people without a role on the app until
+  Business Verification and App Review for the `email` permission are done, which needs a
+  legal entity, a privacy policy URL and data-deletion instructions.
+- **Proposed default:** A project-owned Google Workspace or Cloud organisation and a Meta
+  Business portfolio in the name of the organisation that runs Yakhnama, with at least two
+  administrators each; separate development and production apps; secrets only in the
+  deployment's secret store.
+- **Blocking:** no (blocks turning the providers on in production)
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q215 — Google and Facebook learn who uses Yakhnama
+
+- **Question:** Is it acceptable that signing in with Google or Facebook tells that company
+  that the person uses Yakhnama, and when?
+- **Why it matters:** Reporting a disaster can be sensitive (a damaged home, a dispute over
+  land, criticism of a response). The provider sees every sign-in; Yakhnama receives the
+  person's address and name from the provider (Keycloak keeps the address and drops the
+  name; the backend keeps neither). Email-and-password accounts tell no third party.
+- **Proposed default:** Keep both providers for accessibility (maintainer decision), say so
+  in one plain sentence on the portal's sign-in page and in the privacy policy, always offer
+  the email-and-password route next to them, and never request more than `openid`, `email`
+  and `profile` (Google) or `public_profile` and `email` (Facebook).
+- **Blocking:** no
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q216 — Keycloak's login pages have no Urdu
+
+- **Question:** How do Urdu (and the regional Arabic-script languages) reach Keycloak's
+  login, registration, password-reset and verification pages and mails?
+- **Why it matters:** Keycloak 26.2 ships login-theme messages for 34 languages, including
+  Arabic and Persian, but not Urdu; the realm also has internationalisation off. Someone who
+  chose Urdu on the portal lands on an English registration form at exactly the step where
+  the maintainer wants the fewest obstacles.
+- **Proposed default:** A small custom login theme (`yakhnama`) that extends the built-in
+  one and adds `messages_ur.properties` for the login and email themes, reviewed by a native
+  speaker; switch on internationalisation with `en` and `ur`, so the portal's `ui_locales`
+  takes effect. Until then the portal's own sign-in page carries the explanations in Urdu.
+- **Blocking:** no
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+## Q217 — Sign-up with a phone number
+
+- **Question:** Should people be able to create an account with a mobile number and a
+  one-time code instead of an email address?
+- **Why it matters:** Many residents have a phone but rarely use email; a code by SMS may be
+  the easiest sign-up for them. Keycloak 26 has no built-in SMS authenticator: it needs a
+  community extension or a custom one, an SMS gateway with costs per message and fraud
+  controls (SMS pumping), and phone numbers are personal data the project would then hold.
+- **Proposed default:** Not now. Revisit after measuring how many people start sign-up and
+  do not finish it, and together with assisted reporting (the portal's open questions),
+  which may serve the same people without new personal data.
+- **Blocking:** no
+- **Status:** open (raised by self-registration, 2026-09-30)
+
+---
+
+The entries below were raised by the reporting channels (assisted and guest reports,
+branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
+
+## Q218 — Who may report on behalf of a person without an account?
+
+- **Question:** Which roles may submit an assisted report?
+- **Why it matters:** An assisted report puts someone else's observation on record under
+  the assisting person's account; too wide a rule lets anyone attribute words to people
+  who never said them, too narrow a rule leaves people without help.
+- **Proposed default:** `trusted_reporter`, `moderator` and `admin`, and `org_member`
+  holders only for an organisation they are a member of (`CanReportOnBehalf`). A
+  citizen gets `403 permission-denied`.
+- **Blocking:** no
+- **Status:** open (ADR 0019)
+
+## Q219 — Text and versioning of the consent statement
+
+- **Question:** What does the consent statement read to or by the assisted person say,
+  in which languages, and who versions it?
+- **Why it matters:** The report stores only the statement's version
+  (`consent_statement_version`); without an agreed, reviewed text the recorded consent
+  means little.
+- **Proposed default:** The portal holds the statement in its message catalogues (English
+  and Urdu, reviewed by a native speaker, portal Q-W36) and versions it with a date
+  string such as `2026-10-05`; the backend checks only the format.
+- **Blocking:** no (blocks relying on the consent record)
+- **Status:** open (ADR 0019)
+
+## Q220 — Can an assisted observer correct or withdraw their report later?
+
+- **Question:** Should the person on whose behalf a report was entered be able to revise
+  or withdraw it?
+- **Why it matters:** The observer has no account, so only the person who entered the
+  report can change it; an observer who changes their mind depends on them or on a
+  moderator.
+- **Proposed default:** Only the person who entered it may revise or withdraw (the
+  ordinary reporter rule); a request by the observer goes through that person or a
+  moderator. Revisit with the moderator console (Phase 3 of the portal).
+- **Blocking:** no
+- **Status:** open (ADR 0019)
+
+## Q221 — Do assisted and guest reports weigh differently in verification?
+
+- **Question:** Should the channel change how moderators or the best-figure policy weigh
+  a report?
+- **Why it matters:** A guest report is unauthenticated; an assisted report is a claim of
+  a claim. Treating them like account reports may overweight them; discounting them may
+  silence exactly the people the channels exist for.
+- **Proposed default:** No automatic weighting. The channel is shown to moderators, the
+  source title says "Assisted ..." or "Guest ...", and only a human verifies (unchanged).
+- **Blocking:** no
+- **Status:** open
+
+## Q222 — Proof-of-work difficulty, its curve and the lifetimes
+
+- **Question:** What base difficulty, adaptive curve, challenge lifetime and capability
+  lifetime should guest reporting use?
+- **Why it matters:** Each extra bit doubles the work for a low-end phone and for an
+  abuser alike; a short capability lifetime cuts off a slow guest uploading photos on a
+  weak connection. A fixed, cheap difficulty let one client use up the hourly cap
+  (security review 2026-10-05, H1).
+- **Proposed default:** A base of 18 leading zero bits (at least 18 in production;
+  development and tests may go lower, end-to-end tests use 8), plus one bit for every
+  200 submissions opened in the last hour, never above 22 bits
+  (`guest_pow_difficulty_bits`, `guest_pow_difficulty_step`,
+  `guest_pow_difficulty_max_bits`). The difficulty is signed into each challenge. A Moto
+  G4 computing SHA-256 with WebCrypto in a worker does about 30 000 to 50 000 hashes a
+  second, so on average 18 bits take 5 to 9 s, 20 bits 21 to 35 s and 22 bits 85 to
+  140 s; the work is a geometric draw, so one guest in twenty needs about three times the
+  average. Challenges are valid 10 minutes, capabilities 30 minutes
+  (`guest_capability_ttl_seconds = 1800`; the setting is in seconds now, like every
+  other guest lifetime).
+- **Blocking:** no
+- **Status:** open (ADR 0020)
+
+## Q223 — The hourly caps on guest submissions and per-client limiting
+
+- **Question:** How many guest submissions may be opened, and how many guest reports
+  filed, per rolling hour; what happens to honest guests when a flood reaches a cap; and
+  how is one client kept from using a cap up alone?
+- **Why it matters:** Behind the portal all guests share one address, so the caps are
+  what keep a flood out of the moderators' queue, and also what makes honest guests wait
+  (`429` with `Retry-After`, up to an hour) during one. Proof of work alone does not
+  stop a determined client with hardware.
+- **Proposed default:** Two caps, each counted under its own database lock so
+  concurrent requests cannot overshoot it: 200 guest reports filed per hour
+  (`guest_reports_per_hour`, what protects the moderators) and 2 000 submissions opened
+  per hour (`guest_submissions_per_hour`, ten times as many, so a flood of opened but
+  unused submissions does not lock honest guests out of reporting); opening a
+  submission is refused early when the reports cap is reached. An alert when a cap is
+  reached. **Per-client limiting is not built here:** it needs the portal's trusted-proxy
+  work (portal Q-W9, so the API can trust a client address the portal forwards) and, in
+  production, a per-client limit at the reverse proxy in front of the portal. A
+  portal-signed client key was considered and deferred. Guests can still report
+  through someone who has an account (assisted reporting).
+- **Blocking:** no (blocks production guest reporting without the proxy limit)
+- **Status:** open (ADR 0020)
+
+## Q224 — A lost upload-grant response uses up one of the three photos
+
+- **Question:** Should a guest photo count against the limit when the grant is issued, or
+  only when the upload completes?
+- **Why it matters:** On a weak connection a lost response to
+  `POST /guest-submissions/{id}/media` still uses a slot; three lost responses leave a
+  guest unable to attach any photo.
+- **Proposed default:** Count grants: the slot is reserved (a version-checked save)
+  before the media module creates the asset, so a fourth photo creates nothing and
+  parallel requests cannot leave orphan assets or sources. A grant that fails on the
+  server (storage down) gives its slot back; only a response lost on the way to the
+  client keeps it. Revisit with an idempotency key scoped to the submission if the
+  portal sees lost grants in practice.
+- **Blocking:** no
+- **Status:** open (ADR 0020)
+
+## Q225 — Finding a guest report by its reference
+
+- **Question:** How do moderators or support staff find the report behind a reference a
+  guest quotes (`YK-XXXX-XXXX`)?
+- **Why it matters:** The reference is the guest's only handle on their report; today no
+  route reads by it (it is stored on the guest submission, not on the report).
+- **Proposed default:** A moderator-only lookup by reference in the moderator console
+  (portal Phase 3), backed by the unique index on `guest_submissions.reference`.
+- **Blocking:** no
+- **Status:** open
+
+## Q226 — Retention of guest submissions and spent challenges
+
+- **Question:** How long are guest submissions (capability digest, fingerprint,
+  reference, reserved source id, photo ids) and spent challenges kept?
+- **Why it matters:** They hold no personal data, but they are records nobody reads once
+  the capability has expired, except the link from a report to its reference.
+- **Proposed default (implemented):** The periodic task `reports.purge_guest_records`
+  (every 15 minutes, `guest_purge_interval_seconds`) deletes spent challenges five
+  minutes after they expired, by the database's clock (the clock the redemption checks
+  as well), and guest submissions that never filed a report 24 hours after their
+  capability expired (`guest_receipt_grace_seconds`, the same grace in which a retry is
+  still answered). Filed submissions are kept for as long as their report: the report
+  names the submission as its reporter and the reference is the guest's only handle
+  (Q225).
+- **Blocking:** no
+- **Status:** open (ADR 0020)
+
+## Q227 — Development demo accounts depend on fixed realm user ids
+
+- **Question:** Is it acceptable that the seed mirrors `demo-trusted-reporter` and
+  `demo-org-member` under fixed Keycloak user ids taken from the realm file?
+- **Why it matters:** If the running realm's users have other ids (created through the
+  admin API without a partial import), the seed creates users that never sign in and
+  the real accounts get no membership.
+- **Proposed default:** Yes, for development only: the ids are fixed in the realm file,
+  a unit test keeps the seed and the realm in step, and `docs/architecture/auth.md`
+  explains the partial import that keeps them. Never seeded in production.
+- **Blocking:** no
+- **Status:** open (ADR 0019)
+
+## Q228 — Guest photos completed after the report was filed
+
+- **Question:** What happens to a guest photo whose upload completes after the report was
+  submitted, so that the report does not list it?
+- **Why it matters:** On a weak connection the portal may submit the report while a photo
+  is still uploading. Refusing the completion would leave an orphan upload; accepting it
+  keeps a private photo that no report shows.
+- **Proposed default:** Completion is allowed until the capability expires; the photo is
+  kept as a private original (EXIF stripped only from public copies, which it never
+  gets), is not added to the filed report, and is never published, because media are
+  moderated through their report. It follows the retention of other unattached uploads
+  (the duplicate originals and reportless uploads of Q-M20). Uploads that never complete
+  are failed and their objects deleted by `media.sweep_stale_uploads` two hours after
+  the grant (`media_upload_sweep_after_seconds`), and the bucket's lifecycle rule
+  expires anything left under `media/upload/` after a day.
+- **Blocking:** no
+- **Status:** open (ADR 0020)
+
+## Q230 — Four COD-AB districts have no gazetteer place
+
+- **Question:** COD-AB has 14 districts in Gilgit-Baltistan; the gazetteer fixture has 10.
+  Darel (`PK311`), Tangir (`PK312`), Gupis-Yasin (`PK313`) and Rondu (`PK314`) have no
+  place. Should they be added to `admin_hierarchy_gb.yaml`, with which codes and under
+  which division?
+- **Why it matters:** Until they exist, their edges are published with `null` gazetteer
+  codes (Q234), reports cannot name them as places, and the place search does not find
+  them.
+- **Proposed default:** Add them as `status: sourced` entries citing COD-AB, with codes
+  `pk.gb.darel`, `pk.gb.tangir`, `pk.gb.gupis_yasin` and `pk.gb.rondu` and the COD-AB
+  English names, then link them in `data/boundaries/cod_ab_pak_gb_districts.yaml`. Their
+  parent division needs a source (COD-AB has none, Q16); until one is given, put them
+  directly under `pk.gb` (levels may be skipped, Q19).
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q231 — Linked fixture districts take COD-AB's current footprint
+
+- **Question:** COD-AB's Ghizer, Diamir and Skardu exclude Gupis-Yasin, Darel and Tangir,
+  and Rondu, which it lists as separate districts. Linking the gazetteer's `pk.gb.ghizer`,
+  `pk.gb.diamer` and `pk.gb.skardu` to them makes those smaller polygons their footprints.
+  Is that what the fixture places mean?
+- **Why it matters:** A record placed in "Ghizer" by name may lie in what COD-AB calls
+  Gupis-Yasin; a later point-in-district lookup would disagree with the record.
+- **Proposed default:** Yes: a gazetteer district means the district as COD-AB draws it
+  now. Historical extents, if needed, are modelled separately later.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q232 — "Diamir" in COD-AB, "Diamer" in the gazetteer
+
+- **Question:** COD-AB spells district `PK302` "Diamir"; the gazetteer fixture has
+  "Diamer". The link table treats them as one district. Is that right, and which spelling
+  is preferred in English?
+- **Why it matters:** The loader reports the difference on every run, and the name a
+  reader searches for must find the place.
+- **Proposed default:** Same district. Keep "Diamer" as the preferred English name and add
+  "Diamir" as an alternative name citing COD-AB.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q233 — Shared-edge computation parameters
+
+- **Question:** Are the shared-edge parameters right: snap 1e-5° (about 1 m),
+  Douglas-Peucker simplification 5e-4° (about 50 m), clearance from the region's outline
+  5e-4°, shortest drawn part 1e-3° (about 100 m), coordinates rounded to 5 decimals, and
+  a coverage check that refuses gaps between districts narrower than the clearance?
+- **Why it matters:** They set the payload (48 863 bytes for COD-AB v01), how closely lines
+  follow the data, how far each line stops short of the outline, and which data a load
+  refuses to publish without `--allow-invalid-coverage`.
+- **Proposed default:** As listed (`ShapelySharedEdgeCalculator` defaults, ADR 0021).
+  COD-AB v01 passes the coverage check with the 5e-4° gap width.
+- **Note (2026-10-05, review):** the edges, and so the snapshot fingerprint, are computed
+  by GEOS through Shapely. A Shapely or GEOS upgrade can change the computed lines in the
+  last decimal (intersection, line merging and simplification are not specified to the
+  bit), so reloading the same archive after an upgrade may add a new snapshot with an
+  equivalent map. That is harmless (clients revalidate through the `ETag`), but a reload
+  after a dependency upgrade should be expected to publish; the load report's
+  `is_edge_set_created` says whether it did. GEOS 3.13.1 (Shapely 2.1.2) produced the
+  current numbers.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q234 — Edges of an unlinked district are published with a `null` code
+
+- **Question:** When a district has no gazetteer place (Q230), should its shared edges be
+  published (with `null` in `properties.districts`) or left out?
+- **Why it matters:** Leaving them out breaks real lines: 11 of 29 edges touch Darel,
+  Tangir, Gupis-Yasin or Rondu, including parts of the old Gilgit–Diamer line.
+- **Proposed default:** Publish them, with `null` for the unlinked side and the COD-AB
+  codes in `properties.source_districts`. They are still edges between two
+  Gilgit-Baltistan districts, so the editorial rule holds.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q235 — Cache lifetime of the district edges
+
+- **Question:** How long may clients and shared caches keep the district edges?
+- **Why it matters:** Edges change only when an operator loads boundaries; a long lifetime
+  saves slow connections, a short one shows a new load sooner.
+- **Proposed default:** `public, max-age=86400` with a strong `ETag` naming the snapshot
+  (and `304` on `If-None-Match`); `public, max-age=300` while no boundaries are loaded,
+  so the first load shows up within minutes.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q236 — CC BY-IGO boundary data beside CC BY 4.0 data
+
+- **Question:** The district edges derive from COD-AB under CC BY-IGO 3.0, while
+  Yakhnama's own data is proposed as CC BY 4.0 (ADR 0010, Q4). How is the boundary data
+  attributed, and may it appear in exports?
+- **Why it matters:** ADR 0010 cannot be accepted without a rule for third-party data
+  under another licence (its item 3).
+- **Proposed default:** Every response carries `attribution` (source, licence, licence
+  URL, dataset version, download time), and the portal shows it under the map. District
+  edges and footprints are not part of any export until the rule exists.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q237 — Re-pinning a new COD-AB release
+
+- **Question:** Who checks HDX for a new COD-AB release for Pakistan, and how is it
+  adopted?
+- **Why it matters:** HDX may replace the file behind the pinned URL; the loader then
+  fails its checksum, on purpose, and the map keeps the last snapshot.
+- **Proposed default:** The maintainer re-pins in a reviewed change: new `download_url`,
+  `sha256`, `dataset_version` and `data_version` in
+  `data/boundaries/cod_ab_pak_gb_districts.yaml`, links reviewed against the loader's
+  mismatch report, then `poetry run poe load-boundaries`.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q238 — Place footprints are never published
+
+- **Question:** `Place.geometry` of a linked district now holds the full COD-AB polygon,
+  whose outer edges trace the Line of Control and international borders. May any route or
+  export ever publish a place footprint?
+- **Why it matters:** One careless read model would draw the borders the maintainer
+  excluded (ADR 0021).
+- **Proposed default:** No. Footprints stay out of every read model, export and event
+  (events already carry only the type and bounding box); public maps get only the shared
+  edges. Any change needs a new ADR.
+- **Blocking:** no
+- **Status:** open (raised by the district boundary load, 2026-10-05)
+
+## Q239 — District centroids from COD-AB
+
+- **Question:** The gazetteer's districts had no centroid, which the portal's "choose a
+  place" path needs for a position. Should the boundary load fill them from COD-AB?
+- **Why it matters:** Without a centroid, a report placed by district name has no
+  coordinates.
+- **Proposed default:** Yes: the district's representative point (GEOS
+  `PointOnSurface`, always inside the polygon; not the plain centroid, which can fall
+  outside a concave district, nor COD-AB's `center_lat`/`center_lon`, whose method is
+  not documented). Set it when the place has no centroid, or replace it when the stored
+  centroid is still the one the previous load recorded; never overwrite a centroid from
+  any other source (it is kept and logged as `boundary_centroid_kept`).
+- **Blocking:** no
+- **Status:** answered by the lead (2026-10-05) and implemented on the proposed default
+  (ADR 0021): the load records the centroids it set in `district_centroids` with its
+  snapshot, which makes a reload idempotent. `GET /api/v1/places` and
+  `/api/v1/places/{id}` publish them as `centroid` (JSON) and as the `Point` geometry
+  (GeoJSON) with no schema change. Still to confirm with the maintainer: whether an
+  interior point is the right "position" for a report placed by district (it can be far
+  from where an event happened, so the portal sends a district-sized accuracy with it).
+
+## Q240 — Who sees a report's review mark
+
+- **Question:** Review marks (`new`, `reviewed`, `archived`, ADR 0022) and their reasons
+  are shown to moderators only; `review` is `null` for everyone else, the reporter
+  included. Should the reporter see anything, for example that their report was looked
+  at?
+- **Why it matters:** An archive reason may be blunt ("spam", "test"); showing it could
+  discourage reporters, hiding it means a reporter never learns their report was set
+  aside.
+- **Proposed default:** Marks are internal: moderators only, never the reporter, never in
+  an event or a log (maintainer decision of 2026-10-07 makes moderation non-blocking; the
+  portal plan, phase 3, proposes the same).
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q241 — A review mark per lineage, kept across revisions
+
+- **Question:** Is the review mark held per report lineage (a report and all its
+  revisions) rather than per revision, so a correction keeps the mark and shows
+  `revised_since` instead of falling back to `new`?
+- **Why it matters:** Per revision, every correction would put an already reviewed
+  observation back in the queue; per lineage, a moderator could miss a correction if the
+  console ignored `revised_since`.
+- **Proposed default:** Per lineage (ADR 0022), each mark recording the revision it was
+  made on; `revised_since` is true while a newer revision exists than the one a
+  `reviewed` or `archived` mark was made on.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q242 — When a review mark needs a reason
+
+- **Question:** Which marks need a reason?
+- **Why it matters:** Reasons make the history useful; requiring them everywhere slows
+  down the common case (looking at a report and marking it reviewed).
+- **Proposed default:** Archiving, moving back to `new` and moving out of `archived` need
+  a reason (1–500 characters of safe text); marking `reviewed` from `new` or `reviewed`
+  takes an optional note.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q243 — The `review_state` filter for non-moderators
+
+- **Question:** What does `GET /reports?review_state=...` do for a caller who is not a
+  moderator?
+- **Why it matters:** Applying it to their own reports would tell a reporter whether
+  their report was archived (Q240); ignoring it silently returns a list that does not
+  match the request.
+- **Proposed default:** `403 permission-denied`.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q244 — Bulk review marks are not atomic
+
+- **Question:** Should `POST /moderation/reports/review` mark all reports or none?
+- **Why it matters:** In a spam wave one report that is already archived, missing or
+  being marked by another moderator would otherwise block the whole batch.
+- **Proposed default:** Each report on its own, with one outcome per report (`marked`,
+  `unchanged`, `not_found`, `reason_required`, `conflict`, and, since the review of
+  2026-10-07, `error` for any other refusal by the domain), at most 100 distinct ids
+  per request. A failure outside the domain (the database going away) aborts the
+  request with `500`; the reports before it stay marked.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q245 — Review marks in exports and statistics
+
+- **Question:** Should the moderators' `reports` export, or any count, carry or respect
+  the review mark (for example leave archived reports out)?
+- **Why it matters:** An archived spam wave would otherwise show up in moderator exports
+  and any future report statistics.
+- **Proposed default:** No change for now: reports are never public, exports keep every
+  report without the mark, and nothing is counted by mark until a statistic needs it.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q246 — Review marks and verification cases on reports
+
+- **Question:** `VerificationCase` allows the target kind `report` (Q133), but nothing
+  opens one, and report moderation is now the reversible review mark. Should report
+  cases be retired, or kept for a later use?
+- **Why it matters:** Two moderator-facing states for the same report would confuse the
+  console and the audit trail.
+- **Proposed default:** Keep marks and verification apart: marks for reports, cases for
+  events (and later claims, Q154); do not open cases for reports.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q247 — `report_id` of an asset uploaded before its report
+
+- **Question:** An asset uploaded with `POST /media` before its report exists keeps
+  `media_assets.report_id` empty. The moderation media queue resolves it from the newest
+  report that lists the asset, but `GET /media/{id}` still returns the stored, empty
+  value. Should the media module record the report when a report attaches an asset?
+- **Why it matters:** The two reads disagree for the same asset.
+- **Proposed default:** Keep the queue's resolution and the single read as they are;
+  later, set `report_id` when a report attaches the asset (an event from the reports
+  module), then drop the resolution. Reviewed on 2026-10-07 and kept: writing
+  `report_id` on every submission and revision would be a cross-module write (or an
+  eventually consistent subscriber), would bump the asset's version and `ETag` under a
+  moderator deciding on it (now checked with `If-Match`, Q258) and would need a
+  backfill; the resolution reads `ix_reports_media_ids_gin` through an aggregate
+  (about 16 ms per page at 200 000 reports) and writes nothing.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q248 — Size of the moderator directory
+
+- **Question:** `GET /moderation/moderators` returns at most 500 people, unpaged and
+  unsearchable. Is that enough?
+- **Why it matters:** An assignment picker with more people needs search or paging.
+- **Proposed default:** Keep the cap until there are more than about 100 moderators.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q249 — Suspended moderators in the directory
+
+- **Question:** Suspended users are left out of the moderator directory. A case already
+  assigned to one then shows only an id in the console. Is that right?
+- **Why it matters:** Assigning work to a suspended account is pointless, but existing
+  assignments still need a readable name.
+- **Proposed default:** Leave them out; the console shows "unknown moderator" for an id
+  it cannot name.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q250 — Directory roles are the stored roles
+
+- **Question:** The directory reads the roles stored on each user (mirrored at first
+  sign-in, changed through the role routes), not the identity provider's live roles.
+  Is that acceptable?
+- **Why it matters:** A role granted only in Keycloak after the user's first sign-in does
+  not show up.
+- **Proposed default:** Accept; roles are managed through the admin role routes
+  (`/users/{id}/roles`), which is also what authorisation reads.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q251 — `If-Match` on the review routes
+
+- **Question:** Should `POST /moderation/reports/{id}/review` require `If-Match`?
+- **Why it matters:** Without it, a stale console can overwrite a mark made a moment
+  earlier by someone else; with it required, every client must read before it writes.
+- **Proposed default:** Optional, like the other moderation routes (Q66); when sent it is
+  checked against the review's version inside the unit of work. The portal always sends
+  it.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q252 — Length of the review history in one read
+
+- **Question:** A review read returns the 200 newest marks and says whether older ones
+  were left out (`is_history_truncated`), with no paging. Is that enough?
+- **Why it matters:** A lineage marked back and forth more than 200 times would hide its
+  oldest marks from the console (they stay stored and in the audit log).
+- **Proposed default:** Keep 200 without paging.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q253 — Review marks in the GeoJSON listing of reports
+
+- **Question:** `GET /reports` as GeoJSON does not carry the review mark in its feature
+  properties. Should it?
+- **Why it matters:** A moderators' map of reports could colour by mark.
+- **Proposed default:** JSON only for now; add the mark to the GeoJSON properties for
+  moderators when the console draws such a map.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q254 — A review mark on an older revision
+
+- **Question:** What happens when a moderator marks a revision older than the one the
+  lineage was last marked on (a console page opened before a correction and marked by
+  someone else since)?
+- **Why it matters:** Accepting it would move the mark back in time and make the
+  lineage look "revised since review" again; treating it as unchanged would hide that
+  the moderator acted on stale content.
+- **Proposed default:** Refuse it: `409 conflict` with
+  `details.reason = "review_revision_superseded"` (`conflict` in a bulk result); the
+  console reloads and marks the newer revision. A mark on an older revision than the
+  newest one, but not older than the marked one, is accepted.
+- **Blocking:** no
+- **Status:** open (raised by the review of ADR 0022, 2026-10-07)
+
+## Q255 — Bulk marks naming several revisions of one lineage
+
+- **Question:** When `POST /moderation/reports/review` names two revisions of the same
+  lineage, which one is marked, and what does each id get back?
+- **Why it matters:** Marking both in request order would record two marks, or refuse
+  the older one (Q254), for one observation.
+- **Proposed default:** Mark the lineage once, on the newest revision the request
+  names; every id of that lineage gets the same result (`lineage_id`, `outcome`,
+  `state`, `version`) under its own `report_id`, so the outcomes of one lineage may
+  repeat `marked`.
+- **Blocking:** no
+- **Status:** open (raised by the review of ADR 0022, 2026-10-07)
+
+## Q256 — Triage flag kinds on report listings
+
+- **Question:** Should the moderators' report listing carry the triage flags, and may
+  it be filtered by them?
+- **Why it matters:** Without them the console must read every report's detail to sort
+  its queue; with the full flags a listing would carry the rules' detail text.
+- **Proposed default:** `ReportSummary.triage_flags` lists the distinct kinds only
+  (moderators only, `null` for anyone else; `[]` when no rule raised one or the report
+  is not triaged yet), and `GET /reports?triage_flag=<kind>` filters on them
+  (moderators only, `403` otherwise, like `review_state`, Q243). The detail text stays
+  on `ReportDetail.triage`.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q257 — Finding an event's verification case
+
+- **Question:** How does the console find the verification case of an event?
+- **Why it matters:** Listing every case to find one costs a page per event.
+- **Proposed default:** `GET /moderation/verification-cases?target_kind=event&target_id=`
+  returns it in one call. `verification_case_id` on `EventDetail` is not added: the
+  event detail is built by every events handler and is public, so the field would need
+  a moderators-only gate through all of them.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q258 — `If-Match` on a photo decision
+
+- **Question:** Should `POST /moderation/media/{asset_id}/decision` take `If-Match`?
+- **Why it matters:** Two moderators deciding at once could let a stale approval
+  overwrite a rejection for a sensitive photo.
+- **Proposed default:** Optional, as on every moderation route (Q66); when sent it is
+  compared with the asset's version inside the unit of work (`412` when stale or naming
+  another asset). The portal always sends it.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q259 — Number of linked events on a report
+
+- **Question:** A moderator's report detail lists at most 200 linked events, oldest
+  first, and says whether more were left out (`is_linked_events_truncated`). Is that
+  enough, or should the list be paged?
+- **Why it matters:** One observation linked to more than 200 events would hide the
+  newest links.
+- **Proposed default:** Keep 200 without paging; a read never answers 422 for it.
+- **Blocking:** no
+- **Status:** open (raised by the review of ADR 0022, 2026-10-07)
+
+## Q260 — Anonymous rate limit behind the portal
+
+- **Question:** In production only the portal's server calls the API, and it sends no
+  `X-Forwarded-For` (a visitor could choose the value; web portal Q-W9). Uvicorn runs with
+  `--no-proxy-headers`, so every anonymous request shares one rate-limit bucket. How
+  should the backend tell anonymous visitors apart?
+- **Why it matters:** With the default 60 a minute, a handful of visitors would lock
+  every anonymous visitor out; with a high limit, one abuser can use the whole budget.
+- **Proposed default:** `YAKHNAMA_RATE_LIMIT_ANONYMOUS_PER_MINUTE=3000` in
+  `production.env.example` until a trusted path exists, for example the portal sending
+  the address its own reverse proxy saw in a header the backend trusts only from the
+  portal (`--forwarded-allow-ips` set to the Docker gateway), or the portal rate-limiting
+  visitors itself.
+- **Blocking:** no (blocks a public launch with real traffic)
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q261 — Hosting topology and release process
+
+- **Question:** Is the first production deployment one virtual server running the
+  backend stack with Docker Compose beside the portal and the host's reverse proxy, with
+  Keycloak and MinIO self-hosted on it? Are images built on the server, copied with
+  `docker save`, or pushed to a registry, and who may deploy?
+- **Why it matters:** It fixes the files in ADR 0023, the backup plan (Q264) and who holds
+  the production secrets; a registry needs credentials and a retention policy.
+- **Proposed default:** One 16 GB server, `docker compose -f
+  docker-compose.production.yml`, images built on the server from a reviewed release
+  commit; a registry once CI builds images.
+- **Blocking:** no
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q262 — Keycloak's database in the shared PostgreSQL cluster
+
+- **Question:** May Keycloak keep its realms in its own database and role inside the
+  PostgreSQL cluster that holds Yakhnama's data?
+- **Why it matters:** One cluster saves about 300 MB and one more service to run and back
+  up, but an outage, upgrade or restore of one affects the other, and a PostGIS image
+  upgrade also upgrades Keycloak's database server.
+- **Proposed default:** Shared cluster, separate database and non-superuser role, `CONNECT`
+  revoked from `PUBLIC` on both databases
+  (`docker/keycloak/production/postgres-init/010-keycloak-database.sh`).
+- **Blocking:** no
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q263 — ClamAV memory and signature updates
+
+- **Question:** Is about 1.2 GB of memory for clamd acceptable, and may scanning pause
+  for about a minute while new signatures load?
+- **Why it matters:** clamd holds every signature in memory. With
+  `ConcurrentDatabaseReload` on (the default) an update briefly needs twice that, about
+  2.5 GB; with it off, scans wait during the reload, and a scan that times out is
+  `unavailable`, so the photo stays unpublished until it is scanned again.
+- **Proposed default:** `ConcurrentDatabaseReload no`, a 2 GB limit, signature checks
+  twice a day (`docker-compose.production.yml`).
+- **Blocking:** no
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q264 — Backups and restore
+
+- **Question:** What is backed up, how often, where to, for how long, and who tests a
+  restore?
+- **Why it matters:** The database is the only record of the region's reports, events and
+  claims (`AGENTS.md` §1), and the media buckets hold the only copies of the photos. A
+  backup on the same server does not survive the loss of the server.
+- **Proposed default:** A nightly `pg_dump -Fc` of the `yakhnama` and `keycloak`
+  databases and an `mc mirror` of both media buckets to object storage at another
+  provider, encrypted, kept 30 days, with a restore tested before launch and every
+  quarter; `.env.production` kept in a password manager (`docs/architecture/deployment.md`,
+  "Backups").
+- **Blocking:** yes, before production holds real data
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q265 — Least-privilege database role for the application
+
+- **Question:** Should the API, the worker and the scheduler connect as a role that owns
+  Yakhnama's schema but is not a superuser, with migrations run by a separate owner?
+- **Why it matters:** The application connects as `POSTGRES_USER`, the cluster's
+  superuser (as in development). An injection or a stolen password would then reach every
+  database in the cluster, Keycloak's included.
+- **Proposed default:** Today, the superuser; before launch, a `yakhnama_app` role with
+  the table privileges the application needs, and the superuser only for migrations and
+  the extensions.
+- **Blocking:** no (should be done before launch)
+- **Status:** open (raised by ADR 0023, 2026-10-07)

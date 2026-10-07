@@ -10,7 +10,7 @@ data (``AGENTS.md`` §5, Phase 3 plan §2).
 Patterns: Domain Events.
 """
 
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import Field
 
@@ -18,6 +18,7 @@ from yakhnama.modules.reports.domain.value_objects import (
     MEDIA_PER_REPORT_MAX,
     REPORT_AGGREGATE_TYPE,
     TRIAGE_FLAGS_MAX,
+    ReportChannel,
     ReportStatus,
     ReportVersion,
     RevisionNumber,
@@ -51,10 +52,12 @@ class ReportSubmitted(ReportEvent):
     Implements: Domain Events.
 
     Attributes:
-        reporter_id: The submitting user.
+        reporter_id: The submitting user, or the guest submission.
         organization_id: The organisation reported for, or ``None``.
         source_id: The provenance record of the report.
         media_count: How many media assets are attached.
+        channel: How the report reached the platform; ``account`` for events
+            recorded before channels existed.
     """
 
     event_type: ClassVar[str] = "reports.report_submitted"
@@ -63,6 +66,7 @@ class ReportSubmitted(ReportEvent):
     organization_id: EntityId | None
     source_id: EntityId
     media_count: MediaCount
+    channel: ReportChannel = ReportChannel.ACCOUNT
 
 
 class ReportRevised(ReportEvent):
@@ -78,6 +82,7 @@ class ReportRevised(ReportEvent):
         organization_id: The organisation reported for, or ``None``.
         source_id: The provenance record of the report.
         media_count: How many media assets are attached.
+        channel: The channel inherited from the corrected report.
     """
 
     event_type: ClassVar[str] = "reports.report_revised"
@@ -87,6 +92,7 @@ class ReportRevised(ReportEvent):
     organization_id: EntityId | None
     source_id: EntityId
     media_count: MediaCount
+    channel: ReportChannel = ReportChannel.ACCOUNT
 
 
 class ReportSuperseded(ReportEvent):
@@ -129,3 +135,43 @@ class ReportTriaged(ReportEvent):
     event_type: ClassVar[str] = "reports.report_triaged"
 
     flag_kinds: tuple[TriageFlagKind, ...] = Field(max_length=TRIAGE_FLAGS_MAX)
+
+
+ReviewStateName = Literal["new", "reviewed", "archived"]
+"""The values of ``reviews.ReviewState``, spelled out so this module does not import
+``reviews`` (which builds these events); a unit test keeps them equal."""
+
+REPORT_REVIEW_AGGREGATE_TYPE: Final = "report_review"
+
+
+class ReportReviewMarked(DomainEvent):
+    """A moderator marked a report lineage ``new``, ``reviewed`` or ``archived``.
+
+    The report itself does not change (ADR 0022): its status, content and the
+    reporter's rights stay as they were. The reason is never carried, only
+    whether there was one.
+
+    Implements: Domain Events.
+
+    Attributes:
+        aggregate_type: Always ``"report_review"``; ``aggregate_id`` is the
+            lineage id.
+        version: The review's version after the mark.
+        state: The state the mark set.
+        previous_state: The state before (``new`` for a first mark).
+        report_id: The revision the moderator looked at.
+        revision: That revision's number.
+        actor_id: The moderator.
+        has_reason: Whether a reason or note was given.
+    """
+
+    event_type: ClassVar[str] = "reports.report_review_marked"
+
+    aggregate_type: Literal["report_review"] = REPORT_REVIEW_AGGREGATE_TYPE
+    version: Annotated[int, Field(ge=1)]
+    state: ReviewStateName
+    previous_state: ReviewStateName
+    report_id: EntityId
+    revision: RevisionNumber
+    actor_id: EntityId
+    has_reason: bool

@@ -3,7 +3,11 @@
 Every event carries the place's id as ``aggregate_id``, ``"place"`` as
 ``aggregate_type`` and the place ``version`` *after* the change, so an audit log can
 order and check changes without reading the aggregate. No event carries personal data:
-place names, codes and geometry are public reference data.
+place names and codes are public reference data. A place's footprint geometry is
+**not** public: a district footprint loaded from COD-AB traces the Line of Control
+and international borders on its outer side, so it is never published (ADR 0021,
+Q238), and no event copies it; ``PlaceGeometryChanged`` carries only its type and
+bounding box.
 
 Patterns: Domain Events.
 """

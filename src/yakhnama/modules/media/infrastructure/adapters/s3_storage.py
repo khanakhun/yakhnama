@@ -9,11 +9,14 @@ media volumes and revisited if profiling says otherwise.
 
 What the adapter can and cannot enforce:
 
-- **Size.** S3 cannot cap the size of a presigned ``PUT`` (only a presigned
-  ``POST`` policy has ``content-length-range``, and the port returns a ``PUT``).
-  The cap is therefore a documented client contract, enforced after the fact:
-  ``head`` reports the real size and ``CompleteUploadHandler`` rejects anything
-  above ``MAX_MEDIA_BYTES`` without the adapter ever downloading it.
+- **Size.** The presigned ``PUT`` signs ``Content-Length`` with the exact size the
+  client announced when it asked for the grant, so storage refuses a body of any
+  other length (``SignatureDoesNotMatch``); the announced size is at most
+  ``MAX_MEDIA_BYTES``. A browser sets ``Content-Length`` itself (scripts may not)
+  from the body, so the client must ``PUT`` exactly the file's bytes. The cap is
+  still checked after the fact: ``head`` reports the real size and
+  ``CompleteUploadHandler`` rejects anything above ``MAX_MEDIA_BYTES`` without the
+  adapter ever downloading it.
 - **Type.** The presigned ``PUT`` signs ``Content-Type``, so the upload must carry
   exactly the declared type; the real type is still sniffed from the bytes.
 - **Digest.** An S3 ``ETag`` is not a SHA-256 (it is an MD5, or a hash of part
@@ -25,8 +28,8 @@ What the adapter can and cannot enforce:
   (``media/original/<id>``), which no client URL covers, and hashes the original;
   every later read uses the original. The copy is pinned to the ``ETag`` the
   ``HEAD`` saw, and the upload key is deleted afterwards (a still-valid URL can
-  recreate it; nothing ever reads it again, and a bucket lifecycle rule should
-  expire the prefix, Q-M20).
+  recreate it; nothing ever reads it again, and the bucket's lifecycle rule
+  expires the ``media/upload/`` prefix after a day, ``docker-compose.yml``).
 - **Integrity.** ``copy_stripped_public`` and ``iter_original`` take the digest
   recorded at completion and raise ``MediaContentChangedError`` if the bytes they
   read hash differently.
@@ -337,36 +340,46 @@ class S3StoragePort:
         return self._private_bucket
 
     async def presign_put(
-        self, key: str, mime_type: MimeType, max_bytes: int
+        self,
+        key: str,
+        mime_type: MimeType,
+        byte_size: int,
+        *,
+        ttl: timedelta | None = None,
     ) -> PresignedUpload:
         """Return a presigned ``PUT`` of ``key`` into the private bucket.
 
-        The signature covers ``Content-Type``, so the upload must send exactly
-        ``mime_type``. ``max_bytes`` cannot be signed into a ``PUT``; it is the
-        client contract, enforced when the upload is completed (module docstring).
+        The signature covers ``Content-Type`` and ``Content-Length``, so the upload
+        must send exactly ``mime_type`` and exactly ``byte_size`` bytes; storage
+        refuses anything else (module docstring).
 
         Args:
             key: The upload key (``media/upload/<id>``); nothing else is signed.
             mime_type: The declared media type.
-            max_bytes: Largest accepted file, checked on completion.
+            byte_size: The exact size of the file, 1 to the adapter's cap.
+            ttl: Lifetime of this URL; ``None`` for the configured default.
 
         Returns:
-            The URL, the ``Content-Type`` header it requires and its expiry.
+            The URL, the ``Content-Type`` and ``Content-Length`` headers it
+            requires and its expiry.
 
         Raises:
-            StorageError: If the key is invalid or not an upload key, or signing
-                fails.
+            StorageError: If the key is invalid or not an upload key, the size is
+                outside 1 to the cap, or signing fails.
         """
-        del max_bytes
         checked = self._checked_key(key)
         if not checked.startswith(UPLOAD_KEY_PREFIX):
             # A write URL for an original or a public copy would let a client
             # replace a file after the platform recorded its digest.
             message = "uploads are presigned only for upload keys"
             raise StorageError(message, details={"operation": "presign_put"})
+        if not 1 <= byte_size <= self._max_object_bytes:
+            message = "the announced upload size is outside the accepted range"
+            raise StorageError(message, details={"operation": "presign_put"})
+        lifetime = self._ttl if ttl is None else ttl
         # Taken before signing, so the reported expiry is never later than the
         # one botocore signs from its own, slightly later, clock reading.
-        expires_at = self._clock.now() + self._ttl
+        expires_at = self._clock.now() + lifetime
         try:
             async with self._client() as client:
                 url = await client.generate_presigned_url(
@@ -375,16 +388,40 @@ class S3StoragePort:
                         "Bucket": self._private_bucket,
                         "Key": checked,
                         "ContentType": mime_type.value,
+                        "ContentLength": byte_size,
                     },
-                    ExpiresIn=int(self._ttl.total_seconds()),
+                    ExpiresIn=int(lifetime.total_seconds()),
                 )
         except (ClientError, BotoCoreError) as error:
             raise _storage_error(error, operation="presign_put") from error
         return PresignedUpload(
             url=url,
-            headers=(HttpHeader(name="Content-Type", value=mime_type.value),),
+            headers=(
+                HttpHeader(name="Content-Type", value=mime_type.value),
+                HttpHeader(name="Content-Length", value=str(byte_size)),
+            ),
             expires_at=expires_at,
         )
+
+    async def delete_upload(self, key: str) -> None:
+        """Delete the object at an upload key in the private bucket; idempotent.
+
+        Args:
+            key: An upload key (``media/upload/<id>``).
+
+        Raises:
+            StorageError: If the key is not an upload key, or storage fails.
+        """
+        checked = self._checked_key(key)
+        if not checked.startswith(UPLOAD_KEY_PREFIX):
+            message = "only upload keys are deleted"
+            raise StorageError(message, details={"operation": "delete_upload"})
+        try:
+            async with self._client() as client:
+                # S3 answers 204 for a missing key as well.
+                await client.delete_object(Bucket=self._private_bucket, Key=checked)
+        except (ClientError, BotoCoreError) as error:
+            raise _storage_error(error, operation="delete_upload") from error
 
     async def presign_get(self, key: str) -> PresignedDownload:
         """Return a presigned ``GET`` of ``key`` from the bucket that holds it.

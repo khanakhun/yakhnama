@@ -63,18 +63,21 @@ from yakhnama.modules.reports.domain.events import (
 )
 from yakhnama.modules.reports.domain.value_objects import (
     MEDIA_PER_REPORT_MAX,
+    AssistedSubmission,
     ClientReportId,
     Description,
     HazardGuess,
     ObservationPoint,
     PlaceHint,
     ReportAttribution,
+    ReportChannel,
     ReportContent,
     ReportStatus,
     ReportVersion,
     RevisionNumber,
     TriageResult,
     WithdrawalReason,
+    check_channel_fields,
 )
 from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.events import AggregateChange
@@ -102,14 +105,18 @@ class Report(BaseModel):
     - ``withdrawal_reason`` is set exactly when the status is ``withdrawn``;
     - a draft carries no triage result;
     - ``media_ids`` are unique;
-    - ``updated_at`` is never before ``created_at``.
+    - ``updated_at`` is never before ``created_at``;
+    - ``assisted`` is set exactly for the ``assisted`` channel, and a ``guest``
+      report names no organisation.
 
     Implements: Entity / Aggregate Root.
 
     Attributes:
         id: The client-generated UUIDv7 (``ClientReportId``); a revision gets a new
-            id from the platform's ``IdGenerator``.
-        reporter_id: The user who reported.
+            id from the platform's ``IdGenerator``; a guest report's id comes from
+            the platform too.
+        reporter_id: The user who reported, or the guest submission that carried a
+            guest report (see ``ReportAttribution``).
         organization_id: The organisation the user reported for, or ``None``.
         source_id: The ``provenance`` source record the report is attributed to.
         observed_at: When the observation was made, with its precision.
@@ -129,6 +136,8 @@ class Report(BaseModel):
         version: Optimistic-concurrency version.
         created_at: When the record was created, UTC.
         updated_at: When the record last changed, UTC.
+        channel: How the report reached the platform; inherited by revisions.
+        assisted: The assistance and consent record of an assisted report.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -154,6 +163,8 @@ class Report(BaseModel):
     version: ReportVersion = 1
     created_at: AwareDatetime
     updated_at: AwareDatetime
+    channel: ReportChannel = ReportChannel.ACCOUNT
+    assisted: AssistedSubmission | None = None
 
     @field_validator("submitted_at", "created_at", "updated_at", mode="after")
     @classmethod
@@ -168,6 +179,7 @@ class Report(BaseModel):
         self._check_lifecycle_fields()
         self._check_revision_chain()
         self._check_timestamps()
+        check_channel_fields(self.channel, self.assisted, self.organization_id)
         return self
 
     def _check_lifecycle_fields(self) -> None:
@@ -228,12 +240,14 @@ class Report(BaseModel):
         """Return who the report comes from; every revision inherits it.
 
         Returns:
-            Reporter, organisation and source.
+            Reporter, organisation, source, channel and assistance record.
         """
         return ReportAttribution(
             reporter_id=self.reporter_id,
             organization_id=self.organization_id,
             source_id=self.source_id,
+            channel=self.channel,
+            assisted=self.assisted,
         )
 
     @property
@@ -281,8 +295,8 @@ class Report(BaseModel):
         Step one of the two-step pattern in the module docstring: the caller must
         also call ``mark_superseded`` on this report with the returned state, in the
         same unit of work. The new revision is submitted immediately, starts at
-        version 1 with no triage result and keeps the reporter, organisation and
-        source of this one.
+        version 1 with no triage result and keeps the reporter, organisation,
+        source, channel and assistance record of this one.
 
         Args:
             content: The complete corrected content.
@@ -324,6 +338,7 @@ class Report(BaseModel):
             organization_id=state.organization_id,
             source_id=state.source_id,
             media_count=len(state.media_ids),
+            channel=state.channel,
         )
         return AggregateChange[Report](state=state, events=(event,))
 
@@ -457,6 +472,7 @@ class Report(BaseModel):
             organization_id=self.organization_id,
             source_id=self.source_id,
             media_count=len(self.media_ids),
+            channel=self.channel,
         )
 
     def _event[EventT: ReportEvent](

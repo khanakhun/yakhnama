@@ -11,16 +11,22 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 from yakhnama.modules.identity.public import Actor
 from yakhnama.modules.reports.application.dto import ReportRecord
 from yakhnama.modules.reports.application.specifications import (
+    ReportChannelSpecification,
     ReportHazardCodeSpecification,
     ReportInBoundingBoxSpecification,
     ReportObservedFromSpecification,
     ReportObservedToSpecification,
+    ReportReviewStateSpecification,
     ReportStatusSpecification,
+    ReportTriageFlagSpecification,
 )
+from yakhnama.modules.reports.domain.reviews import ReviewState
 from yakhnama.modules.reports.domain.triage import NEARBY_REPORTS_MAX
 from yakhnama.modules.reports.domain.value_objects import (
     GuessedHazardCode,
+    ReportChannel,
     ReportStatus,
+    TriageFlagKind,
 )
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
@@ -53,10 +59,17 @@ class ListReports(BaseModel):
     Attributes:
         actor: Who asks; non-moderators only ever see their own reports.
         status: Only reports in this status, if set.
+        channel: Only reports that came through this channel, if set.
         hazard_code: Only reports whose reporter guessed this hazard type, if set.
         bbox: Only reports whose *rounded* position lies in this box, if set.
         observed_from: Only reports observed at or after this instant, if set.
         observed_to: Only reports observed at or before this instant, if set.
+        review_state: Only reports whose lineage carries this review mark, if
+            set; moderators only (ADR 0022).
+        triage_flag: Only reports whose latest triage raised this kind of flag,
+            if set; moderators only.
+        is_own_only: Only the actor's own reports (``reporter=me``); narrows a
+            moderator's listing, and changes nothing for anyone else.
         page: Page size and cursor.
     """
 
@@ -64,10 +77,14 @@ class ListReports(BaseModel):
 
     actor: Actor
     status: ReportStatus | None = None
+    channel: ReportChannel | None = None
     hazard_code: GuessedHazardCode | None = None
     bbox: BoundingBox | None = None
     observed_from: AwareDatetime | None = None
     observed_to: AwareDatetime | None = None
+    review_state: ReviewState | None = None
+    triage_flag: TriageFlagKind | None = None
+    is_own_only: bool = False
     page: PageRequest = PageRequest()
 
     @model_validator(mode="after")
@@ -96,6 +113,8 @@ class ListReports(BaseModel):
         filters: list[Specification[ReportRecord]] = []
         if self.status is not None:
             filters.append(ReportStatusSpecification(self.status))
+        if self.channel is not None:
+            filters.append(ReportChannelSpecification(self.channel))
         if self.hazard_code is not None:
             filters.append(ReportHazardCodeSpecification(self.hazard_code))
         if self.bbox is not None:
@@ -106,10 +125,30 @@ class ListReports(BaseModel):
             filters.append(ReportObservedFromSpecification(self.observed_from))
         if self.observed_to is not None:
             filters.append(ReportObservedToSpecification(self.observed_to))
+        if self.review_state is not None:
+            filters.append(ReportReviewStateSpecification(self.review_state))
+        if self.triage_flag is not None:
+            filters.append(ReportTriageFlagSpecification(self.triage_flag))
         combined: Specification[ReportRecord] = TrueSpecification[ReportRecord]()
         for specification in filters:
             combined = combined.and_(specification)
         return combined
+
+
+class GetReportReview(BaseModel):
+    """Ask for the review of a report's lineage and its history (moderators only).
+
+    Implements: Query.
+
+    Attributes:
+        actor: Who asks.
+        report_id: Any revision of the lineage.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor: Actor
+    report_id: EntityId
 
 
 class FindNearbyReports(BaseModel):

@@ -52,6 +52,10 @@ MAX_DEPTH = 32
 # - location (latitude, longitude, coordinates, geometry, location, gps): precise
 #   coordinates of a report can pinpoint a reporter's home; public output is coarsened
 #   separately via ``Settings.public_coordinate_decimals``.
+# - guest access and consent (capability, challenge, nonce, consent): a guest's
+#   capability is a bearer secret for their submission (ADR 0020), a challenge and
+#   its nonce are only useful to replay, and an assisted report's consent record is
+#   private to the reporter and moderators (ADR 0019).
 # Substring matching over-redacts some harmless keys (for example "allocation"
 # contains "location"); losing a log value is cheap, leaking a reporter is not.
 SENSITIVE_KEY_SUBSTRINGS: tuple[str, ...] = (
@@ -81,12 +85,25 @@ SENSITIVE_KEY_SUBSTRINGS: tuple[str, ...] = (
     "geometry",
     "location",
     "gps",
+    "capability",
+    "challenge",
+    "nonce",
+    "consent",
 )
 
 # These markers are too short to match as substrings ("lat" is inside "translate",
-# "ip" inside "description"), so they only match at the END of the normalised key:
-# "first_name", "reporter_lat", "client_ip", "home_addr".
-SENSITIVE_KEY_SUFFIXES: tuple[str, ...] = ("name", "lat", "lon", "lng", "ip", "addr")
+# "ip" inside "description", "note" inside "denote"), so they only match at the END of
+# the normalised key: "first_name", "reporter_lat", "client_ip", "home_addr",
+# "assisted_note" (an assisted report's private note, ADR 0019).
+SENSITIVE_KEY_SUFFIXES: tuple[str, ...] = (
+    "name",
+    "lat",
+    "lon",
+    "lng",
+    "ip",
+    "addr",
+    "note",
+)
 
 # Normalised keys ending in "name" that are known not to name a person. Anything
 # unknown ending in "name" is redacted; add to the allow-list deliberately, after

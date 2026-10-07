@@ -46,9 +46,13 @@ services:
       retries: 10
       start_period: 5s
 
-  # One-shot: creates the buckets, then exits. Behind a profile because
-  # `docker compose up --wait` treats any exited container as a failure;
-  # `poe up` runs it explicitly after the stack is healthy.
+  # One-shot: creates the buckets and the private bucket's lifecycle rule, then exits.
+  # Behind a profile because `docker compose up --wait` treats any exited container as
+  # a failure; `poe up` runs it explicitly after the stack is healthy. The rule expires
+  # abandoned objects under media/upload/ after one day (the smallest unit S3 lifecycle
+  # rules have; the media.sweep_stale_uploads task deletes them sooner). `mc ilm import`
+  # replaces the whole configuration, so running it again changes nothing. Production
+  # needs the same rule on its private bucket (docs/architecture/recording.md).
   minio-init:
     image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     profiles: ["init"]
@@ -65,7 +69,9 @@ services:
         mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
         mc mb --ignore-existing local/yakhnama-media-private &&
         mc mb --ignore-existing local/yakhnama-media-public &&
-        mc mb --ignore-existing local/yakhnama-rasters
+        mc mb --ignore-existing local/yakhnama-rasters &&
+        echo '{"Rules":[{"ID":"expire-abandoned-uploads","Status":"Enabled","Filter":{"Prefix":"media/upload/"},"Expiration":{"Days":1}}]}'
+        | mc ilm import local/yakhnama-media-private
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.2@sha256:4883630ef9db14031cde3e60700c9a9a8eaf1b5c24db1589d6a2d43de38ba2a9
@@ -78,6 +84,17 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-dev-only}
       KC_HEALTH_ENABLED: "true"
+      # Social sign-in (docs/architecture/auth.md, "Sign-up and social sign-in"). The realm
+      # export reads these through Keycloak's import placeholders, so they only apply when
+      # the realm is first imported; an existing realm is changed through the admin console
+      # or API. Empty (the default) leaves both providers disabled. The client secrets come
+      # from your local, git-ignored .env and never from a committed file.
+      KC_GOOGLE_ENABLED: ${KC_GOOGLE_ENABLED:-false}
+      KC_GOOGLE_CLIENT_ID: ${KC_GOOGLE_CLIENT_ID:-}
+      KC_GOOGLE_CLIENT_SECRET: ${KC_GOOGLE_CLIENT_SECRET:-}
+      KC_FACEBOOK_ENABLED: ${KC_FACEBOOK_ENABLED:-false}
+      KC_FACEBOOK_CLIENT_ID: ${KC_FACEBOOK_CLIENT_ID:-}
+      KC_FACEBOOK_CLIENT_SECRET: ${KC_FACEBOOK_CLIENT_SECRET:-}
     ports:
       - "127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}:8080"
     volumes:
@@ -96,6 +113,25 @@ services:
       timeout: 5s
       retries: 12
       start_period: 60s
+
+  # Catches every mail Keycloak sends in development (address verification, password
+  # reset) so nothing reaches a real inbox. Keycloak reaches it as mailpit:1025 on the
+  # compose network (the realm's smtpServer); only the web UI and its API are published,
+  # at http://127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}. Development only.
+  mailpit:
+    image: axllent/mailpit:v1.31.3@sha256:ed9b00c609e77e99c79b93f1178255ebc271868920f2c69a8d166bd5634ed10d
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_DISABLE_RDNS: "true"
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_HOST_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   redis:
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499

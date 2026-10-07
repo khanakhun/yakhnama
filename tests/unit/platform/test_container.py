@@ -8,10 +8,16 @@ import pytest
 from fastapi import FastAPI, Request
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
+from tests.factories.boundaries import boundary_source
 from tests.fakes.identity import actor_with
 from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.main import create_app
+from yakhnama.modules.geography.application.commands import LoadDistrictBoundaries
+from yakhnama.modules.geography.application.handlers import (
+    LoadDistrictBoundariesHandler,
+)
 from yakhnama.modules.geography.infrastructure.queries import (
+    SqlAlchemyDistrictEdgeQueryService,
     SqlAlchemyPlaceQueryService,
 )
 from yakhnama.modules.geography.infrastructure.uow import (
@@ -29,6 +35,7 @@ from yakhnama.modules.impacts.infrastructure.uow import SqlAlchemyImpactsUnitOfW
 from yakhnama.platform.container import (
     Container,
     build_container,
+    build_district_boundary_handler,
     build_seed_handler,
     get_container,
 )
@@ -128,6 +135,24 @@ def test_build_container_binds_sqlalchemy_query_services(
     assert isinstance(services[0], SqlAlchemyPlaceQueryService)
     assert isinstance(services[1], SqlAlchemyHazardTypeQueryService)
     assert isinstance(services[2], SqlAlchemyImpactMetricQueryService)
+    assert isinstance(
+        container.district_edge_query_service, SqlAlchemyDistrictEdgeQueryService
+    )
+
+
+async def test_build_district_boundary_handler_denies_a_non_admin_actor(
+    container: Container,
+) -> None:
+    handler = build_district_boundary_handler(container)
+    citizen = actor_with(user_id=SequentialIdGenerator(seed=3).new_id())
+    command = LoadDistrictBoundaries(
+        source=boundary_source([("XX101", None)]), actor=citizen
+    )
+
+    with pytest.raises(PermissionDeniedError):
+        await handler(command)
+
+    assert isinstance(handler, LoadDistrictBoundariesHandler)
 
 
 async def test_build_seed_handler_denies_a_non_admin_actor(

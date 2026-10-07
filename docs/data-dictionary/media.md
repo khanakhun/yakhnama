@@ -27,7 +27,7 @@ Source code: `src/yakhnama/modules/media/domain/`.
 | field | type | unit | meaning | provenance | since |
 |-------|------|------|---------|------------|-------|
 | `id` | `UUID` (v7) | — | Stable identity. | Platform `IdGenerator`. | Phase 3 |
-| `owner_id` | `UUID` (v7) | — | The uploading user. | Authenticated actor. | Phase 3 |
+| `owner_id` | `UUID` (v7) | — | The uploading user, or the guest submission that owns a guest's photo (ADR 0020); guest photos are images only (JPEG, PNG, WebP) and their source is a platform-owned `citizen` source titled "Guest media upload". | Authenticated actor, or the guest submission. | Phase 3 (guest: 2026-10) |
 | `report_id` | `UUID` (v7), nullable | — | The report the asset belongs to. | Application, at request. | Phase 3 |
 | `source_id` | `UUID` (v7) | — | The `provenance` source the asset is attributed to. | Application, at request. | Phase 3 |
 | `original_key` | `str`, object key | — | Storage key of the private original: `media/original/<id>` (**proposed** layout, Q-M6). Only the platform writes it, by copying the client's upload from `media/upload/<id>` at completion; no client URL ever covers it. Keys match `^[a-z0-9][a-z0-9/_.-]{3,255}$` and never contain `..`. | Platform. | Phase 3 |
@@ -38,7 +38,7 @@ Source code: `src/yakhnama/modules/media/domain/`.
 | `exif.taken_at` | `DateWithPrecision`, nullable | UTC + precision | EXIF capture time. | EXIF reader adapter, from the original. | Phase 3 |
 | `exif.location` | `Coordinates` (WGS84), nullable | degrees | EXIF GPS position. **Private**. | EXIF reader adapter, from the original. | Phase 3 |
 | `exif.camera` | `str`, safe single-line text 1–120, nullable | — | EXIF camera make and model. | EXIF reader adapter, from the original. | Phase 3 |
-| `upload_status` | `UploadStatus` | — | `requested`, `completed` or `failed`. | Platform. | Phase 3 |
+| `upload_status` | `UploadStatus` | — | `requested`, `completed` or `failed`. An upload still `requested` `media_upload_sweep_after_seconds` (default 2 hours) after its grant is marked `failed` by `media.sweep_stale_uploads`. | Platform. | Phase 3 |
 | `scan_status` | `ScanStatus` | — | Malware scanner verdict: `pending`, `clean`, `infected`, `unavailable`. Only `clean` allows publication. | `MalwareScanner` port. | Phase 3 |
 | `moderation_status` | `ModerationStatus` | — | `pending`, `approved`, `rejected`, `quarantined`. | Moderator (and the platform, for an infected scan). | Phase 3 |
 | `sensitivity` | `SensitivityFlag` | — | `none`, `injured_or_deceased`, `identifiable_people`, `other` (**proposed** values, Q-M4). | Moderator. | Phase 3 |
@@ -119,7 +119,53 @@ searched spatially, only read back for triage and moderation. Deduplication
 `(owner_id, sha256)` restricted to `upload_status = 'completed'`, so a
 `requested` or `failed` upload with no digest yet never appears in the lookup.
 `report_id` is indexed for a report's assets. Owner, report and source ids
-carry no foreign key, because they belong to other modules.
+carry no foreign key, because they belong to other modules. Migration `0024` adds the
+partial index `ix_media_assets_created_at_requested` on `created_at` over requested
+uploads, for the stale-upload sweep.
+
+Migration `0025` adds the partial index `ix_media_assets_moderation_queue` on
+`(moderation_status, created_at, id)` over completed uploads, for the moderators'
+queue below, and (on the reports module's table) the GIN index
+`ix_reports_media_ids_gin` on `reports.media_ids` (`jsonb_path_ops`), which serves the
+queue's report lookup. Migration `0026` adds the partial index
+`ix_media_assets_completed_created_at_id` on `(created_at, id)` over completed uploads,
+which serves the queue in order when it is not filtered by moderation status (the
+`0025` index leads with the status and cannot).
+
+An upload grant takes the file's exact `byte_size` (1 to 52 428 800 bytes); it is not
+stored on the asset, but signed into the presigned `PUT` as `Content-Length`, so the
+stored object can only have that size. A guest photo's asset id is the one its reserved
+slot names (ADR 0020).
+
+## Moderators' queue
+
+`GET /api/v1/moderation/media` (moderators and admins only; `CanModerate` in the
+application, 403 for anyone else) lists **completed** uploads, oldest first by
+`(created_at, id)`, one page at a time (`limit` 1 to 200, default 50, opaque `cursor`,
+the next page also in `Link`). A requested or failed upload has no file to look at, so
+it is never queued. Filters: `moderation_status` (`pending`, `approved`, `rejected`,
+`quarantined`) and `scan_status` (`pending`, `clean`, `infected`, `unavailable`).
+
+Each item is the `MediaAssetResponse` of `GET /api/v1/media/{asset_id}` with
+`public_download` and `original_download` always `null`: a page of up to 200 presigned
+links would be costly to sign and would hand out originals nobody opened, so a
+moderator opens one asset to get its links.
+
+`report_id` in the queue is the asset's own report or, for a photo uploaded before its
+report existed (`POST /media`, the usual path; such an asset keeps `report_id`
+`NULL`), the **newest report revision whose `media_ids` lists the asset** (a correlated
+lookup on `reports`, read as a plain table, never through the reports module's code).
+The lookup aggregates every listing report (`array_agg(id ORDER BY created_at DESC, id
+DESC)[1]`) instead of taking the first by `ORDER BY ... LIMIT 1`, so PostgreSQL reads
+it from `ix_reports_media_ids_gin`: with a `LIMIT` it walked the reports' creation-time
+index backwards (about 0.7 s per page at 200 000 reports). `GET
+/api/v1/media/{asset_id}` still returns the stored `report_id`, which can be `null` for
+the same asset (`docs/open-questions.md` Q247).
+
+A moderator's decision (`POST /api/v1/moderation/media/{asset_id}/decision`) takes an
+optional `If-Match` with the asset's `ETag` (`"<asset_id>:<version>"`); when sent, the
+version is compared inside the unit of work, so a stale approval cannot overwrite a
+rejection stored a moment earlier (`412`; Q258).
 
 ## Open questions raised by this module
 

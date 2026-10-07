@@ -7,7 +7,9 @@ from taskiq.schedule_sources import LabelScheduleSource
 
 from yakhnama.platform.settings import Settings
 from yakhnama.platform.tasks.handlers import (
+    GUEST_PURGE_TASK,
     IDEMPOTENCY_PURGE_TASK,
+    MEDIA_SWEEP_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
     TaskHandlerRegistry,
@@ -32,6 +34,8 @@ def test_task_schedules_defaults_are_five_seconds_hourly_and_daily(
         OUTBOX_RELAY_TASK: 5,
         IDEMPOTENCY_PURGE_TASK: 3600,
         OUTBOX_PURGE_TASK: OUTBOX_PURGE_INTERVAL_SECONDS,
+        GUEST_PURGE_TASK: 900,
+        MEDIA_SWEEP_TASK: 900,
     }
     assert OUTBOX_PURGE_INTERVAL_SECONDS == 86_400
 
@@ -78,5 +82,7 @@ async def test_build_scheduler_label_source_yields_one_schedule_per_task(
         (OUTBOX_RELAY_TASK, OUTBOX_RELAY_TASK, 5),
         (IDEMPOTENCY_PURGE_TASK, IDEMPOTENCY_PURGE_TASK, 3600),
         (OUTBOX_PURGE_TASK, OUTBOX_PURGE_TASK, 86_400),
+        (GUEST_PURGE_TASK, GUEST_PURGE_TASK, 900),
+        (MEDIA_SWEEP_TASK, MEDIA_SWEEP_TASK, 900),
     }
     assert all(schedule.kwargs == {} for schedule in schedules)

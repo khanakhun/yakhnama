@@ -14,7 +14,9 @@ Patterns: Repository (port side), Unit of Work, Query Service, Adapter (port sid
 from typing import Protocol
 
 from yakhnama.modules.provenance.application.commands import (
+    MarkPlatformSourceReferenced,
     MarkSourceReferenced,
+    RegisterPlatformSource,
     RegisterSource,
 )
 from yakhnama.modules.provenance.application.dto import SourceDetail, SourceSummary
@@ -168,6 +170,48 @@ class SourceRegistrar(Protocol):
 
         Raises:
             PermissionDeniedError: If the actor may not register it.
+        """
+        ...
+
+
+class PlatformSourceRegistrar(Protocol):
+    """Registers a platform-owned source for another module.
+
+    Bound to ``RegisterPlatformSourceHandler`` in the composition root; used for
+    guest reports and guest uploads, which have no user to own a source. The
+    source stays unreferenced until ``PlatformSourceReferenceMarker`` marks it.
+
+    Implements: Command Handler (port side).
+    """
+
+    async def __call__(self, command: RegisterPlatformSource) -> SourceDetail:
+        """Register the source, idempotently when its id was reserved.
+
+        Args:
+            command: The registration.
+
+        Returns:
+            The new (or already registered) source.
+        """
+        ...
+
+
+class PlatformSourceReferenceMarker(Protocol):
+    """Marks a platform-owned source referenced once its citing fact is stored.
+
+    Bound to ``MarkPlatformSourceReferencedHandler`` in the composition root.
+
+    Implements: Command Handler (port side).
+    """
+
+    async def __call__(self, command: MarkPlatformSourceReferenced) -> SourceDetail:
+        """Mark the source referenced; idempotent.
+
+        Args:
+            command: The platform source.
+
+        Returns:
+            The referenced source.
         """
         ...
 

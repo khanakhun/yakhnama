@@ -29,6 +29,7 @@ from tests.fakes.api import (
     RecordingStores,
     build_recording_services_over_fakes,
     build_test_app,
+    harness_settings,
 )
 from tests.fakes.audit import InMemoryAuditUnitOfWork
 from tests.fakes.clock import FrozenClock
@@ -93,7 +94,11 @@ from yakhnama.modules.provenance.public import (
     SourceDetails,
     SourceType,
 )
-from yakhnama.platform.container import CorePorts, RecordingServices
+from yakhnama.platform.container import (
+    CorePorts,
+    RecordingServices,
+    build_guest_ports,
+)
 from yakhnama.platform.wiring.events import PlaceDirectoryAdapter
 from yakhnama.platform.wiring.exchange import (
     METRIC_KIND_MESSAGE,
@@ -191,6 +196,7 @@ def _services(
         stores=stores,
         core=core if core is not None else _core(),
         impacts=impacts if impacts is not None else InMemoryImpactsUnitOfWork(),
+        guest=build_guest_ports(harness_settings()),
     )
     return services
 

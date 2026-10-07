@@ -180,7 +180,9 @@ async def upload_media(
         The completed asset's id.
     """
     grant = await client.post(
-        path, json={"mime_type": "image/jpeg"}, headers=reporter_headers()
+        path,
+        json={"mime_type": "image/jpeg", "byte_size": 2048},
+        headers=reporter_headers(),
     )
     assert grant.status_code == 201, grant.text
     asset_id = str(grant.json()["asset_id"])

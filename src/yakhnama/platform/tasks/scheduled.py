@@ -10,7 +10,10 @@ Default intervals are proposed operational values, not domain facts:
 
 - ``outbox.relay_once`` every ``outbox_relay_interval_seconds`` (5 s);
 - ``idempotency.purge_expired`` every ``idempotency_purge_interval_minutes`` (1 h);
-- ``outbox.purge_published`` once a day.
+- ``outbox.purge_published`` once a day;
+- ``reports.purge_guest_records`` every ``guest_purge_interval_seconds`` (15 min);
+- ``media.sweep_stale_uploads`` every ``media_upload_sweep_interval_seconds``
+  (15 min).
 
 Patterns: Factory, DTO.
 """
@@ -23,7 +26,9 @@ from taskiq.schedule_sources import LabelScheduleSource
 
 from yakhnama.platform.settings import Settings
 from yakhnama.platform.tasks.handlers import (
+    GUEST_PURGE_TASK,
     IDEMPOTENCY_PURGE_TASK,
+    MEDIA_SWEEP_TASK,
     OUTBOX_PURGE_TASK,
     OUTBOX_RELAY_TASK,
 )
@@ -54,7 +59,7 @@ def task_schedules(settings: Settings) -> tuple[TaskSchedule, ...]:
     """Return the periodic schedules configured by ``settings``.
 
     Args:
-        settings: Supplies the relay and purge intervals.
+        settings: Supplies the relay, purge and sweep intervals.
 
     Returns:
         One schedule per periodic task.
@@ -72,6 +77,14 @@ def task_schedules(settings: Settings) -> tuple[TaskSchedule, ...]:
         TaskSchedule(
             task_name=OUTBOX_PURGE_TASK,
             interval_seconds=OUTBOX_PURGE_INTERVAL_SECONDS,
+        ),
+        TaskSchedule(
+            task_name=GUEST_PURGE_TASK,
+            interval_seconds=settings.guest_purge_interval_seconds,
+        ),
+        TaskSchedule(
+            task_name=MEDIA_SWEEP_TASK,
+            interval_seconds=settings.media_upload_sweep_interval_seconds,
         ),
     )
 

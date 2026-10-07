@@ -5,9 +5,17 @@ Patterns: Unit of Work.
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yakhnama.modules.reports.application.ports import ReportRepository
+from yakhnama.modules.reports.application.ports import (
+    GuestSubmissionRepository,
+    ReportRepository,
+    ReportReviewRepository,
+    SpentChallengeRepository,
+)
 from yakhnama.modules.reports.infrastructure.repositories import (
+    SqlAlchemyGuestSubmissionRepository,
     SqlAlchemyReportRepository,
+    SqlAlchemyReportReviewRepository,
+    SqlAlchemySpentChallengeRepository,
 )
 from yakhnama.platform.uow import SqlAlchemyUnitOfWork
 
@@ -25,6 +33,9 @@ class SqlAlchemyReportsUnitOfWork(SqlAlchemyUnitOfWork):
             session: The session of this unit of work.
         """
         self._reports = SqlAlchemyReportRepository(session)
+        self._guest_submissions = SqlAlchemyGuestSubmissionRepository(session)
+        self._spent_challenges = SqlAlchemySpentChallengeRepository(session)
+        self._report_reviews = SqlAlchemyReportReviewRepository(session)
 
     @property
     def reports(self) -> ReportRepository:
@@ -37,3 +48,33 @@ class SqlAlchemyReportsUnitOfWork(SqlAlchemyUnitOfWork):
         # not active, instead of an AttributeError on a missing repository.
         _ = self.session
         return self._reports
+
+    @property
+    def guest_submissions(self) -> GuestSubmissionRepository:
+        """Return the guest submission repository bound to this transaction.
+
+        Returns:
+            The repository; valid only inside ``async with``.
+        """
+        _ = self.session
+        return self._guest_submissions
+
+    @property
+    def spent_challenges(self) -> SpentChallengeRepository:
+        """Return the spent challenge repository bound to this transaction.
+
+        Returns:
+            The repository; valid only inside ``async with``.
+        """
+        _ = self.session
+        return self._spent_challenges
+
+    @property
+    def report_reviews(self) -> ReportReviewRepository:
+        """Return the review repository bound to this transaction.
+
+        Returns:
+            The repository; valid only inside ``async with``.
+        """
+        _ = self.session
+        return self._report_reviews

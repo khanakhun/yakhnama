@@ -22,7 +22,7 @@ from datetime import timedelta
 from http import HTTPStatus
 from importlib.metadata import version
 from types import MappingProxyType
-from typing import Final
+from typing import Any, Final
 
 import pydantic
 import structlog
@@ -66,7 +66,24 @@ from yakhnama.modules.provenance.api.router import (
     moderation_router as provenance_moderation_router,
 )
 from yakhnama.modules.provenance.api.router import router as provenance_router
+from yakhnama.modules.reports.api.guest_router import (
+    router as guest_submissions_router,
+)
+from yakhnama.modules.reports.api.router import (
+    moderation_router as reports_moderation_router,
+)
 from yakhnama.modules.reports.api.router import router as reports_router
+from yakhnama.modules.reports.public import (
+    GuestCapabilityExpiredError,
+    GuestCapabilityInvalidError,
+    GuestChallengeExpiredError,
+    GuestChallengeInvalidError,
+    GuestChallengeSpentError,
+    GuestMediaLimitError,
+    GuestProofInvalidError,
+    GuestSubmissionClosedError,
+    GuestSubmissionLimitError,
+)
 from yakhnama.modules.verification.api.router import (
     moderation_router as verification_moderation_router,
 )
@@ -87,6 +104,7 @@ from yakhnama.platform.http import (
 )
 from yakhnama.platform.idempotency.middleware import IdempotencyMiddleware
 from yakhnama.platform.logging import configure_logging
+from yakhnama.platform.openapi_headers import declare_middleware_headers
 from yakhnama.platform.problem_details import (
     ProblemFieldError,
     build_problem,
@@ -114,8 +132,14 @@ API_PREFIX = "/api/v1"
 DOCS_PATH: Final = f"{API_PREFIX}/docs"
 OPENAPI_PATH: Final = f"{API_PREFIX}/openapi.json"
 WWW_AUTHENTICATE: Final = "WWW-Authenticate"
-# Responses about a person: never cacheable, even without an Authorization header.
-PRIVATE_PATH_PREFIXES: Final = (f"{API_PREFIX}/me", f"{API_PREFIX}/users")
+# Responses about a person, and guest responses that carry or require a capability:
+# never cacheable, even without an Authorization header.
+PRIVATE_PATH_PREFIXES: Final = (
+    f"{API_PREFIX}/me",
+    f"{API_PREFIX}/users",
+    f"{API_PREFIX}/guest-submissions",
+)
+RETRY_AFTER: Final = "Retry-After"
 BEARER_CHALLENGE: Final = 'Bearer realm="yakhnama"'
 
 # Looked up along the raised error's MRO, so a module's subclass (for example
@@ -150,6 +174,35 @@ ERROR_STATUSES: Final[Mapping[type[YakhnamaError], tuple[HTTPStatus, str]]] = (
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "service-unavailable",
             ),
+            # Guest reporting (ADR 0020): one slug per thing the client can do
+            # something about (ask a new challenge, start again, wait).
+            GuestChallengeInvalidError: (
+                HTTPStatus.UNPROCESSABLE_CONTENT,
+                "guest-challenge-invalid",
+            ),
+            GuestChallengeExpiredError: (
+                HTTPStatus.UNPROCESSABLE_CONTENT,
+                "guest-challenge-expired",
+            ),
+            GuestProofInvalidError: (
+                HTTPStatus.UNPROCESSABLE_CONTENT,
+                "guest-proof-invalid",
+            ),
+            GuestChallengeSpentError: (HTTPStatus.CONFLICT, "guest-challenge-spent"),
+            GuestCapabilityInvalidError: (
+                HTTPStatus.FORBIDDEN,
+                "guest-capability-invalid",
+            ),
+            GuestCapabilityExpiredError: (
+                HTTPStatus.FORBIDDEN,
+                "guest-capability-expired",
+            ),
+            GuestMediaLimitError: (HTTPStatus.CONFLICT, "guest-media-limit"),
+            GuestSubmissionClosedError: (
+                HTTPStatus.CONFLICT,
+                "guest-submission-closed",
+            ),
+            GuestSubmissionLimitError: (HTTPStatus.TOO_MANY_REQUESTS, "rate-limited"),
         }
     )
 )
@@ -174,6 +227,7 @@ API_ROUTERS: Final[tuple[APIRouter, ...]] = (
     moderation_router,
     provenance_router,
     reports_router,
+    guest_submissions_router,
     media_router,
     events_router,
     impact_claims_router,
@@ -182,6 +236,7 @@ API_ROUTERS: Final[tuple[APIRouter, ...]] = (
     events_moderation_router,
     impact_claims_moderation_router,
     verification_moderation_router,
+    reports_moderation_router,
     exchange_router,
     exchange_moderation_router,
     ingestion_router,
@@ -221,7 +276,8 @@ async def handle_yakhnama_error(request: Request, error: YakhnamaError) -> JSONR
     The error's ``message`` is shown as ``detail`` because the error contract makes it
     safe for clients; ``details`` are not echoed because they may contain input
     values. An unmapped error is a server bug, so its message is withheld. A 401
-    carries ``WWW-Authenticate: Bearer`` (RFC 6750 §3).
+    carries ``WWW-Authenticate: Bearer`` (RFC 6750 §3); a 429 carries
+    ``Retry-After`` when the error knows it (``GuestSubmissionLimitError``).
 
     Args:
         request: The failed request.
@@ -241,11 +297,11 @@ async def handle_yakhnama_error(request: Request, error: YakhnamaError) -> JSONR
         detail = INTERNAL_ERROR_DETAIL
     else:
         detail = error.message
-    headers = (
-        {WWW_AUTHENTICATE: BEARER_CHALLENGE}
-        if status is HTTPStatus.UNAUTHORIZED
-        else None
-    )
+    headers: dict[str, str] | None = None
+    if status is HTTPStatus.UNAUTHORIZED:
+        headers = {WWW_AUTHENTICATE: BEARER_CHALLENGE}
+    elif isinstance(error, GuestSubmissionLimitError):
+        headers = {RETRY_AFTER: str(error.retry_after_seconds)}
     return problem_response(
         build_problem(
             status, slug, detail=detail, instance=get_request_id(request.scope)
@@ -548,4 +604,26 @@ def create_app(
     app.exception_handler(Exception)(build_internal_error_handler(resolved_settings))
     for api_router in API_ROUTERS:
         app.include_router(api_router)
+    _declare_middleware_headers(app)
     return app
+
+
+def _declare_middleware_headers(app: FastAPI) -> None:
+    """Make ``app.openapi()`` also declare the headers the middlewares set.
+
+    FastAPI documents only what routes return; ``Retry-After`` and
+    ``Idempotent-Replayed`` come from the rate-limit and idempotency middlewares
+    (``platform/openapi_headers``, ADR 0022).
+
+    Args:
+        app: The application, with every router included.
+    """
+    build_document = app.openapi
+
+    # Any: the OpenAPI document is free JSON, FastAPI's own return type.
+    def openapi_with_headers() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            app.openapi_schema = declare_middleware_headers(build_document())
+        return app.openapi_schema
+
+    app.openapi = openapi_with_headers  # type: ignore[method-assign]  # reason: FastAPI's documented way to extend the generated schema
