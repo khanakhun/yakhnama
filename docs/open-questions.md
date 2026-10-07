@@ -1096,9 +1096,9 @@ source of truth for them; Q102–Q173 come from the Phase 3 implementation repor
 
 - **Question:** `ClamAvScanner` is unit tested against a fake stream and a loopback stand-in, but not yet verified against a real `clamd`.
 - **Why it matters:** A protocol mismatch (framing, size limits) would only surface once real malware scanning is relied on in production.
-- **Proposed default:** Verify against `clamav/clamav` before production; not yet done.
+- **Proposed default:** Verify against `clamav/clamav` before production. Done by hand on 2026-10-07 against `clamav/clamav:1.4` in the production stack (ADR 0023): a clean file, the EICAR test file (`infected`) and a 52 MiB stream (`clean`, with `StreamMaxLength 55M`) gave the expected verdicts. No automated test against a real clamd exists yet.
 - **Blocking:** yes, before production
-- **Status:** open (raised in `docs/architecture/media.md`, Q-M12)
+- **Status:** open (raised in `docs/architecture/media.md`, Q-M12; verified by hand, proposed to close)
 
 ## Q117 — PDF and MP4 metadata not stripped
 
@@ -2814,3 +2814,87 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
 - **Proposed default:** Keep 200 without paging; a read never answers 422 for it.
 - **Blocking:** no
 - **Status:** open (raised by the review of ADR 0022, 2026-10-07)
+
+## Q260 — Anonymous rate limit behind the portal
+
+- **Question:** In production only the portal's server calls the API, and it sends no
+  `X-Forwarded-For` (a visitor could choose the value; web portal Q-W9). Uvicorn runs with
+  `--no-proxy-headers`, so every anonymous request shares one rate-limit bucket. How
+  should the backend tell anonymous visitors apart?
+- **Why it matters:** With the default 60 a minute, a handful of visitors would lock
+  every anonymous visitor out; with a high limit, one abuser can use the whole budget.
+- **Proposed default:** `YAKHNAMA_RATE_LIMIT_ANONYMOUS_PER_MINUTE=3000` in
+  `production.env.example` until a trusted path exists, for example the portal sending
+  the address its own reverse proxy saw in a header the backend trusts only from the
+  portal (`--forwarded-allow-ips` set to the Docker gateway), or the portal rate-limiting
+  visitors itself.
+- **Blocking:** no (blocks a public launch with real traffic)
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q261 — Hosting topology and release process
+
+- **Question:** Is the first production deployment one virtual server running the
+  backend stack with Docker Compose beside the portal and the host's reverse proxy, with
+  Keycloak and MinIO self-hosted on it? Are images built on the server, copied with
+  `docker save`, or pushed to a registry, and who may deploy?
+- **Why it matters:** It fixes the files in ADR 0023, the backup plan (Q264) and who holds
+  the production secrets; a registry needs credentials and a retention policy.
+- **Proposed default:** One 16 GB server, `docker compose -f
+  docker-compose.production.yml`, images built on the server from a reviewed release
+  commit; a registry once CI builds images.
+- **Blocking:** no
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q262 — Keycloak's database in the shared PostgreSQL cluster
+
+- **Question:** May Keycloak keep its realms in its own database and role inside the
+  PostgreSQL cluster that holds Yakhnama's data?
+- **Why it matters:** One cluster saves about 300 MB and one more service to run and back
+  up, but an outage, upgrade or restore of one affects the other, and a PostGIS image
+  upgrade also upgrades Keycloak's database server.
+- **Proposed default:** Shared cluster, separate database and non-superuser role, `CONNECT`
+  revoked from `PUBLIC` on both databases
+  (`docker/keycloak/production/postgres-init/010-keycloak-database.sh`).
+- **Blocking:** no
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q263 — ClamAV memory and signature updates
+
+- **Question:** Is about 1.2 GB of memory for clamd acceptable, and may scanning pause
+  for about a minute while new signatures load?
+- **Why it matters:** clamd holds every signature in memory. With
+  `ConcurrentDatabaseReload` on (the default) an update briefly needs twice that, about
+  2.5 GB; with it off, scans wait during the reload, and a scan that times out is
+  `unavailable`, so the photo stays unpublished until it is scanned again.
+- **Proposed default:** `ConcurrentDatabaseReload no`, a 2 GB limit, signature checks
+  twice a day (`docker-compose.production.yml`).
+- **Blocking:** no
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q264 — Backups and restore
+
+- **Question:** What is backed up, how often, where to, for how long, and who tests a
+  restore?
+- **Why it matters:** The database is the only record of the region's reports, events and
+  claims (`AGENTS.md` §1), and the media buckets hold the only copies of the photos. A
+  backup on the same server does not survive the loss of the server.
+- **Proposed default:** A nightly `pg_dump -Fc` of the `yakhnama` and `keycloak`
+  databases and an `mc mirror` of both media buckets to object storage at another
+  provider, encrypted, kept 30 days, with a restore tested before launch and every
+  quarter; `.env.production` kept in a password manager (`docs/architecture/deployment.md`,
+  "Backups").
+- **Blocking:** yes, before production holds real data
+- **Status:** open (raised by ADR 0023, 2026-10-07)
+
+## Q265 — Least-privilege database role for the application
+
+- **Question:** Should the API, the worker and the scheduler connect as a role that owns
+  Yakhnama's schema but is not a superuser, with migrations run by a separate owner?
+- **Why it matters:** The application connects as `POSTGRES_USER`, the cluster's
+  superuser (as in development). An injection or a stolen password would then reach every
+  database in the cluster, Keycloak's included.
+- **Proposed default:** Today, the superuser; before launch, a `yakhnama_app` role with
+  the table privileges the application needs, and the superuser only for migrations and
+  the extensions.
+- **Blocking:** no (should be done before launch)
+- **Status:** open (raised by ADR 0023, 2026-10-07)

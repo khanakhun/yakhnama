@@ -56,6 +56,7 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 | [0020] | Guest submissions with a proof-of-work challenge and a capability | proposed |
 | [0021] | District boundaries from OCHA COD-AB, published only as shared edges | proposed |
 | [0022] | Reversible report review marks, the media queue and the moderator directory | proposed |
+| [0023] | Production packaging and deployment topology | proposed |
 
 [0001]: 0001-modular-monolith-with-hexagonal-layers.md
 [0002]: 0002-postgresql-with-postgis.md
@@ -79,3 +80,4 @@ skill, `.claude/skills/write-adr/SKILL.md`. The `architect` subagent owns this d
 [0020]: 0020-guest-submissions-with-proof-of-work.md
 [0021]: 0021-district-boundaries-from-cod-ab-and-shared-edges.md
 [0022]: 0022-reversible-report-review-marks-and-moderation-queues.md
+[0023]: 0023-production-packaging-and-deployment-topology.md

@@ -288,6 +288,29 @@ Work proceeds in phases. Each `docs/plans/phase-N.md` is written and approved by
 maintainer before any code of that phase is written; see `docs/plans/` for the current
 plan and `CONTRIBUTING.md` for the branch model.
 
+## Production
+
+The backend ships as one container image (`Dockerfile`) that runs the API, the Taskiq
+worker, the scheduler and the one-shot commands (migrations, reference data, district
+boundaries). `docker-compose.production.yml` runs it on one server with PostgreSQL and
+PostGIS, Redis, Keycloak, MinIO and ClamAV, every port on 127.0.0.1, behind the host's
+own reverse proxy; it is separate from the development `docker-compose.yml`.
+
+```bash
+cp production.env.example .env.production    # fill in every change-me and example.org
+docker compose -f docker-compose.production.yml --env-file .env.production build
+docker compose -f docker-compose.production.yml --env-file .env.production up -d
+docker compose -f docker-compose.production.yml --env-file .env.production run --rm migrate python -m yakhnama.seed
+```
+
+- `docs/architecture/deployment.md`: the full install and upgrade steps, the reverse-proxy
+  configuration for nginx and Caddy, measured memory and backups.
+- `docker/keycloak/production/README.md`: the production realm, derived from the
+  development one by `python -m yakhnama.platform.keycloak_realm`, and the first
+  administrator.
+- ADR 0023 records the decisions; open questions Q260 to Q265 list what the maintainer
+  still has to decide.
+
 ## Project layout
 
 ```

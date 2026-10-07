@@ -122,10 +122,11 @@ UTC (**proposed**, Q-M11).
 | `malware_scanner` | Adapter | Verdict | Status |
 |-------------------|---------|---------|--------|
 | `noop` (default) | `NoOpMalwareScanner` | `unavailable` (nothing is publishable); may be built with `clean` for a local publication walkthrough | Development and tests only. Logs `malware_scanner_disabled` when built; the production guard refuses it. |
-| `clamav` | `ClamAvScanner` over `tcp_connector(clamav_host, clamav_port)` | `clean`, `infected`, or `unavailable` on a connection error, timeout or error reply | **Unverified against a real clamd** (Q-M12). The `INSTREAM` framing is unit tested against a fake stream, and against a loopback stand-in server in the integration tests. |
+| `clamav` | `ClamAvScanner` over `tcp_connector(clamav_host, clamav_port)` | `clean`, `infected`, or `unavailable` on a connection error, timeout or error reply | Verified by hand against `clamav/clamav:1.4` on 2026-10-07 (clean, EICAR, a 52 MiB stream; ADR 0023), not yet by an automated test (Q-M12). The `INSTREAM` framing is unit tested against a fake stream, and against a loopback stand-in server in the integration tests. |
 
 clamd's `StreamMaxLength` defaults to 25 MB, below the 50 MiB upload cap. Operators must
-raise it to at least `50M`, or larger files get `unavailable`, not `clean`.
+raise it to at least `50M`, or larger files get `unavailable`, not `clean`;
+`docker-compose.production.yml` sets `55M`.
 
 ## Limits and costs
 

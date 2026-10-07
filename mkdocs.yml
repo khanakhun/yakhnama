@@ -55,6 +55,7 @@ nav:
   - Data ingestion: architecture/ingestion.md
   - Data sources: architecture/data-sources.md
   - Best figure policy: architecture/best-figure.md
+  - Production deployment: architecture/deployment.md
   - ADRs:
       - Overview: adr/README.md
       - "0001 · Modular monolith with hexagonal layers": adr/0001-modular-monolith-with-hexagonal-layers.md

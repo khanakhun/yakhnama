@@ -1,0 +1,527 @@
+# Production stack of the Yakhnama backend on one host (ADR 0023). Development uses
+# docker-compose.yml; nothing here is shared with it except the PostgreSQL extensions
+# script and the image digests.
+#
+#   docker compose -f docker-compose.production.yml --env-file .env.production build
+#   docker compose -f docker-compose.production.yml --env-file .env.production up -d
+#
+# Configuration comes from the env file, never from this file: copy
+# production.env.example to .env.production (git-ignored) and fill it in. Every
+# service binds to 127.0.0.1 only. The host's reverse proxy publishes Keycloak
+# (KEYCLOAK_PUBLIC_HOST) and MinIO (STORAGE_PUBLIC_HOST) with TLS; the API stays
+# private and is reached only by the portal's server at http://127.0.0.1:API_HOST_PORT.
+# PostgreSQL, Redis and clamd publish no port at all.
+#
+# Images are pinned by digest like docker-compose.yml; the tag stays for readability.
+# Update both together. Memory limits assume a 16 GB host that also runs the portal
+# and another site; the totals are in ADR 0023.
+
+name: yakhnama-production
+
+x-logging: &logging
+  # Bounded: at most 30 MB of logs per container.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+
+# The YAKHNAMA_* settings of the application processes (platform/settings.py), taken
+# from the env file by name. A name missing from the env file is left unset, so the
+# setting keeps its default. Only these reach the application: the PostgreSQL, MinIO
+# root and Keycloak secrets stay with their own services.
+x-app-environment: &app-environment
+  - YAKHNAMA_APP_NAME
+  - YAKHNAMA_ENVIRONMENT
+  - YAKHNAMA_LOG_LEVEL
+  - YAKHNAMA_LOG_FORMAT
+  - YAKHNAMA_CORS_ALLOW_ORIGINS
+  - YAKHNAMA_PUBLIC_COORDINATE_DECIMALS
+  - YAKHNAMA_DOCS_ENABLED
+  - YAKHNAMA_DOCS_SCALAR_JS_URL
+  - YAKHNAMA_TRUSTED_HOSTS
+  - YAKHNAMA_MAX_REQUEST_BODY_BYTES
+  - YAKHNAMA_REQUEST_ID_HEADER
+  - YAKHNAMA_OIDC_ISSUER
+  - YAKHNAMA_OIDC_AUDIENCE
+  - YAKHNAMA_OIDC_JWKS_URL
+  - YAKHNAMA_OIDC_ALLOWED_ALGORITHMS
+  - YAKHNAMA_OIDC_ROLES_CLAIM
+  - YAKHNAMA_OIDC_ACCEPTED_TOKEN_TYPES
+  - YAKHNAMA_OIDC_LEEWAY_SECONDS
+  - YAKHNAMA_OIDC_HTTP_TIMEOUT_SECONDS
+  - YAKHNAMA_JWKS_CACHE_TTL_SECONDS
+  - YAKHNAMA_IDEMPOTENCY_TTL_HOURS
+  - YAKHNAMA_RATE_LIMIT_ENABLED
+  - YAKHNAMA_RATE_LIMIT_BACKEND
+  - YAKHNAMA_REDIS_URL
+  - YAKHNAMA_REDIS_SOCKET_TIMEOUT_SECONDS
+  - YAKHNAMA_RATE_LIMIT_ANONYMOUS_PER_MINUTE
+  - YAKHNAMA_RATE_LIMIT_AUTHENTICATED_PER_MINUTE
+  - YAKHNAMA_TASK_QUEUE_BACKEND
+  - YAKHNAMA_OUTBOX_RELAY_INTERVAL_SECONDS
+  - YAKHNAMA_OUTBOX_BATCH_SIZE
+  - YAKHNAMA_OUTBOX_MAX_ATTEMPTS
+  - YAKHNAMA_OUTBOX_LEASE_SECONDS
+  - YAKHNAMA_OUTBOX_SUBSCRIBER_TIMEOUT_SECONDS
+  - YAKHNAMA_OUTBOX_RETENTION_DAYS
+  - YAKHNAMA_IDEMPOTENCY_PURGE_INTERVAL_MINUTES
+  - YAKHNAMA_DATABASE_URL
+  - YAKHNAMA_DATABASE_POOL_SIZE
+  - YAKHNAMA_DATABASE_ECHO
+  - YAKHNAMA_HEALTH_READY_TIMEOUT_SECONDS
+  - YAKHNAMA_REFERENCE_DATA_DIR
+  - YAKHNAMA_INGESTION_FIXTURES_DIR
+  - YAKHNAMA_BOUNDARY_SOURCE_FILE
+  - YAKHNAMA_BOUNDARY_CACHE_DIR
+  - YAKHNAMA_SEED_ACTOR_ID
+  - YAKHNAMA_OTEL_ENABLED
+  - YAKHNAMA_OTEL_EXPORTER
+  - YAKHNAMA_OTEL_EXPORTER_ENDPOINT
+  - YAKHNAMA_OTEL_SERVICE_NAME
+  - YAKHNAMA_STORAGE_ENDPOINT_URL
+  - YAKHNAMA_STORAGE_REGION
+  - YAKHNAMA_STORAGE_ACCESS_KEY_ID
+  - YAKHNAMA_STORAGE_SECRET_ACCESS_KEY
+  - YAKHNAMA_STORAGE_PRIVATE_BUCKET
+  - YAKHNAMA_STORAGE_PUBLIC_BUCKET
+  - YAKHNAMA_STORAGE_PRESIGN_TTL_SECONDS
+  - YAKHNAMA_MALWARE_SCANNER
+  - YAKHNAMA_CLAMAV_HOST
+  - YAKHNAMA_CLAMAV_PORT
+  - YAKHNAMA_CLAMAV_TIMEOUT_SECONDS
+  - YAKHNAMA_GUEST_CHALLENGE_SECRET
+  - YAKHNAMA_GUEST_POW_DIFFICULTY_BITS
+  - YAKHNAMA_GUEST_POW_DIFFICULTY_MAX_BITS
+  - YAKHNAMA_GUEST_POW_DIFFICULTY_STEP
+  - YAKHNAMA_GUEST_CHALLENGE_TTL_SECONDS
+  - YAKHNAMA_GUEST_CAPABILITY_TTL_SECONDS
+  - YAKHNAMA_GUEST_SUBMISSIONS_PER_HOUR
+  - YAKHNAMA_GUEST_REPORTS_PER_HOUR
+  - YAKHNAMA_GUEST_RECEIPT_GRACE_SECONDS
+  - YAKHNAMA_GUEST_UPLOAD_PRESIGN_TTL_SECONDS
+  - YAKHNAMA_GUEST_PURGE_INTERVAL_SECONDS
+  - YAKHNAMA_MEDIA_UPLOAD_SWEEP_AFTER_SECONDS
+  - YAKHNAMA_MEDIA_UPLOAD_SWEEP_INTERVAL_SECONDS
+  # uvicorn's own default for --workers (API only).
+  - WEB_CONCURRENCY
+
+# What the API, the worker, the scheduler and the one-shot commands share.
+x-app: &app
+  image: ${API_IMAGE:-yakhnama-api:local}
+  restart: unless-stopped
+  logging: *logging
+  <<: *hardening
+  environment: *app-environment
+  # The application reaches Keycloak (token keys) and MinIO (every S3 call, and the
+  # host name inside every presigned URL) through their public https names: the
+  # production guard accepts no plain-http endpoint, and the backend has one storage
+  # endpoint for both (open question Q120). These entries send both names to the
+  # host's reverse proxy without a round trip through public DNS (ADR 0023).
+  extra_hosts:
+    - "${KEYCLOAK_PUBLIC_HOST:?set KEYCLOAK_PUBLIC_HOST}:${REVERSE_PROXY_ADDRESS:-host-gateway}"
+    - "${STORAGE_PUBLIC_HOST:?set STORAGE_PUBLIC_HOST}:${REVERSE_PROXY_ADDRESS:-host-gateway}"
+  # Nothing in the image is written at run time (no bytecode, no temporary files);
+  # /tmp stays writable for libraries that expect it.
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m
+
+services:
+  # ---------------------------------------------------------------------------
+  # One-shot: apply the migrations, then exit. The API, the worker and the
+  # scheduler start only after it succeeded. The same service runs the other
+  # one-shot commands with `docker compose run --rm migrate <command>`:
+  # python -m yakhnama.seed, python -m yakhnama.seed.boundaries.
+  migrate:
+    <<: *app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # The COD-AB archive poe load-boundaries downloads once (about 29 MB).
+      - boundary-cache:/app/.cache/boundaries
+    healthcheck:
+      disable: true
+    mem_limit: 512m
+
+  api:
+    <<: *app
+    command:
+      - uvicorn
+      - yakhnama.main:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --no-proxy-headers
+      - --no-access-log
+      - --no-server-header
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # The image's HEALTHCHECK: /health/live (liveness, no dependency).
+    # WEB_CONCURRENCY processes of about 150 MB each.
+    mem_limit: 768m
+
+  worker:
+    <<: *app
+    command:
+      - taskiq
+      - worker
+      - yakhnama.platform.tasks.worker:broker
+      - --workers
+      - "${TASKIQ_WORKERS:-1}"
+      # The worker's startup configures the application's JSON logging; taskiq's own
+      # handler would print every record a second time in another format.
+      - --no-configure-logging
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+    # The worker serves no HTTP. Healthy means it can reach the task queue; a
+    # crashed worker exits and is restarted by the restart policy.
+    healthcheck: &queue-healthcheck
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, redis; redis.Redis.from_url(os.environ['YAKHNAMA_REDIS_URL'], socket_timeout=3).ping()"
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # EXIF stripping decodes photos of up to 50 MiB, and exports build GeoParquet in
+    # memory.
+    mem_limit: 1g
+
+  # Enqueues the periodic tasks. Exactly one per deployment: never scale it.
+  scheduler:
+    <<: *app
+    command:
+      - taskiq
+      - scheduler
+      - yakhnama.platform.tasks.worker:scheduler
+      # It would log every enqueue (one line every five seconds); warnings and
+      # errors only.
+      - --log-level
+      - WARNING
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck: *queue-healthcheck
+    mem_limit: 256m
+
+  postgres:
+    image: postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
+    restart: unless-stopped
+    logging: *logging
+    <<: *hardening
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      # Read by 010-keycloak-database.sh when the volume is first initialised.
+      KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME:?set KEYCLOAK_DB_NAME}
+      KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER:?set KEYCLOAK_DB_USER}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+    # Sized for a 1 GB limit on a small server with a light, mostly read load;
+    # revisit with pg_stat_statements once real traffic exists (ADR 0023). Logging
+    # keeps warnings and errors only: no statements, connections or checkpoints,
+    # because a statement (or an error's DETAIL line, which terse drops) can carry a
+    # reporter's exact coordinates.
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - wal_buffers=8MB
+      - -c
+      - min_wal_size=128MB
+      - -c
+      - max_wal_size=1GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=100
+      - -c
+      - max_parallel_workers_per_gather=1
+      - -c
+      - log_min_messages=warning
+      - -c
+      - log_min_error_statement=panic
+      - -c
+      - log_error_verbosity=terse
+      - -c
+      - log_statement=none
+      - -c
+      - log_connections=off
+      - -c
+      - log_disconnections=off
+      - -c
+      - log_checkpoints=off
+      - -c
+      - log_autovacuum_min_duration=-1
+    shm_size: 256m
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/001-extensions.sql:/docker-entrypoint-initdb.d/001-extensions.sql:ro
+      - ./docker/keycloak/production/postgres-init/010-keycloak-database.sh:/docker-entrypoint-initdb.d/010-keycloak-database.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 1g
+
+  # Task queue (a Redis stream with acknowledgements) and the shared rate-limit
+  # counters. Append-only file fsynced every second, no snapshots: a restart loses
+  # at most one second of enqueued tasks, and the transactional outbox in PostgreSQL
+  # re-delivers domain events regardless. noeviction: evicting a stream entry would
+  # silently drop a task; when the cap is reached, enqueueing fails loudly and the
+  # rate limiter fails open (ADR 0017). The stream itself is capped (broker.py).
+  redis:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    restart: unless-stopped
+    logging: *logging
+    <<: *hardening
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - ""
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - noeviction
+      - --loglevel
+      - warning
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    mem_limit: 192m
+
+  keycloak:
+    image: ${KEYCLOAK_IMAGE:-yakhnama-keycloak:local}
+    build:
+      context: docker/keycloak/production
+    restart: unless-stopped
+    logging: *logging
+    <<: *hardening
+    # --import-realm imports the realm file in KEYCLOAK_REALM_IMPORT_DIR once, when
+    # the realm does not exist yet (docker/keycloak/production/README.md); later
+    # changes go through the admin console.
+    command: ["start", "--optimized", "--import-realm"]
+    environment:
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_DB_POOL_MAX_SIZE: "10"
+      # Every URL Keycloak issues (and the tokens' "iss") uses this name, however
+      # it is reached; it must match YAKHNAMA_OIDC_ISSUER and the portal's
+      # OIDC_ISSUER character for character.
+      KC_HOSTNAME: https://${KEYCLOAK_PUBLIC_HOST}
+      # The admin console is served only on the loopback port (reach it through an
+      # SSH tunnel); the reverse proxy publishes /realms/ and /resources/ only.
+      KC_HOSTNAME_ADMIN: http://127.0.0.1:${KEYCLOAK_HOST_PORT:-8180}
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8080"
+      KC_PROXY_HEADERS: xforwarded
+      KC_LOG_LEVEL: warn
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?set KEYCLOAK_ADMIN_USER}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      JAVA_OPTS_KC_HEAP: -Xms256m -Xmx768m -XX:MaxMetaspaceSize=256m
+      # Placeholders of the production realm file, read only when it is imported.
+      KC_SMTP_HOST: ${KC_SMTP_HOST:-}
+      KC_SMTP_PORT: ${KC_SMTP_PORT:-587}
+      KC_SMTP_FROM: ${KC_SMTP_FROM:-}
+      KC_SMTP_FROM_DISPLAY_NAME: ${KC_SMTP_FROM_DISPLAY_NAME:-Yakhnama}
+      KC_SMTP_USER: ${KC_SMTP_USER:-}
+      KC_SMTP_PASSWORD: ${KC_SMTP_PASSWORD:-}
+      KC_GOOGLE_ENABLED: ${KC_GOOGLE_ENABLED:-false}
+      KC_GOOGLE_CLIENT_ID: ${KC_GOOGLE_CLIENT_ID:-}
+      KC_GOOGLE_CLIENT_SECRET: ${KC_GOOGLE_CLIENT_SECRET:-}
+      KC_FACEBOOK_ENABLED: ${KC_FACEBOOK_ENABLED:-false}
+      KC_FACEBOOK_CLIENT_ID: ${KC_FACEBOOK_CLIENT_ID:-}
+      KC_FACEBOOK_CLIENT_SECRET: ${KC_FACEBOOK_CLIENT_SECRET:-}
+    ports:
+      - "127.0.0.1:${KEYCLOAK_HOST_PORT:-8180}:8080"
+    volumes:
+      - ${KEYCLOAK_REALM_IMPORT_DIR:-./docker/keycloak/production/import}:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # No curl in the image; bash's /dev/tcp asks the management port (9000,
+      # never published) for /health/ready.
+      test:
+        - "CMD-SHELL"
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '200 OK' <&3
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    mem_limit: 1280m
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    restart: unless-stopped
+    logging: *logging
+    <<: *hardening
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      # Browsers PUT photos to presigned URLs from the portal's pages; MinIO's CORS
+      # is one server-wide setting, not per bucket.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${PORTAL_ORIGIN:?set PORTAL_ORIGIN}
+      # The web console (port 9001, loopback only); "off" saves memory.
+      MINIO_BROWSER: ${MINIO_CONSOLE:-on}
+    ports:
+      - "127.0.0.1:${MINIO_HOST_PORT:-9100}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9101}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 512m
+
+  # One-shot, idempotent: creates the buckets, the private bucket's lifecycle rule
+  # (abandoned uploads under media/upload/ expire after one day,
+  # docs/architecture/recording.md) and the application's own MinIO user, limited
+  # to the two media buckets, so the API never holds the root credentials.
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    restart: "no"
+    logging: *logging
+    <<: *hardening
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      APP_ACCESS_KEY: ${YAKHNAMA_STORAGE_ACCESS_KEY_ID:?set YAKHNAMA_STORAGE_ACCESS_KEY_ID}
+      APP_SECRET_KEY: ${YAKHNAMA_STORAGE_SECRET_ACCESS_KEY:?set YAKHNAMA_STORAGE_SECRET_ACCESS_KEY}
+      PRIVATE_BUCKET: ${YAKHNAMA_STORAGE_PRIVATE_BUCKET:-yakhnama-media-private}
+      PUBLIC_BUCKET: ${YAKHNAMA_STORAGE_PUBLIC_BUCKET:-yakhnama-media-public}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null
+        mc mb --ignore-existing "local/$${PRIVATE_BUCKET}"
+        mc mb --ignore-existing "local/$${PUBLIC_BUCKET}"
+        echo '{"Rules":[{"ID":"expire-abandoned-uploads","Status":"Enabled","Filter":{"Prefix":"media/upload/"},"Expiration":{"Days":1}}]}' \
+          | mc ilm import "local/$${PRIVATE_BUCKET}"
+        cat > /tmp/yakhnama-app.json <<EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"],
+              "Resource": ["arn:aws:s3:::$${PRIVATE_BUCKET}", "arn:aws:s3:::$${PUBLIC_BUCKET}"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                         "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+              "Resource": ["arn:aws:s3:::$${PRIVATE_BUCKET}/*", "arn:aws:s3:::$${PUBLIC_BUCKET}/*"]
+            }
+          ]
+        }
+        EOF
+        mc admin policy create local yakhnama-app /tmp/yakhnama-app.json
+        mc admin user add local "$${APP_ACCESS_KEY}" "$${APP_SECRET_KEY}"
+        mc admin policy attach local yakhnama-app --user "$${APP_ACCESS_KEY}" 2>/dev/null \
+          || echo "policy yakhnama-app already attached"
+    tmpfs:
+      - /tmp:size=1m
+    mem_limit: 128m
+
+  # Malware scanning of every upload (YAKHNAMA_MALWARE_SCANNER=clamav). clamd keeps
+  # the whole signature database in memory: about 1.2 GB at rest. With
+  # ConcurrentDatabaseReload off, a signature update pauses scanning for a minute
+  # instead of holding two databases (about 2.5 GB at peak). The first start
+  # downloads about 300 MB of signatures into the volume.
+  clamav:
+    image: clamav/clamav:1.4@sha256:57deb108fc4c72778aa83eafbca7bb7153e28c3f57c005afd38d31f16da86f23
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      # Uploads are at most 50 MiB (MAX_MEDIA_BYTES); clamd's default is 25 MB.
+      CLAMD_CONF_StreamMaxLength: 55M
+      CLAMD_CONF_ConcurrentDatabaseReload: "no"
+      CLAMD_CONF_LogFileMaxSize: 2M
+      CLAMD_CONF_LogRotate: "yes"
+      FRESHCLAM_CONF_LogFileMaxSize: 2M
+      FRESHCLAM_CONF_LogRotate: "yes"
+      FRESHCLAM_CHECKS: "2"
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
+    mem_limit: 2g
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  clamav-data:
+  boundary-cache:
