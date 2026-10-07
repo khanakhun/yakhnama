@@ -73,6 +73,10 @@ def _filters(query: ListVerificationCases) -> ColumnElement[bool]:
         conditions.append(VerificationCaseRow.target_kind == query.target_kind.value)
     if query.assigned_to is not None:
         conditions.append(VerificationCaseRow.assigned_to == query.assigned_to)
+    if query.target_id is not None:
+        # Served by the unique (target_kind, target_id) index when the kind is
+        # given; at most one row per kind matches either way.
+        conditions.append(VerificationCaseRow.target_id == query.target_id)
     return and_(true(), *conditions)
 
 

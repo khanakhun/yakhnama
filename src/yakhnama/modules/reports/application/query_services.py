@@ -25,6 +25,7 @@ from yakhnama.modules.reports.application.authorisation import (
     triage_view_policy,
 )
 from yakhnama.modules.reports.application.dto import (
+    LINKED_EVENTS_MAX,
     REVIEW_HISTORY_MAX,
     ModeratorView,
     ReportDetail,
@@ -51,7 +52,8 @@ from yakhnama.shared_kernel.pagination import Page
 from yakhnama.shared_kernel.privacy import PublicCoordinatePolicy
 
 REVIEW_STATE_FILTER: Final = "review_state"
-"""The query parameter only moderators may send."""
+TRIAGE_FLAG_FILTER: Final = "triage_flag"
+"""The query parameters only moderators may send."""
 
 
 class AuthorisedReportQueryService:
@@ -119,18 +121,22 @@ class AuthorisedReportQueryService:
 
         Returns:
             The page; for a non-moderator, or with ``is_own_only``, only the
-            actor's own reports. Moderators see each lineage's review mark.
+            actor's own reports. Moderators see each lineage's review mark and
+            each report's triage flag kinds.
 
         Raises:
             PermissionDeniedError: If the actor is anonymous.
             ReportFilterForbiddenError: If a non-moderator filters on the review
-                mark.
+                mark or a triage flag.
             ValidationError: If the cursor is invalid.
         """
         user_id = require_user(query.actor, action="list reports")
         is_reviewer = is_moderator(query.actor)
-        if query.review_state is not None and not is_reviewer:
-            raise ReportFilterForbiddenError.for_filter(REVIEW_STATE_FILTER)
+        if not is_reviewer:
+            if query.review_state is not None:
+                raise ReportFilterForbiddenError.for_filter(REVIEW_STATE_FILTER)
+            if query.triage_flag is not None:
+                raise ReportFilterForbiddenError.for_filter(TRIAGE_FLAG_FILTER)
         specification = query.to_specification(self._public_coordinates)
         if query.is_own_only or not is_reviewer:
             specification = specification.and_(ReportReporterSpecification(user_id))
@@ -188,9 +194,12 @@ class AuthorisedReportQueryService:
         if not review_policy().is_allowed(query.actor):
             return None
         links = await self._query_service.list_linked_events(
-            _lineage_of(query.report_id, lineage_id)
+            _lineage_of(query.report_id, lineage_id), LINKED_EVENTS_MAX + 1
         )
-        return ModeratorView(linked_events=links)
+        return ModeratorView(
+            linked_events=links[:LINKED_EVENTS_MAX],
+            is_linked_events_truncated=len(links) > LINKED_EVENTS_MAX,
+        )
 
 
 def _lineage_of(report_id: EntityId, lineage_id: EntityId | None) -> EntityId:

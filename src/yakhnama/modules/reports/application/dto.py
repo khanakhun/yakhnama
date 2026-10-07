@@ -27,7 +27,7 @@ Patterns: DTO.
 """
 
 from enum import StrEnum
-from typing import Final, Literal, Self
+from typing import Final, Literal, Self, get_args
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -57,6 +57,7 @@ from yakhnama.modules.reports.domain.value_objects import (
     ReportStatus,
     ReportVersion,
     RevisionNumber,
+    TriageFlagKind,
     TriageResult,
     WithdrawalReason,
 )
@@ -67,6 +68,9 @@ from yakhnama.shared_kernel.value_objects import (
     DateWithPrecision,
     LanguageCode,
 )
+
+TRIAGE_FLAG_KINDS_MAX: Final = len(get_args(TriageFlagKind))
+"""How many distinct triage flag kinds exist; a summary lists each at most once."""
 
 LINKED_EVENTS_MAX: Final = 200
 """Most event links a report detail lists; far above what one observation gets."""
@@ -293,6 +297,10 @@ class ReportSummary(BaseModel):
         channel: How the report reached the platform.
         review: The moderators' mark on its lineage; moderators only, ``None``
             for everyone else.
+        triage_flags: The distinct kinds of flag its latest triage raised, in
+            the order the rules ran (empty when none, or not triaged yet);
+            moderators only, ``None`` for everyone else. The flags' detail
+            stays on the report's detail view.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -308,6 +316,9 @@ class ReportSummary(BaseModel):
     submitted_at: AwareDatetime | None
     channel: ReportChannel
     review: ReportReviewSummary | None = None
+    triage_flags: tuple[TriageFlagKind, ...] | None = Field(
+        default=None, max_length=TRIAGE_FLAG_KINDS_MAX
+    )
 
     @classmethod
     def from_record(
@@ -322,7 +333,8 @@ class ReportSummary(BaseModel):
         Args:
             record: The internal record.
             public_coordinates: How far to round the position.
-            is_review_visible: Whether to include the review mark (moderators).
+            is_review_visible: Whether to include the review mark and the
+                triage flag kinds (moderators).
 
         Returns:
             Its summary.
@@ -345,7 +357,16 @@ class ReportSummary(BaseModel):
                 if is_review_visible
                 else None
             ),
+            triage_flags=(
+                _distinct_kinds(record.triage) if is_review_visible else None
+            ),
         )
+
+
+def _distinct_kinds(triage: TriageResult | None) -> tuple[TriageFlagKind, ...]:
+    if triage is None:
+        return ()
+    return tuple(dict.fromkeys(triage.kinds))
 
 
 class ReportDetail(BaseModel):
@@ -381,8 +402,10 @@ class ReportDetail(BaseModel):
             only alongside exact coordinates (the person who entered it and
             moderators); ``None`` otherwise.
         review: The moderators' mark on its lineage; moderators only.
-        linked_events: The events any revision of the lineage is linked to;
-            moderators only.
+        linked_events: The events any revision of the lineage is linked to,
+            oldest first, at most ``LINKED_EVENTS_MAX``; moderators only.
+        is_linked_events_truncated: Whether links beyond ``LINKED_EVENTS_MAX``
+            were left out; moderators only, ``None`` for everyone else.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -414,6 +437,7 @@ class ReportDetail(BaseModel):
     linked_events: tuple[LinkedEvent, ...] | None = Field(
         default=None, max_length=LINKED_EVENTS_MAX
     )
+    is_linked_events_truncated: bool | None = None
 
     @classmethod
     def from_record(
@@ -476,6 +500,9 @@ class ReportDetail(BaseModel):
                 else ReportReviewSummary.from_record(record.review)
             ),
             linked_events=None if moderation is None else moderation.linked_events,
+            is_linked_events_truncated=(
+                None if moderation is None else moderation.is_linked_events_truncated
+            ),
         )
 
     @classmethod
@@ -501,7 +528,9 @@ class ModeratorView(BaseModel):
     Implements: DTO.
 
     Attributes:
-        linked_events: The events any revision of the lineage is linked to.
+        linked_events: The events any revision of the lineage is linked to,
+            oldest first, at most ``LINKED_EVENTS_MAX``.
+        is_linked_events_truncated: Whether newer links were left out.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -509,6 +538,7 @@ class ModeratorView(BaseModel):
     linked_events: tuple[LinkedEvent, ...] = Field(
         default=(), max_length=LINKED_EVENTS_MAX
     )
+    is_linked_events_truncated: bool = False
 
 
 REVIEW_HISTORY_MAX: Final = 200
@@ -550,6 +580,10 @@ class ReportReviewDetail(BaseModel):
 class ReviewOutcome(StrEnum):
     """What one mark of a bulk request did.
 
+    ``conflict`` covers a concurrent mark of the same lineage and a mark on a
+    revision older than the one the lineage was last marked on; ``error`` any
+    other refusal by the domain, so one bad report does not fail the batch.
+
     Implements: DTO.
     """
 
@@ -558,6 +592,7 @@ class ReviewOutcome(StrEnum):
     NOT_FOUND = "not_found"
     REASON_REQUIRED = "reason_required"
     CONFLICT = "conflict"
+    ERROR = "error"
 
 
 class ReviewMarkResult(BaseModel):

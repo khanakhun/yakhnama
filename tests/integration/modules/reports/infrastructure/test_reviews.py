@@ -21,6 +21,7 @@ from yakhnama.modules.reports.application.specifications import (
 from yakhnama.modules.reports.domain.entities import Report
 from yakhnama.modules.reports.domain.factories import ReportReviewFactory
 from yakhnama.modules.reports.domain.reviews import (
+    LineagePosition,
     ReportReview,
     ReviewMarkRequest,
     ReviewState,
@@ -119,6 +120,24 @@ async def test_report_repository_add_sets_lineage_of_revision_one_and_revisions(
 
     assert lineages == (original.id, original.id, None)
     assert stored == {original.id: original.id, revision.id: original.id}
+
+
+async def test_report_repository_lineage_positions_reads_many_in_one_query(
+    reports_uow_factory: ReportsFactory, ids: SequentialIdGenerator
+) -> None:
+    original, revision = await _chain(reports_uow_factory, ids)
+
+    async with reports_uow_factory() as uow:
+        positions = await uow.reports.lineage_positions(
+            [revision.id, FACTORY_IDS.new_id(), original.id]
+        )
+        nothing = await uow.reports.lineage_positions([])
+
+    assert sorted(positions, key=lambda position: position.revision) == [
+        LineagePosition(report_id=original.id, lineage_id=original.id, revision=1),
+        LineagePosition(report_id=revision.id, lineage_id=original.id, revision=2),
+    ]
+    assert nothing == ()
 
 
 async def test_reports_table_refuses_a_revision_that_is_its_own_lineage(
@@ -361,9 +380,11 @@ async def test_query_service_lists_event_links_of_every_revision(
         await uow.commit()
     service = SqlAlchemyReportQueryService(session_factory, POLICY)
 
-    links = await service.list_linked_events(original.id)
+    links = await service.list_linked_events(original.id, 10)
+    oldest = await service.list_linked_events(original.id, 1)
 
     assert links == (
         LinkedEvent(event_id=first.id, report_id=original.id, role="primary"),
         LinkedEvent(event_id=second.id, report_id=revision.id, role="contradicting"),
     )
+    assert oldest == links[:1]

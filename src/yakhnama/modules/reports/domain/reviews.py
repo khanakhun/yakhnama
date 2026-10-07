@@ -26,7 +26,10 @@ from ``new`` or ``reviewed`` takes an optional note.
 repository and never changed or removed afterwards.
 
 A mark that changes nothing (same state, same revision, same reason) returns the
-review unchanged and no events, so a retried request is harmless.
+review unchanged and no events, so a retried request is harmless; so does marking a
+lineage nobody has marked ``new``, with or without a reason. A mark on a revision
+older than the one the lineage was last marked on is refused
+(``ReviewRevisionSupersededError``): it would move the mark back in time.
 
 Patterns: Entity, Aggregate Root, Value Object, Domain Events.
 """
@@ -44,7 +47,10 @@ from pydantic import (
     model_validator,
 )
 
-from yakhnama.modules.reports.domain.errors import ReviewReasonRequiredError
+from yakhnama.modules.reports.domain.errors import (
+    ReviewReasonRequiredError,
+    ReviewRevisionSupersededError,
+)
 from yakhnama.modules.reports.domain.events import ReportReviewMarked
 from yakhnama.modules.reports.domain.value_objects import RevisionNumber
 from yakhnama.shared_kernel.clock import Clock
@@ -103,6 +109,24 @@ def require_reason(
     """
     if reason is None and is_reason_required(current, target):
         raise ReviewReasonRequiredError.for_move(current.value, target.value)
+
+
+class LineagePosition(BaseModel):
+    """Where one report revision sits in its lineage.
+
+    Implements: Value Object.
+
+    Attributes:
+        report_id: The revision.
+        lineage_id: The id of the lineage's revision 1.
+        revision: The revision's number.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    report_id: EntityId
+    lineage_id: EntityId
+    revision: RevisionNumber
 
 
 class ReviewMarkRequest(BaseModel):
@@ -250,11 +274,17 @@ class ReportReview(BaseModel):
             unchanged and no events if ``request`` repeats the last mark.
 
         Raises:
+            ReviewRevisionSupersededError: If ``request`` names a revision older
+                than ``reviewed_revision``.
             ReviewReasonRequiredError: If the move needs a reason and has none.
         """
-        require_reason(self.state, request.state, request.reason)
         if self.last_mark.repeats(request):
             return AggregateChange[ReportReview](state=self)
+        if request.revision < self.reviewed_revision:
+            raise ReviewRevisionSupersededError.for_revision(
+                request.revision, self.reviewed_revision
+            )
+        require_reason(self.state, request.state, request.reason)
         mark = new_mark(request, clock=clock, ids=ids)
         state = ReportReview(
             id=self.id,

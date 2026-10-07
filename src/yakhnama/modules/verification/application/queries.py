@@ -42,6 +42,8 @@ class ListVerificationCases(BaseModel):
         state: Only cases currently in this state.
         target_kind: Only cases about this kind of record.
         assigned_to: Only cases assigned to this reviewer.
+        target_id: Only the case of this record (a target has at most one
+            case per kind); combine with ``target_kind`` to name it exactly.
         page: Page size and cursor.
     """
 
@@ -51,4 +53,5 @@ class ListVerificationCases(BaseModel):
     state: VerificationState | None = None
     target_kind: TargetKind | None = None
     assigned_to: EntityId | None = None
+    target_id: EntityId | None = None
     page: PageRequest = PageRequest()

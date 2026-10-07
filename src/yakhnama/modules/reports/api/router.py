@@ -96,10 +96,13 @@ _COMMON_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_429_TOO_MANY_REQUESTS: _PROBLEM,
     status.HTTP_503_SERVICE_UNAVAILABLE: _PROBLEM,
 }
-_CHANGE_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
+_OPTIONAL_IF_MATCH_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     status.HTTP_404_NOT_FOUND: _PROBLEM,
     status.HTTP_409_CONFLICT: _PROBLEM,
     status.HTTP_412_PRECONDITION_FAILED: _PROBLEM,
+}
+_CHANGE_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
+    **_OPTIONAL_IF_MATCH_RESPONSES,
     status.HTTP_428_PRECONDITION_REQUIRED: _PROBLEM,
 }
 
@@ -233,10 +236,11 @@ async def list_reports(
 ) -> ReportPage | Response:
     """List reports with rounded positions, as JSON or GeoJSON.
 
-    Moderators see every report and each lineage's review mark; anyone else
-    only their own, without marks. ``channel=guest`` is the moderators' queue of
-    reports from people without an account; ``review_state`` (moderators only)
-    their review queue; ``reporter=me`` narrows any listing to the caller's own.
+    Moderators see every report, each lineage's review mark and each report's
+    triage flag kinds; anyone else only their own, without either.
+    ``channel=guest`` is the moderators' queue of reports from people without an
+    account; ``review_state`` and ``triage_flag`` (moderators only) their review
+    queues; ``reporter=me`` narrows any listing to the caller's own.
 
     Args:
         parameters: Validated filters, format, cursor and limit.
@@ -259,6 +263,7 @@ async def list_reports(
             observed_from=parameters.observed_from,
             observed_to=parameters.observed_to,
             review_state=parameters.review_state,
+            triage_flag=parameters.triage_flag,
             is_own_only=parameters.reporter is not None,
             page=PageRequest(limit=parameters.limit, cursor=parameters.cursor),
         )
@@ -462,7 +467,7 @@ async def get_report_review(
 @moderation_router.post(
     "/reports/{report_id}/review",
     responses={
-        **_CHANGE_RESPONSES,
+        **_OPTIONAL_IF_MATCH_RESPONSES,
         **header_responses(status.HTTP_200_OK, ETAG),
     },
 )
@@ -489,20 +494,29 @@ async def mark_report_review(  # noqa: PLR0913  # reason: FastAPI injects each i
         if_match: Optional: the review's ETag the mark is based on.
 
     Returns:
-        The review after the mark, with its history.
+        The review after the mark, with its history. The ``ETag`` names the
+        version this mark produced (or found, when it changed nothing), taken
+        from the command's result: should another moderator's mark land between
+        this commit and the read of the history, the body already shows it and
+        an ``If-Match`` with this ETag answers 412, so nobody overwrites a mark
+        they were not shown.
 
     Raises:
         PreconditionFailedError: If ``If-Match`` is stale or names another
             review (412).
+        ReviewRevisionSupersededError: If the report is older than the revision
+            the lineage was last marked on (409).
         ReviewReasonRequiredError: If the move needs a reason (422).
     """
     expected_version = None
     if if_match is not None:
+        # Only the lineage id is needed to read the tag; the version itself is
+        # compared inside the command's unit of work.
         current = await services.report_queries.get_review(
             GetReportReview(actor=actor, report_id=report_id)
         )
         expected_version = expected_version_from_if_match(if_match, current.lineage_id)
-    await _mark_handler(services)(
+    result = await _mark_handler(services)(
         MarkReportReview(
             actor=actor,
             report_id=report_id,
@@ -514,7 +528,10 @@ async def mark_report_review(  # noqa: PLR0913  # reason: FastAPI injects each i
     review = await services.report_queries.get_review(
         GetReportReview(actor=actor, report_id=report_id)
     )
-    return _review_response(response, review)
+    lineage_id = review.lineage_id if result.lineage_id is None else result.lineage_id
+    version = review.version if result.version is None else result.version
+    set_etag(response, make_etag(version, lineage_id))
+    return review
 
 
 @moderation_router.post("/reports/review")
@@ -526,8 +543,10 @@ async def mark_report_reviews(
     """Apply one mark to up to 100 reports, each on its own.
 
     Not atomic: every report gets its own outcome (``marked``, ``unchanged``,
-    ``not_found``, ``reason_required`` or ``conflict``), in request order, and
-    one failure never keeps the others from being marked.
+    ``not_found``, ``reason_required``, ``conflict`` or ``error``), in request
+    order, and one refusal never keeps the others from being marked. Revisions
+    of one lineage are marked once, on the newest one named, and share its
+    result.
 
     Args:
         body: The reports, the mark and its reason.

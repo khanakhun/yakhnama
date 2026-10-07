@@ -9,6 +9,8 @@
 from typing import Any, Final
 from uuid import UUID
 
+import pytest
+
 from tests.api.modules.recording import (
     MODERATION,
     REPORTS,
@@ -19,11 +21,19 @@ from tests.api.modules.recording import (
     reporter_headers,
     submit_report,
 )
-from tests.fakes.api import auth_headers
+from tests.fakes.api import ApiHarness, auth_headers
 from tests.fakes.ids import SequentialIdGenerator
 from tests.fakes.reports import InMemoryReportQueryService
-from yakhnama.modules.reports.public import LinkedEvent, ReportStatus
+from yakhnama.modules.reports.domain.value_objects import TriageFlagKind
+from yakhnama.modules.reports.public import (
+    LinkedEvent,
+    ReportRecord,
+    ReportStatus,
+    TriageFlag,
+    TriageResult,
+)
 from yakhnama.platform.etag import make_etag
+from yakhnama.shared_kernel.value_objects import Confidence
 
 REVIEWS: Final = f"{MODERATION}/reports"
 ARCHIVE: Final = {"state": "archived", "reason": "Test submission by a volunteer."}
@@ -377,3 +387,122 @@ async def test_admin_may_mark_reviews() -> None:
 
     assert response.status_code == 200
     assert other.status_code == 403
+
+
+def test_mark_review_route_does_not_declare_428_because_if_match_is_optional() -> None:
+    api = recording_app()
+
+    responses = api.app.openapi()["paths"][f"{REVIEWS}/{{report_id}}/review"]["post"][
+        "responses"
+    ]
+
+    assert "428" not in responses
+    assert "412" in responses
+
+
+async def test_mark_review_etag_names_the_version_the_mark_produced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = recording_app()
+    reads = api.app.state.container.report_query_service
+    assert isinstance(reads, InMemoryReportQueryService)
+    read_report = reads.get_report
+
+    async def racing_read(report_id: UUID) -> ReportRecord | None:
+        # Another moderator's mark lands between this mark's commit and its read.
+        record = await read_report(report_id)
+        if record is None or record.review is None:
+            return record
+        raced = record.review.model_copy(update={"version": record.review.version + 1})
+        return record.model_copy(update={"review": raced})
+
+    async with api.client() as client:
+        report = await submit_report(client)
+        monkeypatch.setattr(reads, "get_report", racing_read)
+        response = await client.post(
+            review_path(report["id"]), json=ARCHIVE, headers=moderator_headers()
+        )
+
+    assert response.status_code == 200
+    assert response.headers["etag"] == make_etag(1, report["id"])
+
+
+async def test_bulk_review_marks_a_lineage_once_on_its_newest_revision() -> None:
+    api = recording_app()
+
+    async with api.client() as client:
+        report = await submit_report(client)
+        revision = await client.post(
+            f"{REPORTS}/{report['id']}/revisions",
+            json={
+                key: value
+                for key, value in report.items()
+                if key
+                in {"observed_at", "coordinates", "original_language", "media_ids"}
+            }
+            | {"description": "Correction: it reached the bridge."},
+            headers=reporter_headers()
+            | {"If-Match": make_etag(report["version"], report["id"])},
+        )
+        response = await client.post(
+            f"{REVIEWS}/review",
+            json={
+                "report_ids": [report["id"], revision.json()["id"]],
+                "state": "reviewed",
+            },
+            headers=moderator_headers(),
+        )
+        review = await client.get(
+            review_path(report["id"]), headers=moderator_headers()
+        )
+
+    items = response.json()["items"]
+    assert [item["outcome"] for item in items] == ["marked", "marked"]
+    assert {item["version"] for item in items} == {1}
+    assert (review.json()["reviewed_revision"], len(review.json()["history"])) == (2, 1)
+
+
+def _flag_report(api: ApiHarness, report_id: str, *kinds: TriageFlagKind) -> None:
+    # Triage runs as a background task in production; the test stores its result.
+    stored = api.reports.reports.committed[UUID(report_id)]
+    flags = tuple(
+        TriageFlag(kind=kind, detail="Found by a rule.", confidence=Confidence.LOW)
+        for kind in kinds
+    )
+    api.reports.reports.committed[stored.id] = stored.model_copy(
+        update={"triage": TriageResult(flags=flags, evaluated_at=stored.created_at)}
+    )
+
+
+async def test_list_reports_triage_flags_and_filter_for_moderators_only() -> None:
+    api = recording_app()
+
+    async with api.client() as client:
+        spam = await submit_report(client)
+        plain = await submit_report(client)
+        _flag_report(api, spam["id"], "spam_suspected", "pii_detected")
+        everything = await client.get(REPORTS, headers=moderator_headers())
+        flagged = await client.get(
+            REPORTS,
+            params={"triage_flag": "spam_suspected", "limit": 1},
+            headers=moderator_headers(),
+        )
+        as_reporter = await client.get(REPORTS, headers=reporter_headers())
+        filter_as_reporter = await client.get(
+            REPORTS,
+            params={"triage_flag": "spam_suspected"},
+            headers=reporter_headers(),
+        )
+        unknown = await client.get(
+            REPORTS, params={"triage_flag": "boring"}, headers=moderator_headers()
+        )
+
+    kinds = {item["id"]: item["triage_flags"] for item in everything.json()["items"]}
+    assert kinds == {
+        spam["id"]: ["spam_suspected", "pii_detected"],
+        plain["id"]: [],
+    }
+    assert [item["id"] for item in flagged.json()["items"]] == [spam["id"]]
+    assert "detail" not in str(flagged.json()["items"][0]["triage_flags"])
+    assert {item["triage_flags"] for item in as_reporter.json()["items"]} == {None}
+    assert (filter_as_reporter.status_code, unknown.status_code) == (403, 422)

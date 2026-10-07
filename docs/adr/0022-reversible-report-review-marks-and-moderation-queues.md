@@ -2,6 +2,11 @@
 
 - Date: 2026-10-07
 - Status: proposed
+- Amended: 2026-10-07, after review of `cb04e54`: no-op and stale-revision marks,
+  bulk `error` outcome and lineage collapse, linked-events cap, the media queue's
+  report lookup and indexes (migration `0026`), triage flag kinds on listings,
+  `If-Match` on photo decisions, the case-by-target filter and the idempotency
+  answers in the contract
 - Deciders: lead agent, maintainer
 
 ## Context and problem statement
@@ -59,9 +64,14 @@ Proposed option: **1**.
   review is `new`. `mark` refuses a missing reason (`ReviewReasonRequiredError`,
   422): archiving, moving back to `new` and leaving `archived` need one; marking
   `reviewed` from `new` or `reviewed` takes an optional note. A mark repeating the
-  last one (state, revision and reason) changes nothing. Each mark records the
-  revision the moderator looked at; `revised_since` is true while the lineage has a
-  newer revision than the one a `reviewed` or `archived` mark was made on.
+  last one (state, revision and reason) changes nothing, and so does marking a
+  never-marked lineage `new`, with or without a reason (amended: it used to answer
+  `reason_required`). Each mark records the revision the moderator looked at;
+  `revised_since` is true while the lineage has a newer revision than the one a
+  `reviewed` or `archived` mark was made on. A mark on a revision older than the one
+  the lineage was last marked on is refused (`ReviewRevisionSupersededError`, 409,
+  `details.reason = "review_revision_superseded"`; amended, Q254): it would move the
+  mark back in time.
 - **History.** Every mark is a row in `report_review_marks`, inserted in the same
   transaction as the review and never updated or deleted. `ReportReviewMarked`
   (event `reports.report_review_marked`) carries the states, the revision, the
@@ -70,30 +80,54 @@ Proposed option: **1**.
   `GET /reports/{report_id}/review` returns the lineage's mark and up to 200 marks,
   newest first (`ReportReviewDetail`, with `ETag: "<lineage_id>:<version>"`,
   version 0 while unmarked); `POST /reports/{report_id}/review` with
-  `{state, reason?}` marks and returns the same body. `If-Match` is optional, as on
-  every moderation route (Q66), but when sent it is compared with the review's
-  version inside the unit of work (unlike Q155), so two moderators cannot both win.
+  `{state, reason?}` marks and returns the same body, its `ETag` naming the version
+  the mark produced, from the command's result (amended). `If-Match` is optional, as
+  on every moderation route (Q66), so the route declares `412` but not `428`
+  (amended), but when sent it is compared with the review's version inside the unit
+  of work (unlike Q155), so two moderators cannot both win.
   `POST /reports/review` with `{report_ids (1–100, distinct), state, reason?}`
-  marks each report in its own unit of work and returns one outcome per report:
-  `marked`, `unchanged`, `not_found`, `reason_required` or `conflict`. It is not
-  atomic on purpose: one archived report in a spam wave must not block the rest.
+  marks each lineage in its own unit of work and returns one outcome per report id:
+  `marked`, `unchanged`, `not_found`, `reason_required`, `conflict` or `error`
+  (amended: any other refusal by the domain; a failure outside it, such as the
+  database going away, still aborts the request with the reports before it marked).
+  Revisions of one lineage are collapsed (amended, Q255): the lineage is marked
+  once, on the newest revision the request names, and every id of it gets that
+  result. It is not atomic on purpose: one archived report in a spam wave must not
+  block the rest.
 - **Reads.** `ReportSummary.review` and `ReportDetail.review`
   (`{state, updated_at, updated_by, reviewed_revision, revised_since}`) and
   `ReportDetail.linked_events` (`[{event_id, report_id, role}]`, from the events
-  module's `event_report_links` projection, across the lineage) are set for
-  moderators only and `null` for everyone else, the reporter included (Q240).
+  module's `event_report_links` projection, across the lineage, oldest first, at
+  most 200, with `ReportDetail.is_linked_events_truncated`; amended, Q259) are set
+  for moderators only and `null` for everyone else, the reporter included (Q240).
+  `ReportSummary.triage_flags` (amended, Q256) lists, for moderators only, the
+  distinct kinds of flag the report's latest triage raised, without their detail.
   `GET /reports?review_state=` filters on the mark (`new` includes unmarked
   lineages) and answers 403 to anyone who is not a moderator, rather than ignoring
   the filter or applying it to their own reports, which would leak the mark
-  (Q243). `GET /reports?reporter=me` narrows any caller's listing to their own
-  reports.
+  (Q243); `GET /reports?triage_flag=` (amended) is moderators-only the same way and
+  is served by the GIN index `ix_reports_triage_gin` (migration `0026`).
+  `GET /reports?reporter=me` narrows any caller's listing to their own reports.
 - **Media queue.** `GET /moderation/media?moderation_status=&scan_status=` lists
   completed uploads oldest first, with no presigned links (only the single
   `GET /media/{id}` presigns). An asset uploaded before its report keeps
   `media_assets.report_id` empty, so the queue resolves `report_id` from the
   newest report that lists the asset (`reports.media_ids`, GIN `jsonb_path_ops`
   index `ix_reports_media_ids_gin`); `ix_media_assets_moderation_queue` serves the
-  order (Q247).
+  order when filtered by status and `ix_media_assets_completed_created_at_id`
+  (migration `0026`, amended) when not (Q247). Amended: the lookup is an aggregate,
+  `(array_agg(id ORDER BY created_at DESC, id DESC))[1]`, not `ORDER BY ... LIMIT
+  1`, which made PostgreSQL walk `ix_reports_created_at_id` backwards (about 0.7 s
+  per page at 200 000 reports, against about 16 ms); an integration test checks the
+  plan. Setting `media_assets.report_id` when a report is submitted or revised was
+  considered and not done: it is a cross-module write on every submission, would
+  change the asset's version under a moderator's decision and needs a backfill.
+  Amended: `POST /moderation/media/{asset_id}/decision` takes an optional
+  `If-Match`, compared inside the unit of work, so a stale approval cannot
+  overwrite a rejection (Q258).
+- **Verification cases by target** (amended, Q257). `GET
+  /moderation/verification-cases` takes `target_id`, so the console finds an
+  event's case in one call (`target_kind=event&target_id=<event id>`).
 - **Moderator directory.** `GET /moderation/moderators` lists active users whose
   stored roles include `moderator` or `admin`, as `{id, display_name}` only, at most
   500 (Q248–Q250).
@@ -102,10 +136,19 @@ Proposed option: **1**.
   `GET /reports/{id}` and on `GET /events/{id}`. What the middlewares set is added
   to the finished document once (`declare_middleware_headers`, installed in
   `main.py`): `Retry-After` on every `429`, and on an authenticated `POST`
-  `Idempotent-Replayed` on success and `Retry-After` on `409`.
+  `Idempotent-Replayed` on success and `Retry-After` on `409`, described as sent only
+  with `idempotency-key-in-use` (amended). Amended: the middleware's own answers
+  (`400` `invalid-idempotency-key`, `409` `idempotency-key-reused` and
+  `idempotency-key-in-use`) are added as Problem Details responses to every
+  authenticated `POST` under `/api/v1` that does not declare that status itself.
+- **Data checks** (amended). Migration `0026` adds
+  `first_revision_supersedes_nothing`, `(revision = 1) = (supersedes_id IS NULL)`,
+  after a pre-check that lists up to 50 offending report ids and stops; `0025` is
+  committed and cannot list them, so on such data its own check fails instead.
 
 **What is needed to move this ADR to `accepted`:** the maintainer confirms that marks
-are internal (Q240), the reason rules (Q242) and the non-atomic bulk mark (Q244).
+are internal (Q240), the reason rules (Q242), the non-atomic bulk mark (Q244) and the
+amendments' defaults (Q254–Q259).
 
 ### Consequences
 
@@ -148,7 +191,7 @@ are internal (Q240), the reason rules (Q242) and the non-atomic bulk mark (Q244)
 
 ## More information
 
-- Q66, Q109, Q133, Q134, Q155; Q240–Q253 in `docs/open-questions.md`.
+- Q66, Q109, Q133, Q134, Q155; Q240–Q259 in `docs/open-questions.md`.
 - ADR 0016 (idempotency keys), ADR 0017 (rate limiting), ADR 0019 (channels),
   ADR 0020 (guest submissions).
 - Data dictionary: `docs/data-dictionary/reports.md`, `media.md`, `identity.md`;

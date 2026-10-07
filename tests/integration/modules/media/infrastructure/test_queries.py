@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.factories.base import FACTORY_IDS
@@ -17,7 +18,10 @@ from yakhnama.modules.media.domain.value_objects import (
     ScanStatus,
     SensitivityFlag,
 )
-from yakhnama.modules.media.infrastructure.queries import SqlAlchemyMediaQueryService
+from yakhnama.modules.media.infrastructure.queries import (
+    SqlAlchemyMediaQueryService,
+    queue_statement,
+)
 from yakhnama.modules.media.infrastructure.uow import SqlAlchemyMediaUnitOfWork
 from yakhnama.modules.reports.infrastructure.uow import SqlAlchemyReportsUnitOfWork
 from yakhnama.platform.uow import SqlAlchemyUnitOfWorkFactory
@@ -245,3 +249,42 @@ async def test_media_queue_with_a_bad_cursor_sort_key_is_refused(
             scan_status=None,
             page=PageRequest(limit=2, cursor=cursor),
         )
+
+
+# Enough unrelated reports, newest first by ``created_at``, that walking
+# ``ix_reports_created_at_id`` backwards looks cheap to the planner and is not.
+_MANY_REPORTS: Final = (
+    "INSERT INTO reports (id, reporter_id, source_id, observed_at, "
+    "observed_at_precision, observation, description, original_language, "
+    "media_ids, status, revision, submitted_at, version, created_at, updated_at, "
+    "lineage_id) "
+    "SELECT ids.id, ids.id, ids.id, now(), 'exact', "
+    "ST_SetSRID(ST_MakePoint(74.3, 35.9), 4326), 'Synthetic.', 'en', "
+    "jsonb_build_array(gen_random_uuid()::text), 'submitted', 1, now(), 1, "
+    "now() - make_interval(secs => ids.series), now(), ids.id "
+    "FROM (SELECT gen_random_uuid() AS id, series "
+    "FROM generate_series(1, 20000) AS series) AS ids"
+)
+
+
+async def test_media_queue_report_lookup_uses_the_media_ids_gin_index(
+    session_factory: async_sessionmaker[AsyncSession], queued: list[MediaAsset]
+) -> None:
+    del queued
+    statement = queue_statement(
+        moderation_status=None, scan_status=None, since=None, limit=51
+    )
+    async with session_factory() as session:
+        compiled = statement.compile(
+            dialect=session.get_bind().dialect, compile_kwargs={"literal_binds": True}
+        )
+        await session.execute(text(_MANY_REPORTS))
+        await session.execute(text("ANALYZE reports"))
+        await session.execute(text("ANALYZE media_assets"))
+        plan = "\n".join(
+            (await session.execute(text(f"EXPLAIN {compiled}"))).scalars().all()
+        )
+        await session.rollback()
+
+    assert "ix_reports_media_ids_gin" in plan, plan
+    assert "ix_reports_created_at_id" not in plan, plan

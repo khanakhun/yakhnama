@@ -127,7 +127,10 @@ Migration `0025` adds the partial index `ix_media_assets_moderation_queue` on
 `(moderation_status, created_at, id)` over completed uploads, for the moderators'
 queue below, and (on the reports module's table) the GIN index
 `ix_reports_media_ids_gin` on `reports.media_ids` (`jsonb_path_ops`), which serves the
-queue's report lookup.
+queue's report lookup. Migration `0026` adds the partial index
+`ix_media_assets_completed_created_at_id` on `(created_at, id)` over completed uploads,
+which serves the queue in order when it is not filtered by moderation status (the
+`0025` index leads with the status and cannot).
 
 An upload grant takes the file's exact `byte_size` (1 to 52 428 800 bytes); it is not
 stored on the asset, but signed into the presigned `PUT` as `Content-Length`, so the
@@ -152,8 +155,17 @@ moderator opens one asset to get its links.
 report existed (`POST /media`, the usual path; such an asset keeps `report_id`
 `NULL`), the **newest report revision whose `media_ids` lists the asset** (a correlated
 lookup on `reports`, read as a plain table, never through the reports module's code).
-`GET /api/v1/media/{asset_id}` still returns the stored `report_id`, which can be
-`null` for the same asset (`docs/open-questions.md` Q247).
+The lookup aggregates every listing report (`array_agg(id ORDER BY created_at DESC, id
+DESC)[1]`) instead of taking the first by `ORDER BY ... LIMIT 1`, so PostgreSQL reads
+it from `ix_reports_media_ids_gin`: with a `LIMIT` it walked the reports' creation-time
+index backwards (about 0.7 s per page at 200 000 reports). `GET
+/api/v1/media/{asset_id}` still returns the stored `report_id`, which can be `null` for
+the same asset (`docs/open-questions.md` Q247).
+
+A moderator's decision (`POST /api/v1/moderation/media/{asset_id}/decision`) takes an
+optional `If-Match` with the asset's `ETag` (`"<asset_id>:<version>"`); when sent, the
+version is compared inside the unit of work, so a stale approval cannot overwrite a
+rejection stored a moment earlier (`412`; Q258).
 
 ## Open questions raised by this module
 

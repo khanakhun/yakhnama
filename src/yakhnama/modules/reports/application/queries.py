@@ -18,6 +18,7 @@ from yakhnama.modules.reports.application.specifications import (
     ReportObservedToSpecification,
     ReportReviewStateSpecification,
     ReportStatusSpecification,
+    ReportTriageFlagSpecification,
 )
 from yakhnama.modules.reports.domain.reviews import ReviewState
 from yakhnama.modules.reports.domain.triage import NEARBY_REPORTS_MAX
@@ -25,6 +26,7 @@ from yakhnama.modules.reports.domain.value_objects import (
     GuessedHazardCode,
     ReportChannel,
     ReportStatus,
+    TriageFlagKind,
 )
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
@@ -64,6 +66,8 @@ class ListReports(BaseModel):
         observed_to: Only reports observed at or before this instant, if set.
         review_state: Only reports whose lineage carries this review mark, if
             set; moderators only (ADR 0022).
+        triage_flag: Only reports whose latest triage raised this kind of flag,
+            if set; moderators only.
         is_own_only: Only the actor's own reports (``reporter=me``); narrows a
             moderator's listing, and changes nothing for anyone else.
         page: Page size and cursor.
@@ -79,6 +83,7 @@ class ListReports(BaseModel):
     observed_from: AwareDatetime | None = None
     observed_to: AwareDatetime | None = None
     review_state: ReviewState | None = None
+    triage_flag: TriageFlagKind | None = None
     is_own_only: bool = False
     page: PageRequest = PageRequest()
 
@@ -122,6 +127,8 @@ class ListReports(BaseModel):
             filters.append(ReportObservedToSpecification(self.observed_to))
         if self.review_state is not None:
             filters.append(ReportReviewStateSpecification(self.review_state))
+        if self.triage_flag is not None:
+            filters.append(ReportTriageFlagSpecification(self.triage_flag))
         combined: Specification[ReportRecord] = TrueSpecification[ReportRecord]()
         for specification in filters:
             combined = combined.and_(specification)

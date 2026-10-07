@@ -154,7 +154,8 @@ reason, coordinate or accuracy.
 | `GuestMediaNotFoundError` | not found | Completing an asset not granted to the submission. |
 | `GuestSubmissionLimitError` | 429 (`rate-limited`) | An hourly cap is reached: submissions opened, or guest reports submitted; carries `retry_after_seconds` (the `Retry-After` header). |
 | `ReviewReasonRequiredError` | validation | A review mark that needs a reason has none (archive, back to `new`, out of `archived`); `details.reason` is `review_reason_required`. |
-| `ReportFilterForbiddenError` | permission denied | A caller who is not a moderator filters reports by `review_state`. |
+| `ReportFilterForbiddenError` | permission denied | A caller who is not a moderator filters reports by `review_state` or `triage_flag`. |
+| `ReviewRevisionSupersededError` | conflict | A mark names a revision older than the one the lineage was last marked on; `details.reason` is `review_revision_superseded`, with `revision` and `reviewed_revision` (Q254). |
 
 ## Review marks (ADR 0022)
 
@@ -187,7 +188,10 @@ mark a report **lineage** (a report and all its revisions) `new`, `reviewed` or
 | `actor_id` | `UUID` (v7) | — | The moderator (a user id). | Authenticated actor. | 2026-10 |
 | `marked_at` | `datetime` (UTC) | UTC | When. | Platform `Clock`. | 2026-10 |
 
-A mark repeating the last one (same state, revision and reason) changes nothing.
+A mark repeating the last one (same state, revision and reason) changes nothing, and so
+does marking a never-marked lineage `new` (no reason is asked for). A mark on a
+revision older than the one the lineage was last marked on is refused (Q254). A bulk
+mark marks each lineage once, on the newest revision the request names (Q255).
 
 ### What reports carry for moderators
 
@@ -196,8 +200,16 @@ A mark repeating the last one (same state, revision and reason) changes nothing.
 who is not a moderator. `revised_since` is true while the lineage has a newer revision
 than the one a `reviewed` or `archived` mark was made on. `ReportDetail.linked_events`
 (moderators only) lists `{event_id, report_id, role}` for every event any revision of
-the lineage is linked to, read from the events module's `event_report_links`
-projection.
+the lineage is linked to, oldest first and at most 200, read from the events module's
+`event_report_links` projection; `ReportDetail.is_linked_events_truncated` (moderators
+only, `null` otherwise) says whether more were left out (Q259).
+
+`ReportSummary.triage_flags` (moderators only, `null` for anyone else) lists the
+distinct `TriageFlagKind` values of the report's latest triage, in rule order: `[]`
+when no rule raised one or the report is not triaged yet. It carries no detail text;
+the flags themselves stay on `ReportDetail.triage`. `GET /reports?triage_flag=<kind>`
+(moderators only, `403` otherwise) keeps the reports whose latest triage raised that
+kind (Q256).
 
 ## Guest submissions (ADR 0020)
 
@@ -291,7 +303,17 @@ referencing `reports.id`; `state`, indexed and checked; `last_mark_id`;
 `lineage_id` referencing `report_reviews`, `state`, `reason`, `report_id` referencing
 `reports.id`, `revision`, `actor_id`, `marked_at`; indexed on `(lineage_id, marked_at,
 id)`). All references are `ON DELETE RESTRICT`. **Its downgrade loses every review
-mark.**
+mark.** On a row whose revision and predecessor disagree (for example a later revision
+with no `supersedes_id`), its backfill makes the row its own lineage and the check
+`lineage_root_is_first_revision` refuses the whole migration.
+
+Migration `0026_report_revision_check_and_queue_indexes` first lists, and refuses to
+continue on, every report whose revision number and predecessor disagree (up to 50
+ids in the error), then adds the check `first_revision_supersedes_nothing`
+(`(revision = 1) = (supersedes_id IS NULL)`), the GIN index `ix_reports_triage_gin` on
+`reports.triage` (`jsonb_path_ops`) for the `triage_flag` filter (a containment test
+`triage @> '{"flags": [{"kind": ...}]}'`), and, on `media_assets`,
+`ix_media_assets_completed_created_at_id`. Its downgrade drops them; no data changes.
 
 ## Open questions raised by this module
 
@@ -312,4 +334,4 @@ mark.**
 | Q-R13 | Does every revision keep the original's reporter, organisation and source? | Yes; a revision is a correction by the same reporter, not a new source. | no |
 
 The reporting channels and guest submissions added their questions to the central
-log, `docs/open-questions.md` Q218–Q228; the review marks Q240–Q246 and Q251–Q253.
+log, `docs/open-questions.md` Q218–Q228; the review marks Q240–Q246, Q251–Q256 and Q259.

@@ -40,6 +40,7 @@ from yakhnama.modules.reports.domain.value_objects import (
     GuestImageType,
     PlaceHint,
     ReportChannel,
+    TriageFlagKind,
     WithdrawalReason,
 )
 from yakhnama.modules.reports.public import (
@@ -233,6 +234,8 @@ class ListReportsParameters(BaseModel):
         observed_to: Only reports observed at or before this instant (``to``).
         review_state: Only reports whose lineage carries this review mark;
             moderators only, 403 for anyone else (ADR 0022).
+        triage_flag: Only reports whose latest triage raised this kind of
+            flag; moderators only, 403 for anyone else.
         reporter: ``me`` for the caller's own reports only; narrows a
             moderator's listing to the reports they submitted themselves.
         output_format: ``json`` or ``geojson`` (query name ``format``).
@@ -249,6 +252,7 @@ class ListReportsParameters(BaseModel):
     observed_from: AwareDatetime | None = Field(default=None, alias="from")
     observed_to: AwareDatetime | None = Field(default=None, alias="to")
     review_state: ReviewState | None = None
+    triage_flag: TriageFlagKind | None = None
     reporter: Literal["me"] | None = None
     output_format: ReportFormat | None = Field(default=None, alias="format")
     cursor: Annotated[str | None, Field(max_length=MAX_CURSOR_LENGTH)] = None

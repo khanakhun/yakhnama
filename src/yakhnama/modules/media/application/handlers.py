@@ -101,6 +101,7 @@ from yakhnama.shared_kernel.clock import Clock
 from yakhnama.shared_kernel.errors import (
     InvariantViolationError,
     PermissionDeniedError,
+    PreconditionFailedError,
     ValidationError,
 )
 from yakhnama.shared_kernel.ids import EntityId, IdGenerator
@@ -651,6 +652,15 @@ class RecordScanResultHandler:
         return MediaAssetDetail.from_entity(asset)
 
 
+def _check_version(expected: int | None, current: int) -> None:
+    if expected is not None and expected != current:
+        message = "the media asset has changed since the client read it"
+        raise PreconditionFailedError(
+            message,
+            details={"expected_version": expected, "current_version": current},
+        )
+
+
 class ModerateMediaHandler:
     """Record a moderator's decision and publish the public copy when allowed.
 
@@ -694,6 +704,7 @@ class ModerateMediaHandler:
                 rejection has no reason.
             MediaUploadNotCompletedError: If the upload has not completed.
             InfectedMediaError: If an infected asset would be approved.
+            PreconditionFailedError: If ``expected_version`` is not the asset's.
             MediaContentChangedError: If the original no longer hashes to its
                 recorded digest; the decision stays, the asset is quarantined and
                 nothing is published.
@@ -701,6 +712,9 @@ class ModerateMediaHandler:
         require_allowed(moderation_policy(), command.actor, action="moderate media")
         async with self._uow_factory() as uow:
             asset = await _load_asset(uow, command.asset_id)
+            # Compared inside the unit of work, so a stale approval cannot
+            # overwrite a rejection another moderator just stored.
+            _check_version(command.expected_version, asset.version)
             change = asset.moderate(
                 command.decision,
                 command.sensitivity,

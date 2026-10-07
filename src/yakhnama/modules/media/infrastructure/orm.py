@@ -91,6 +91,13 @@ class MediaAssetRow(Base):
             "id",
             postgresql_where=sql_text("upload_status = 'completed'"),
         ),
+        # Serves the same queue unfiltered by moderation status, oldest first.
+        Index(
+            "ix_media_assets_completed_created_at_id",
+            "created_at",
+            "id",
+            postgresql_where=sql_text("upload_status = 'completed'"),
+        ),
         # Serves the stale-upload sweep, which reads only requested assets.
         Index(
             "ix_media_assets_created_at_requested",

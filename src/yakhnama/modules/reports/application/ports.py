@@ -39,7 +39,11 @@ from yakhnama.modules.reports.domain.guest_submissions import (
     GuestChallenge,
     GuestSubmission,
 )
-from yakhnama.modules.reports.domain.reviews import ReportReview, ReviewMark
+from yakhnama.modules.reports.domain.reviews import (
+    LineagePosition,
+    ReportReview,
+    ReviewMark,
+)
 from yakhnama.modules.reports.domain.triage import (
     PhotoEvidence,
     ReportSummaryForTriage,
@@ -105,6 +109,20 @@ class ReportRepository(Protocol):
 
         Returns:
             The lineage id, or ``None`` if the report is not stored.
+        """
+        ...
+
+    async def lineage_positions(
+        self, report_ids: Sequence[EntityId]
+    ) -> tuple[LineagePosition, ...]:
+        """Return the lineage and revision number of each stored report.
+
+        Args:
+            report_ids: Any revisions, at most a bulk mark's worth.
+
+        Returns:
+            One position per stored id, in no particular order; ids that are not
+            stored are left out.
         """
         ...
 
@@ -389,17 +407,21 @@ class ReportQueryService(Protocol):
         """
         ...
 
-    async def list_linked_events(self, lineage_id: EntityId) -> tuple[LinkedEvent, ...]:
-        """Return the event links of every revision of a lineage.
+    async def list_linked_events(
+        self, lineage_id: EntityId, limit: int
+    ) -> tuple[LinkedEvent, ...]:
+        """Return the event links of every revision of a lineage, oldest first.
 
         Read from the events module's projection of its report links; this
         module never writes it.
 
         Args:
             lineage_id: The id of the lineage's revision 1.
+            limit: Most links returned; the caller asks for one more than it
+                shows to tell whether the list was cut.
 
         Returns:
-            The links, oldest first.
+            Up to ``limit`` links, oldest first.
         """
         ...
 

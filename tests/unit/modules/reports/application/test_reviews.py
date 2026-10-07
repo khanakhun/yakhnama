@@ -28,6 +28,7 @@ from yakhnama.modules.reports.application.commands import (
     WithdrawReport,
 )
 from yakhnama.modules.reports.application.dto import (
+    LINKED_EVENTS_MAX,
     REVIEW_HISTORY_MAX,
     LinkedEvent,
     LinkRoleName,
@@ -52,6 +53,7 @@ from yakhnama.modules.reports.domain.errors import (
     ReportFilterForbiddenError,
     ReportNotFoundError,
     ReviewReasonRequiredError,
+    ReviewRevisionSupersededError,
 )
 from yakhnama.modules.reports.domain.events import ReportReviewMarked
 from yakhnama.modules.reports.domain.reviews import ReviewState
@@ -214,6 +216,30 @@ async def test_mark_review_new_on_unmarked_lineage_is_unchanged() -> None:
     assert harness.uow.committed_events == ()
 
 
+async def test_mark_review_new_without_reason_on_unmarked_lineage_is_unchanged() -> (
+    None
+):
+    report = stored_report()
+    harness = Harness(report)
+
+    result = await _mark(harness)(_command(report.id, ReviewState.NEW))
+
+    assert (result.outcome, result.version) == (ReviewOutcome.UNCHANGED, 0)
+    assert harness.uow.report_reviews.committed == {}
+
+
+async def test_mark_review_on_revision_older_than_the_reviewed_one_is_refused() -> None:
+    report = stored_report()
+    harness = Harness(report)
+    revision_id = await _revise(harness, report)
+    await _mark(harness)(_command(revision_id, ReviewState.REVIEWED))
+
+    with pytest.raises(ReviewRevisionSupersededError):
+        await _mark(harness)(_command(report.id, ReviewState.ARCHIVED, ARCHIVE_REASON))
+
+    assert harness.uow.report_reviews.committed[report.id].version == 1
+
+
 async def test_mark_review_repeated_is_unchanged_and_appends_no_mark() -> None:
     report = stored_report()
     harness = Harness(report)
@@ -350,6 +376,128 @@ async def test_bulk_mark_by_citizen_is_refused_before_reading() -> None:
         )
 
 
+class _BrokenMarkHandler(MarkReportReviewHandler):
+    """A mark handler that fails on one report with a domain error."""
+
+    def __init__(self, harness: Harness, broken_id: EntityId) -> None:
+        super().__init__(harness.factory, harness.clock, harness.ids)
+        self._broken_id = broken_id
+
+    async def __call__(self, command: MarkReportReview) -> ReviewMarkResult:
+        if command.report_id == self._broken_id:
+            message = "a stored report has no lineage"
+            raise InvariantViolationError(message)
+        return await super().__call__(command)
+
+
+async def test_bulk_mark_reports_error_for_a_domain_failure_and_marks_the_rest() -> (
+    None
+):
+    first = stored_report()
+    broken = stored_report(id=SequentialIdGenerator(seed=2304).new_id())
+    last = stored_report(id=SequentialIdGenerator(seed=2305).new_id())
+    harness = Harness(first, broken, last)
+
+    result = await MarkReportReviewsHandler(_BrokenMarkHandler(harness, broken.id))(
+        MarkReportReviews(
+            actor=MODERATOR,
+            report_ids=(first.id, broken.id, last.id),
+            state=ReviewState.REVIEWED,
+        )
+    )
+
+    assert [item.outcome for item in result.items] == [
+        ReviewOutcome.MARKED,
+        ReviewOutcome.ERROR,
+        ReviewOutcome.MARKED,
+    ]
+    assert (result.items[1].lineage_id, result.items[1].state) == (None, None)
+    assert set(harness.uow.report_reviews.committed) == {first.id, last.id}
+
+
+class _CrashingMarkHandler(MarkReportReviewHandler):
+    """A mark handler whose database goes away on the second report."""
+
+    def __init__(self, harness: Harness, crash_id: EntityId) -> None:
+        super().__init__(harness.factory, harness.clock, harness.ids)
+        self._crash_id = crash_id
+
+    async def __call__(self, command: MarkReportReview) -> ReviewMarkResult:
+        if command.report_id == self._crash_id:
+            message = "connection lost"
+            raise ConnectionError(message)
+        return await super().__call__(command)
+
+
+async def test_bulk_mark_infrastructure_failure_aborts_after_saving_earlier_items() -> (
+    None
+):
+    first = stored_report()
+    crash = stored_report(id=SequentialIdGenerator(seed=2306).new_id())
+    harness = Harness(first, crash)
+
+    with pytest.raises(ConnectionError):
+        await MarkReportReviewsHandler(_CrashingMarkHandler(harness, crash.id))(
+            MarkReportReviews(
+                actor=MODERATOR,
+                report_ids=(first.id, crash.id),
+                state=ReviewState.REVIEWED,
+            )
+        )
+
+    assert set(harness.uow.report_reviews.committed) == {first.id}
+
+
+async def test_bulk_mark_collapses_revisions_of_one_lineage_onto_the_newest() -> None:
+    report = stored_report()
+    other = stored_report(id=SequentialIdGenerator(seed=2307).new_id())
+    harness = Harness(report, other)
+    revision_id = await _revise(harness, report)
+
+    result = await MarkReportReviewsHandler(_mark(harness))(
+        MarkReportReviews(
+            actor=MODERATOR,
+            report_ids=(report.id, other.id, revision_id),
+            state=ReviewState.ARCHIVED,
+            reason=ARCHIVE_REASON,
+        )
+    )
+
+    assert [(item.report_id, item.outcome) for item in result.items] == [
+        (report.id, ReviewOutcome.MARKED),
+        (other.id, ReviewOutcome.MARKED),
+        (revision_id, ReviewOutcome.MARKED),
+    ]
+    assert (result.items[0].lineage_id, result.items[0].version) == (report.id, 1)
+    assert result.items[2].lineage_id == report.id
+    review = harness.uow.report_reviews.committed[report.id]
+    assert (review.reviewed_revision, review.last_mark.report_id) == (2, revision_id)
+    assert len(harness.uow.report_reviews.marks[report.id]) == 1
+
+
+async def test_bulk_mark_of_a_revision_older_than_the_reviewed_one_is_conflict() -> (
+    None
+):
+    report = stored_report()
+    harness = Harness(report)
+    revision_id = await _revise(harness, report)
+    await _mark(harness)(_command(revision_id, ReviewState.REVIEWED))
+
+    result = await MarkReportReviewsHandler(_mark(harness))(
+        MarkReportReviews(
+            actor=MODERATOR,
+            report_ids=(report.id,),
+            state=ReviewState.ARCHIVED,
+            reason=ARCHIVE_REASON,
+        )
+    )
+
+    assert result.items[0].outcome is ReviewOutcome.CONFLICT
+    assert harness.uow.report_reviews.committed[report.id].state is (
+        ReviewState.REVIEWED
+    )
+
+
 def test_bulk_mark_command_refuses_repeated_ids() -> None:
     report = stored_report()
 
@@ -459,6 +607,25 @@ async def test_get_report_after_revision_shows_revised_since_to_moderator() -> N
     assert detail.linked_events == (link,)
 
 
+async def test_get_report_truncates_linked_events_beyond_the_maximum() -> None:
+    report = stored_report()
+    harness = Harness(report)
+    queries, reads = _queries(harness)
+    reads.linked_events[report.id] = tuple(
+        LinkedEvent(event_id=EVENT_IDS.new_id(), report_id=report.id, role="supporting")
+        for _ in range(LINKED_EVENTS_MAX + 1)
+    )
+
+    detail = await queries.get_report(GetReport(actor=MODERATOR, report_id=report.id))
+    one_short = reads.linked_events[report.id][:LINKED_EVENTS_MAX]
+    reads.linked_events[report.id] = one_short
+    complete = await queries.get_report(GetReport(actor=MODERATOR, report_id=report.id))
+
+    assert detail.linked_events == one_short
+    assert detail.is_linked_events_truncated is True
+    assert complete.is_linked_events_truncated is False
+
+
 async def test_get_report_hides_review_and_links_from_the_reporter() -> None:
     report = stored_report()
     harness = Harness(report)
@@ -472,6 +639,7 @@ async def test_get_report_hides_review_and_links_from_the_reporter() -> None:
 
     assert detail.review is None
     assert detail.linked_events is None
+    assert detail.is_linked_events_truncated is None
 
 
 async def test_get_review_returns_history_newest_first_with_etag_version() -> None:

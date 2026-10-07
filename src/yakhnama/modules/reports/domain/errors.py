@@ -434,6 +434,37 @@ class ReviewReasonRequiredError(ValidationError):
         )
 
 
+class ReviewRevisionSupersededError(ConflictError):
+    """A mark names a revision older than the one the lineage was last marked on.
+
+    A moderator working from a stale page must not move the lineage's mark back to
+    an older revision (ADR 0022, amended): they reload and mark the newer one.
+
+    Implements: Domain Error (proposed in ADR 0012).
+    """
+
+    @classmethod
+    def for_revision(cls, revision: int, reviewed_revision: int) -> Self:
+        """Build the error for a mark on an older revision.
+
+        Args:
+            revision: The revision the mark names.
+            reviewed_revision: The revision the lineage's last mark was made on.
+
+        Returns:
+            The error, with both revisions in ``details``.
+        """
+        return cls(
+            f"revision {revision} is older than revision {reviewed_revision}, "
+            "which the lineage was last marked on; reload and mark that one",
+            details={
+                "reason": "review_revision_superseded",
+                "revision": revision,
+                "reviewed_revision": reviewed_revision,
+            },
+        )
+
+
 class ReportFilterForbiddenError(PermissionDeniedError):
     """A caller who may not moderate filtered reports by a moderators-only field.
 

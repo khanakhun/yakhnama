@@ -51,7 +51,7 @@ from yakhnama.modules.media.public import (
     RequestUpload,
     UploadGrant,
 )
-from yakhnama.platform.etag import make_etag, set_etag
+from yakhnama.platform.etag import expected_version_from_if_match, make_etag, set_etag
 from yakhnama.platform.openapi_headers import ETAG, LINK, LOCATION, header_responses
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.pagination import PageRequest
@@ -61,6 +61,7 @@ MEDIA_PATH: Final = f"{API_PREFIX}/media"
 MEDIA_QUEUE_PATH: Final = f"{API_PREFIX}/moderation/media"
 LOCATION_HEADER: Final = "Location"
 LINK_HEADER: Final = "Link"
+IF_MATCH_MAX_LENGTH: Final = 512
 
 # Any: the value type of FastAPI's own ``responses`` argument.
 _PROBLEM: Final[dict[str, Any]] = {
@@ -91,6 +92,14 @@ moderation_router = APIRouter(
     responses=_COMMON_RESPONSES,
 )
 
+IfMatch = Annotated[
+    str | None,
+    Header(
+        alias="If-Match",
+        max_length=IF_MATCH_MAX_LENGTH,
+        description='Optional: the asset\'s ETag, for example "<asset_id>:3".',
+    ),
+]
 IdempotencyKey = Annotated[
     UUID | None,
     Header(
@@ -298,16 +307,27 @@ async def list_media_queue(
 
 @moderation_router.post(
     "/media/{asset_id}/decision",
-    responses={**_CHANGE_RESPONSES, **header_responses(200, ETAG)},
+    responses={
+        **_CHANGE_RESPONSES,
+        status.HTTP_412_PRECONDITION_FAILED: _PROBLEM,
+        **header_responses(200, ETAG),
+    },
 )
-async def moderate_media(
+async def moderate_media(  # noqa: PLR0913  # reason: FastAPI injects each input
+    *,
     asset_id: EntityId,
     body: ModerateMediaRequest,
     actor: ModeratorActor,
     response: Response,
     services: Services,
+    if_match: IfMatch = None,
 ) -> MediaAssetResponse:
     """Record a moderator's decision, publishing the public copy when approved.
+
+    ``If-Match`` is optional, as on every moderation route (Q66); when sent it is
+    compared with the asset's version inside the command's unit of work, so two
+    moderators deciding at once cannot let a stale approval overwrite a
+    rejection.
 
     Args:
         asset_id: The asset.
@@ -315,9 +335,14 @@ async def moderate_media(
         actor: The moderator.
         response: Used to set the ``ETag`` header.
         services: Use cases bound by the composition root.
+        if_match: Optional: the asset's ETag the decision is based on.
 
     Returns:
         The asset after the decision.
+
+    Raises:
+        PreconditionFailedError: If ``If-Match`` is stale, names another asset
+            or is not a single strong tag (412).
     """
     detail = await services.moderate_media_handler(
         ModerateMedia(
@@ -326,6 +351,11 @@ async def moderate_media(
             decision=ModerationStatus(body.decision),
             sensitivity=body.sensitivity,
             reason=body.reason,
+            expected_version=(
+                None
+                if if_match is None
+                else expected_version_from_if_match(if_match, asset_id)
+            ),
         )
     )
     return _asset_response(response, detail)

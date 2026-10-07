@@ -143,14 +143,17 @@ class ReportReviewFactory:
 
         Returns:
             The review at version 1 and ``ReportReviewMarked``, or ``None`` when
-            ``request`` asks for ``new``: an unmarked lineage already is.
+            ``request`` asks for ``new`` (with or without a reason): an unmarked
+            lineage already is.
 
         Raises:
             ReviewReasonRequiredError: If the move needs a reason and has none.
         """
-        require_reason(ReviewState.NEW, request.state, request.reason)
+        # Checked before the reason: "new" on an unmarked lineage changes nothing,
+        # so it must not be refused for lacking a reason (ADR 0022, amended).
         if request.state is ReviewState.NEW:
             return None
+        require_reason(ReviewState.NEW, request.state, request.reason)
         mark = new_mark(request, clock=clock, ids=ids)
         review = ReportReview(
             id=lineage_id,

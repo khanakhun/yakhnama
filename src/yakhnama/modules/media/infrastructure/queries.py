@@ -7,15 +7,20 @@ as the in-memory fake does.
 
 **The moderators' queue** (``list_queue``) pages completed uploads oldest first by
 keyset on ``(created_at, id)``, served by the partial index
-``ix_media_assets_moderation_queue``. An asset uploaded before its report existed
-(``POST /media``) keeps ``report_id`` ``NULL``, so the queue resolves the report with
+``ix_media_assets_moderation_queue`` when filtered by moderation status. An asset
+uploaded before its report existed (``POST /media``) keeps ``report_id`` ``NULL``, so
+the queue resolves the report with
 ``coalesce(media_assets.report_id, <newest report revision listing the asset>)``: a
 correlated scalar subquery on ``reports`` whose ``media_ids`` JSONB array contains
 the asset id as a string (``@>``, which the GIN index ``ix_reports_media_ids_gin``
-with ``jsonb_path_ops`` serves, migration 0025). The reports table is referenced as
-a lightweight ``table()`` clause with only the columns read here, never through the
-reports module's ORM model: modules share no Python internals (``AGENTS.md`` §2.1),
-the same precedent as the events module's read of ``verification_cases``.
+with ``jsonb_path_ops`` serves, migration 0025), aggregated rather than limited so
+the planner keeps to that index (``report_of_asset``). Without a
+``moderation_status`` filter the order is served by
+``ix_media_assets_completed_created_at_id`` (migration 0026). The reports table is
+referenced as a lightweight ``table()`` clause with only the columns read here,
+never through the reports module's ORM model: modules share no Python internals
+(``AGENTS.md`` §2.1), the same precedent as the events module's read of
+``verification_cases``.
 ``get_asset`` keeps returning the stored ``report_id``.
 
 Patterns: Query Service (adapter side).
@@ -28,6 +33,7 @@ from typing import Final
 from sqlalchemy import (
     ColumnElement,
     DateTime,
+    Select,
     Text,
     Uuid,
     and_,
@@ -38,7 +44,7 @@ from sqlalchemy import (
     select,
     table,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from yakhnama.modules.media.application.dto import MediaAssetRecord
@@ -70,24 +76,79 @@ REPORTS: Final = table(
 def report_of_asset() -> ColumnElement[EntityId | None]:
     """Return the asset's report: its own, or the newest revision listing it.
 
+    The newest listing report is ``(array_agg(id ORDER BY created_at DESC, id
+    DESC))[1]`` over every report whose ``media_ids`` contains the asset, not
+    ``ORDER BY created_at DESC LIMIT 1``: with a ``LIMIT``, the planner walks
+    ``ix_reports_created_at_id`` backwards and filters every report until it meets
+    one listing the asset (about 0.7 s per page at 200 000 reports), while the
+    aggregate must read every match and so takes a bitmap scan of the GIN index
+    ``ix_reports_media_ids_gin``. Only the revisions of one lineage list an
+    asset, so the aggregate stays a handful of rows.
+
     Returns:
-        ``coalesce(report_id, (newest reports.id whose media_ids contains the
-        asset id))``, correlated to ``media_assets``.
+        ``coalesce(report_id, <newest listing report>)``, correlated to
+        ``media_assets``; ``coalesce`` skips the lookup for an asset that has its
+        own report.
     """
     reports = REPORTS
+    newest_first = aggregate_order_by(
+        reports.c.id, reports.c.created_at.desc(), reports.c.id.desc()
+    )
     listing = (
-        select(reports.c.id)
+        select(func.array_agg(newest_first, type_=ARRAY(Uuid()))[1])
         .where(
             reports.c.media_ids.op("@>")(
                 func.jsonb_build_array(cast(MediaAssetRow.id, Text))
             )
         )
-        .order_by(reports.c.created_at.desc(), reports.c.id.desc())
-        .limit(1)
         .correlate(MediaAssetRow)
         .scalar_subquery()
     )
     return func.coalesce(MediaAssetRow.report_id, listing)
+
+
+def queue_statement(
+    *,
+    moderation_status: ModerationStatus | None,
+    scan_status: ScanStatus | None,
+    since: tuple[datetime, EntityId] | None,
+    limit: int,
+) -> Select[tuple[MediaAssetRow, EntityId | None]]:
+    """Build the moderators' queue query: completed uploads, oldest first.
+
+    Args:
+        moderation_status: Only assets with this status, if set.
+        scan_status: Only assets with this scan verdict, if set.
+        since: The ``(created_at, id)`` of the last asset of the previous page.
+        limit: Most rows returned.
+
+    Returns:
+        The statement, selecting each asset and its resolved report.
+    """
+    statement = (
+        select(MediaAssetRow, report_of_asset())
+        .where(MediaAssetRow.upload_status == UploadStatus.COMPLETED.value)
+        .order_by(MediaAssetRow.created_at, MediaAssetRow.id)
+        .limit(limit)
+    )
+    if moderation_status is not None:
+        statement = statement.where(
+            MediaAssetRow.moderation_status == moderation_status.value
+        )
+    if scan_status is not None:
+        statement = statement.where(MediaAssetRow.scan_status == scan_status.value)
+    if since is not None:
+        created_at, last_id = since
+        statement = statement.where(
+            or_(
+                MediaAssetRow.created_at > created_at,
+                and_(
+                    MediaAssetRow.created_at == created_at,
+                    MediaAssetRow.id > last_id,
+                ),
+            )
+        )
+    return statement
 
 
 def decode_since(sort_key: str) -> datetime:
@@ -198,30 +259,17 @@ class SqlAlchemyMediaQueryService:
             ValidationError: If the cursor is invalid.
         """
         cursor = page.decode_cursor()
-        statement = (
-            select(MediaAssetRow, report_of_asset())
-            .where(MediaAssetRow.upload_status == UploadStatus.COMPLETED.value)
-            .order_by(MediaAssetRow.created_at, MediaAssetRow.id)
+        statement = queue_statement(
+            moderation_status=moderation_status,
+            scan_status=scan_status,
+            since=(
+                None
+                if cursor is None
+                else (decode_since(cursor.sort_key), cursor.last_id)
+            ),
             # One extra row tells whether another page follows.
-            .limit(page.limit + 1)
+            limit=page.limit + 1,
         )
-        if moderation_status is not None:
-            statement = statement.where(
-                MediaAssetRow.moderation_status == moderation_status.value
-            )
-        if scan_status is not None:
-            statement = statement.where(MediaAssetRow.scan_status == scan_status.value)
-        if cursor is not None:
-            since = decode_since(cursor.sort_key)
-            statement = statement.where(
-                or_(
-                    MediaAssetRow.created_at > since,
-                    and_(
-                        MediaAssetRow.created_at == since,
-                        MediaAssetRow.id > cursor.last_id,
-                    ),
-                )
-            )
         async with self._session_factory() as session:
             rows = (await session.execute(statement)).tuples().all()
         records = [

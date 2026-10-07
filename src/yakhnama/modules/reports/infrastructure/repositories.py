@@ -33,6 +33,7 @@ by the database's clock, the clock the purge uses as well.
 Patterns: Repository (adapter side).
 """
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Final
 
@@ -51,7 +52,7 @@ from yakhnama.modules.reports.domain.guest_submissions import (
     GuestCap,
     GuestSubmission,
 )
-from yakhnama.modules.reports.domain.reviews import ReportReview
+from yakhnama.modules.reports.domain.reviews import LineagePosition, ReportReview
 from yakhnama.modules.reports.infrastructure.mappers import (
     guest_submission_to_values,
     report_review_to_values,
@@ -206,6 +207,31 @@ class SqlAlchemyReportRepository:
             select(ReportRow.lineage_id).where(ReportRow.id == report_id)
         )
         return lineage_id
+
+    async def lineage_positions(
+        self, report_ids: Sequence[EntityId]
+    ) -> tuple[LineagePosition, ...]:
+        """Return the lineage and revision number of each stored report.
+
+        Args:
+            report_ids: Any revisions, at most a bulk mark's worth.
+
+        Returns:
+            One position per stored id; ids that are not stored are left out.
+        """
+        if not report_ids:
+            return ()
+        rows = await self._session.execute(
+            select(ReportRow.id, ReportRow.lineage_id, ReportRow.revision).where(
+                ReportRow.id.in_(set(report_ids))
+            )
+        )
+        return tuple(
+            LineagePosition(
+                report_id=report_id, lineage_id=lineage_id, revision=revision
+            )
+            for report_id, lineage_id, revision in rows.tuples()
+        )
 
     async def _lineage_for(self, report: Report) -> EntityId:
         if report.supersedes_id is None:

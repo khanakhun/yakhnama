@@ -39,7 +39,11 @@ from yakhnama.modules.reports.domain.guest_submissions import (
     GuestCap,
     GuestSubmission,
 )
-from yakhnama.modules.reports.domain.reviews import ReportReview, ReviewMark
+from yakhnama.modules.reports.domain.reviews import (
+    LineagePosition,
+    ReportReview,
+    ReviewMark,
+)
 from yakhnama.modules.reports.domain.triage import (
     PhotoEvidence,
     ReportSummaryForTriage,
@@ -134,6 +138,31 @@ class InMemoryReportRepository:
             The lineage id, or ``None`` if the report is not stored.
         """
         return lineage_in(self._current(), report_id)
+
+    async def lineage_positions(
+        self, report_ids: Sequence[EntityId]
+    ) -> tuple[LineagePosition, ...]:
+        """Return the lineage and revision of each stored report.
+
+        Args:
+            report_ids: Any revisions.
+
+        Returns:
+            One position per stored id, in request order.
+        """
+        current = self._current()
+        positions: list[LineagePosition] = []
+        for report_id in dict.fromkeys(report_ids):
+            lineage_id = lineage_in(current, report_id)
+            if lineage_id is not None:
+                positions.append(
+                    LineagePosition(
+                        report_id=report_id,
+                        lineage_id=lineage_id,
+                        revision=current[report_id].revision,
+                    )
+                )
+        return tuple(positions)
 
     def apply_staged(self) -> None:
         """Make the staged writes permanent; called on commit."""
@@ -620,14 +649,17 @@ class InMemoryReportQueryService:
         )
         return tuple(newest_first[:limit])
 
-    async def list_linked_events(self, lineage_id: EntityId) -> tuple[LinkedEvent, ...]:
+    async def list_linked_events(
+        self, lineage_id: EntityId, limit: int
+    ) -> tuple[LinkedEvent, ...]:
         """Return the arranged links of every committed revision of the lineage.
 
         Args:
             lineage_id: The lineage.
+            limit: Most links returned.
 
         Returns:
-            The links, in arrangement order of the revisions.
+            Up to ``limit`` links, in arrangement order of the revisions.
         """
         committed = self._uow.reports.committed
         return tuple(
@@ -635,7 +667,7 @@ class InMemoryReportQueryService:
             for report_id, links in self.linked_events.items()
             if lineage_in(committed, report_id) == lineage_id
             for link in links
-        )
+        )[:limit]
 
     async def list_reports(
         self, specification: Specification[ReportRecord], page: PageRequest

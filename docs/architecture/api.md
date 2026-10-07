@@ -166,8 +166,12 @@ Documented in `platform/etag.py`; summary:
   (`platform/openapi_headers.header_responses`; every moderation route,
   `GET /reports/{id}` and `GET /events/{id}` among them). The headers the middlewares
   set are added to the whole document once (`declare_middleware_headers`):
-  `Retry-After` on every `429`, and on every authenticated `POST`
-  `Idempotent-Replayed` on success and `Retry-After` on `409` (ADR 0022).
+  `Retry-After` on every `429`, and on every authenticated `POST` under `/api/v1`
+  `Idempotent-Replayed` on success, the idempotency middleware's own Problem Details
+  answers where the route does not declare that status itself (`400`
+  `invalid-idempotency-key`; `409` `idempotency-key-reused` and
+  `idempotency-key-in-use`) and `Retry-After` on `409`, described as sent only with
+  `idempotency-key-in-use` (ADR 0022, amended).
 
 ## Content negotiation: GeoJSON for places
 
@@ -430,25 +434,35 @@ Report moderation is non-blocking and reversible: moderators mark a report's lin
 either; a mark never changes the report, its `ETag` or its reporter's rights. A mark
 has its own `ETag`, `"<lineage_id>:<version>"` (version `0` while the lineage was
 never marked); `If-Match` is optional on the mark (Q66, Q251) and, when sent, is
-checked inside the unit of work. Archiving, going back to `new` and leaving
+checked inside the unit of work. The `ETag` of a mark's answer names the version the
+mark produced, from the command's result. Archiving, going back to `new` and leaving
 `archived` need a `reason` (1–500 characters of safe text; `422 validation-error`
-with `details.reason = "review_reason_required"` otherwise).
+with `details.reason = "review_reason_required"` otherwise); marking a never-marked
+lineage `new` changes nothing and needs none. A mark on a revision older than the
+one the lineage was last marked on is refused: `409 conflict` with
+`details.reason = "review_revision_superseded"` (Q254).
 
 `GET /reports` and `GET /reports/{id}` give moderators `review`
-(`{state, updated_at, updated_by, reviewed_revision, revised_since}`) on each report,
-and the detail also `linked_events` (`[{event_id, report_id, role}]` across the
-lineage); both are `null` for everyone else, the reporter included (Q240).
+(`{state, updated_at, updated_by, reviewed_revision, revised_since}`) on each report;
+the listing also `triage_flags` (the distinct kinds the latest triage raised, `[]`
+when none or not triaged yet, no detail text; Q256), and the detail `linked_events`
+(`[{event_id, report_id, role}]` across the lineage, oldest first, at most 200) with
+`is_linked_events_truncated` (Q259). All are `null` for everyone else, the reporter
+included (Q240).
 
 ### Route table (moderation console)
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET` | `/api/v1/reports?review_state=new\|reviewed\|archived` | auth (policy) | Moderators only (`403` for anyone else, Q243); `new` includes lineages never marked. |
+| `GET` | `/api/v1/reports?triage_flag=exif_implausible\|duplicate_suspected\|pii_detected\|spam_suspected` | auth (policy) | Moderators only (`403` for anyone else); reports whose latest triage raised that kind (GIN `ix_reports_triage_gin`, Q256). |
 | `GET` | `/api/v1/reports?reporter=me` | auth | The caller's own reports only; narrows a moderator's listing; kept in the `Link` of the next page. |
 | `GET` | `/api/v1/moderation/reports/{report_id}/review` | auth (policy, M) | `ReportReviewDetail`: the mark, the revision it was made on, `revised_since`, `version`, the 200 newest marks (`is_history_truncated`); `ETag`. |
-| `POST` | `/api/v1/moderation/reports/{report_id}/review` | auth (policy, M) | Body `{state, reason?}`; repeating the last mark changes nothing; optional `If-Match` (`412` when stale or naming another review); returns `ReportReviewDetail`; `ETag`. |
-| `POST` | `/api/v1/moderation/reports/review` | auth (policy, M) | Body `{report_ids (1–100, distinct), state, reason?}`; each report on its own (Q244); `200` with one `{report_id, lineage_id, outcome, state, version}` per report, `outcome` one of `marked`, `unchanged`, `not_found`, `reason_required`, `conflict`. |
-| `GET` | `/api/v1/moderation/media` | auth (policy, M) | Completed uploads, oldest first; filters `moderation_status`, `scan_status`; cursor pagination, `Link`; `MediaAssetResponse` items without presigned links; `report_id` resolved for assets uploaded before their report (Q247). |
+| `POST` | `/api/v1/moderation/reports/{report_id}/review` | auth (policy, M) | Body `{state, reason?}`; repeating the last mark changes nothing; optional `If-Match` (`412` when stale or naming another review; never `428`); `409` on a revision older than the last marked one (Q254); returns `ReportReviewDetail`; `ETag` of the version the mark produced. |
+| `POST` | `/api/v1/moderation/reports/review` | auth (policy, M) | Body `{report_ids (1–100, distinct), state, reason?}`; each lineage on its own (Q244), marked once on the newest revision the request names, every id of it getting that result (Q255); `200` with one `{report_id, lineage_id, outcome, state, version}` per report id, `outcome` one of `marked`, `unchanged`, `not_found`, `reason_required`, `conflict` (a concurrent mark, or an older revision than the last marked), `error` (any other refusal by the domain). A database failure aborts the request with `500`, the reports before it already marked. |
+| `GET` | `/api/v1/moderation/media` | auth (policy, M) | Completed uploads, oldest first; filters `moderation_status`, `scan_status`; cursor pagination, `Link`; `MediaAssetResponse` items without presigned links; `report_id` resolved for assets uploaded before their report (Q247), through `ix_reports_media_ids_gin`; the unfiltered order through `ix_media_assets_completed_created_at_id`. |
+| `POST` | `/api/v1/moderation/media/{asset_id}/decision` | auth (policy, M) | Optional `If-Match` with the asset's `ETag`, compared inside the unit of work (`412` when stale or naming another asset, Q258), so a stale approval cannot overwrite a rejection; `ETag` of the decided asset. |
+| `GET` | `/api/v1/moderation/verification-cases?target_kind=&target_id=` | auth (policy, M) | `target_id` (UUID) narrows the list to one record's case; with `target_kind` it finds an event's case in one call (Q257). |
 | `GET` | `/api/v1/moderation/moderators` | auth (policy, M) | `{items: [{id, display_name}]}`: active users with the stored `moderator` or `admin` role, at most 500 (Q248–Q250). |
 
 ## Phase 4 additions

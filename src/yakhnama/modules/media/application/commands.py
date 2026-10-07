@@ -3,7 +3,7 @@
 Patterns: Command.
 """
 
-from typing import Self
+from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -157,6 +157,8 @@ class ModerateMedia(BaseModel):
         decision: ``approved`` or ``rejected``.
         sensitivity: The sensitivity flag.
         reason: Why; required for a rejection.
+        expected_version: The asset's version the moderator last saw, from
+            ``If-Match``; not checked when ``None`` (Q66).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -166,6 +168,7 @@ class ModerateMedia(BaseModel):
     decision: ModerationStatus
     sensitivity: SensitivityFlag = SensitivityFlag.NONE
     reason: ModerationReason | None = None
+    expected_version: Annotated[int, Field(ge=1)] | None = None
 
 
 class SweepStaleUploads(BaseModel):

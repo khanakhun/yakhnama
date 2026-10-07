@@ -11,6 +11,7 @@ from tests.fakes.ids import SequentialIdGenerator
 from yakhnama.modules.reports.domain.errors import (
     ReportFilterForbiddenError,
     ReviewReasonRequiredError,
+    ReviewRevisionSupersededError,
 )
 from yakhnama.modules.reports.domain.events import (
     ReportReviewMarked,
@@ -146,14 +147,18 @@ def test_first_mark_new_with_reason_returns_none_because_unmarked_is_new() -> No
     assert change is None
 
 
-def test_first_mark_new_without_reason_raises_reason_required() -> None:
-    with pytest.raises(ReviewReasonRequiredError):
-        ReportReviewFactory().first_mark(
-            LINEAGE_ID,
-            _request(NEW),
-            clock=_clock(),
-            ids=SequentialIdGenerator(seed=2206),
-        )
+def test_first_mark_new_without_reason_returns_none_because_it_changes_nothing() -> (
+    None
+):
+    # Marking an unmarked lineage "new" is a no-op, so no reason is asked for.
+    change = ReportReviewFactory().first_mark(
+        LINEAGE_ID,
+        _request(NEW),
+        clock=_clock(),
+        ids=SequentialIdGenerator(seed=2206),
+    )
+
+    assert change is None
 
 
 def test_mark_repeating_last_mark_returns_review_unchanged_without_events() -> None:
@@ -221,6 +226,39 @@ def test_mark_reviewed_again_on_later_revision_records_new_revision() -> None:
     assert change.state.reviewed_revision == 2
     assert change.state.last_mark.report_id == REVISION_TWO_ID
     assert change.state.version == 2
+
+
+def test_mark_on_revision_older_than_the_reviewed_one_is_refused() -> None:
+    review = _first(REVIEWED).mark(
+        _request(REVIEWED, report_id=REVISION_TWO_ID, revision=2),
+        clock=_clock(),
+        ids=SequentialIdGenerator(seed=2212),
+    )
+
+    with pytest.raises(ReviewRevisionSupersededError) as raised:
+        review.state.mark(
+            _request(ARCHIVED, "Spam."),
+            clock=_clock(),
+            ids=SequentialIdGenerator(seed=2213),
+        )
+
+    assert raised.value.details == {
+        "reason": "review_revision_superseded",
+        "revision": 1,
+        "reviewed_revision": 2,
+    }
+
+
+def test_mark_on_the_reviewed_revision_again_is_allowed() -> None:
+    review = _first(REVIEWED)
+
+    change = review.mark(
+        _request(ARCHIVED, "Spam."),
+        clock=_clock(),
+        ids=SequentialIdGenerator(seed=2214),
+    )
+
+    assert change.state.state is ARCHIVED
 
 
 def test_mark_event_never_carries_the_reason_text() -> None:

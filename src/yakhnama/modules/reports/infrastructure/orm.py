@@ -134,6 +134,10 @@ class ReportRow(Base):
             "(revision = 1) = (lineage_id = id)",
             name="lineage_root_is_first_revision",
         ),
+        CheckConstraint(
+            "(revision = 1) = (supersedes_id IS NULL)",
+            name="first_revision_supersedes_nothing",
+        ),
         Index("ix_reports_observation_gist", "observation", postgresql_using="gist"),
         # Serves "which report lists this media asset" for the media moderation
         # queue (containment, ``@>``), read by the media module's SQL only.
@@ -142,6 +146,13 @@ class ReportRow(Base):
             "media_ids",
             postgresql_using="gin",
             postgresql_ops={"media_ids": "jsonb_path_ops"},
+        ),
+        # Serves the moderators' triage_flag filter (containment, ``@>``).
+        Index(
+            "ix_reports_triage_gin",
+            "triage",
+            postgresql_using="gin",
+            postgresql_ops={"triage": "jsonb_path_ops"},
         ),
         # Serves the newest-first keyset listing (read backwards).
         Index("ix_reports_created_at_id", "created_at", "id"),

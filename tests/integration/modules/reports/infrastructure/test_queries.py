@@ -29,6 +29,7 @@ from yakhnama.modules.reports.application.specifications import (
     ReportObservedToSpecification,
     ReportReporterSpecification,
     ReportStatusSpecification,
+    ReportTriageFlagSpecification,
 )
 from yakhnama.modules.reports.domain.entities import Report
 from yakhnama.modules.reports.domain.triage import measure_distance_metres
@@ -37,6 +38,9 @@ from yakhnama.modules.reports.domain.value_objects import (
     HazardGuess,
     ObservationPoint,
     ReportStatus,
+    TriageFlag,
+    TriageFlagKind,
+    TriageResult,
 )
 from yakhnama.modules.reports.infrastructure.queries import (
     ReportSpecificationCompiler,
@@ -94,6 +98,16 @@ def _guess(code: str) -> HazardGuess:
     return HazardGuess(hazard_code=code, confidence=Confidence.HIGH)
 
 
+def _triage(*kinds: TriageFlagKind) -> TriageResult:
+    return TriageResult(
+        flags=tuple(
+            TriageFlag(kind=kind, detail="Found by a rule.", confidence=Confidence.LOW)
+            for kind in kinds
+        ),
+        evaluated_at=START,
+    )
+
+
 async def _store(factory: ReportsFactory, reports: list[Report]) -> list[Report]:
     async with factory() as uow:
         for report in reports:
@@ -131,6 +145,7 @@ async def stored(reports_uow_factory: ReportsFactory) -> list[Report]:
             observed_at=_observed(1),
             observation=_point(74.60, 36.30),
             hazard_guess=_guess("glof"),
+            triage=_triage("spam_suspected", "pii_detected"),
         ),
         ReportTestFactory.build(
             created_at=created[1],
@@ -146,6 +161,7 @@ async def stored(reports_uow_factory: ReportsFactory) -> list[Report]:
             observed_at=_observed(40),
             observation=_point(75.2, 35.9),
             hazard_guess=_guess("landslide"),
+            triage=_triage(),
         ),
         ReportTestFactory.build(
             created_at=created[3],
@@ -287,6 +303,9 @@ async def test_report_query_service_list_returns_rounded_point_without_accuracy(
         ReportHazardCodeSpecification("landslide")
         | ReportStatusSpecification(ReportStatus.WITHDRAWN),
         ~(ReportHazardCodeSpecification("glof") | FalseSpecification()),
+        ReportTriageFlagSpecification("pii_detected"),
+        ReportTriageFlagSpecification("duplicate_suspected"),
+        ~ReportTriageFlagSpecification("spam_suspected"),
     ],
     ids=[
         "status",
@@ -299,6 +318,9 @@ async def test_report_query_service_list_returns_rounded_point_without_accuracy(
         "and-not",
         "or",
         "not-or-false",
+        "triage-flag",
+        "triage-flag-none",
+        "not-triage-flag-keeps-untriaged",
     ],
 )
 async def test_report_query_service_list_specification_matches_in_memory(

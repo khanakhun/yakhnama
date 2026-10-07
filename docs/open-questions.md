@@ -2629,8 +2629,10 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
 - **Why it matters:** In a spam wave one report that is already archived, missing or
   being marked by another moderator would otherwise block the whole batch.
 - **Proposed default:** Each report on its own, with one outcome per report (`marked`,
-  `unchanged`, `not_found`, `reason_required`, `conflict`), at most 100 distinct ids
-  per request.
+  `unchanged`, `not_found`, `reason_required`, `conflict`, and, since the review of
+  2026-10-07, `error` for any other refusal by the domain), at most 100 distinct ids
+  per request. A failure outside the domain (the database going away) aborts the
+  request with `500`; the reports before it stay marked.
 - **Blocking:** no
 - **Status:** open (raised by the moderation console, 2026-10-07)
 
@@ -2666,7 +2668,12 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
 - **Why it matters:** The two reads disagree for the same asset.
 - **Proposed default:** Keep the queue's resolution and the single read as they are;
   later, set `report_id` when a report attaches the asset (an event from the reports
-  module), then drop the resolution.
+  module), then drop the resolution. Reviewed on 2026-10-07 and kept: writing
+  `report_id` on every submission and revision would be a cross-module write (or an
+  eventually consistent subscriber), would bump the asset's version and `ETag` under a
+  moderator deciding on it (now checked with `If-Match`, Q258) and would need a
+  backfill; the resolution reads `ix_reports_media_ids_gin` through an aggregate
+  (about 16 ms per page at 200 000 reports) and writes nothing.
 - **Blocking:** no
 - **Status:** open (raised by the moderation console, 2026-10-07)
 
@@ -2732,3 +2739,78 @@ branch `feat/reporting-channels`, ADR 0019 and ADR 0020) on 2026-10-05.
   moderators when the console draws such a map.
 - **Blocking:** no
 - **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q254 — A review mark on an older revision
+
+- **Question:** What happens when a moderator marks a revision older than the one the
+  lineage was last marked on (a console page opened before a correction and marked by
+  someone else since)?
+- **Why it matters:** Accepting it would move the mark back in time and make the
+  lineage look "revised since review" again; treating it as unchanged would hide that
+  the moderator acted on stale content.
+- **Proposed default:** Refuse it: `409 conflict` with
+  `details.reason = "review_revision_superseded"` (`conflict` in a bulk result); the
+  console reloads and marks the newer revision. A mark on an older revision than the
+  newest one, but not older than the marked one, is accepted.
+- **Blocking:** no
+- **Status:** open (raised by the review of ADR 0022, 2026-10-07)
+
+## Q255 — Bulk marks naming several revisions of one lineage
+
+- **Question:** When `POST /moderation/reports/review` names two revisions of the same
+  lineage, which one is marked, and what does each id get back?
+- **Why it matters:** Marking both in request order would record two marks, or refuse
+  the older one (Q254), for one observation.
+- **Proposed default:** Mark the lineage once, on the newest revision the request
+  names; every id of that lineage gets the same result (`lineage_id`, `outcome`,
+  `state`, `version`) under its own `report_id`, so the outcomes of one lineage may
+  repeat `marked`.
+- **Blocking:** no
+- **Status:** open (raised by the review of ADR 0022, 2026-10-07)
+
+## Q256 — Triage flag kinds on report listings
+
+- **Question:** Should the moderators' report listing carry the triage flags, and may
+  it be filtered by them?
+- **Why it matters:** Without them the console must read every report's detail to sort
+  its queue; with the full flags a listing would carry the rules' detail text.
+- **Proposed default:** `ReportSummary.triage_flags` lists the distinct kinds only
+  (moderators only, `null` for anyone else; `[]` when no rule raised one or the report
+  is not triaged yet), and `GET /reports?triage_flag=<kind>` filters on them
+  (moderators only, `403` otherwise, like `review_state`, Q243). The detail text stays
+  on `ReportDetail.triage`.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q257 — Finding an event's verification case
+
+- **Question:** How does the console find the verification case of an event?
+- **Why it matters:** Listing every case to find one costs a page per event.
+- **Proposed default:** `GET /moderation/verification-cases?target_kind=event&target_id=`
+  returns it in one call. `verification_case_id` on `EventDetail` is not added: the
+  event detail is built by every events handler and is public, so the field would need
+  a moderators-only gate through all of them.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q258 — `If-Match` on a photo decision
+
+- **Question:** Should `POST /moderation/media/{asset_id}/decision` take `If-Match`?
+- **Why it matters:** Two moderators deciding at once could let a stale approval
+  overwrite a rejection for a sensitive photo.
+- **Proposed default:** Optional, as on every moderation route (Q66); when sent it is
+  compared with the asset's version inside the unit of work (`412` when stale or naming
+  another asset). The portal always sends it.
+- **Blocking:** no
+- **Status:** open (raised by the moderation console, 2026-10-07)
+
+## Q259 — Number of linked events on a report
+
+- **Question:** A moderator's report detail lists at most 200 linked events, oldest
+  first, and says whether more were left out (`is_linked_events_truncated`). Is that
+  enough, or should the list be paged?
+- **Why it matters:** One observation linked to more than 200 events would hide the
+  newest links.
+- **Proposed default:** Keep 200 without paging; a read never answers 422 for it.
+- **Blocking:** no
+- **Status:** open (raised by the review of ADR 0022, 2026-10-07)

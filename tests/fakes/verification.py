@@ -219,6 +219,7 @@ class InMemoryVerificationQueryService:
             if (query.state is None or case.state is query.state)
             and (query.target_kind is None or case.target.kind is query.target_kind)
             and (query.assigned_to is None or case.assigned_to == query.assigned_to)
+            and (query.target_id is None or case.target.target_id == query.target_id)
             and (
                 cursor is None
                 or (case.created_at.isoformat(), case.id)

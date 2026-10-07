@@ -30,6 +30,7 @@ from yakhnama.modules.media.public import (
     RecordScanResultHandler,
     ScanStatus,
 )
+from yakhnama.platform.etag import make_etag
 
 JPEG = {"mime_type": "image/jpeg", "byte_size": 2048}
 
@@ -310,3 +311,62 @@ def test_moderation_status_names_match_the_media_enum_values() -> None:
     names = set(MODERATION_STATUS_NAMES)
 
     assert names == enum_values
+
+
+async def test_moderate_media_with_stale_if_match_returns_412_and_keeps_rejection() -> (
+    None
+):
+    api = recording_app()
+
+    async with api.client() as client:
+        asset_id = await upload_media(api, client)
+        await _scan_clean(api, asset_id)
+        read = await client.get(f"{MEDIA}/{asset_id}", headers=moderator_headers())
+        seen = read.headers["etag"]
+        rejected = await client.post(
+            f"{MODERATION}/media/{asset_id}/decision",
+            json={
+                "decision": "rejected",
+                "sensitivity": "injured_or_deceased",
+                "reason": "Shows injured people.",
+            },
+            headers=moderator_headers() | {"If-Match": seen},
+        )
+        stale = await client.post(
+            f"{MODERATION}/media/{asset_id}/decision",
+            json={"decision": "approved", "sensitivity": "none"},
+            headers=moderator_headers() | {"If-Match": seen},
+        )
+        after = await client.get(f"{MEDIA}/{asset_id}", headers=moderator_headers())
+
+    assert rejected.status_code == 200
+    assert rejected.headers["etag"] == make_etag(
+        rejected.json()["version"], UUID(asset_id)
+    )
+    assert stale.status_code == 412
+    assert stale.headers["content-type"].startswith("application/problem+json")
+    assert after.json()["moderation_status"] == "rejected"
+
+
+async def test_moderate_media_with_if_match_of_another_asset_returns_412() -> None:
+    api = recording_app()
+
+    async with api.client() as client:
+        asset_id = await upload_media(api, client)
+        response = await client.post(
+            f"{MODERATION}/media/{asset_id}/decision",
+            json={"decision": "rejected", "reason": "Not a hazard photo."},
+            headers=moderator_headers()
+            | {"If-Match": make_etag(1, UUID(new_client_id()))},
+        )
+
+    assert response.status_code == 412
+
+
+def test_moderate_media_route_declares_412_but_not_428() -> None:
+    responses = recording_app().app.openapi()["paths"][
+        f"{MODERATION}/media/{{asset_id}}/decision"
+    ]["post"]["responses"]
+
+    assert "412" in responses
+    assert "428" not in responses

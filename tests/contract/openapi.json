@@ -6505,7 +6505,7 @@
       },
       "ReportDetail": {
         "additionalProperties": false,
-        "description": "One report with its content, exact or rounded as the caller may see it.\n\nImplements: DTO.\n\nAttributes:\n    id: The report's id.\n    reporter_id: The reporting user; ``None`` for a guest report, which never\n        shows a reporter.\n    organization_id: The organisation reported for, or ``None``.\n    source_id: The provenance source.\n    status: Lifecycle status.\n    revision: Position in the revision chain.\n    supersedes_id: The revision this one replaces, if any.\n    superseded_by_id: The revision that replaced this one, if any.\n    observed_at: When it was observed.\n    coordinates: The exact position, or the rounded one.\n    accuracy: The GPS accuracy, only alongside exact coordinates.\n    coordinates_are_exact: Whether ``coordinates`` is the exact position.\n    description: The reporter's words.\n    original_language: The language of ``description``.\n    hazard_guess: The reporter's guess, if any.\n    place_hint: The picked place, if any.\n    media_ids: Attached media assets.\n    withdrawal_reason: Why it was withdrawn, if it was.\n    triage: The latest triage result, only for callers who may see it.\n    submitted_at: When it was submitted, UTC.\n    version: Optimistic-concurrency version, for ``ETag``.\n    channel: How the report reached the platform.\n    assisted: The consent record and private note of an assisted report,\n        only alongside exact coordinates (the person who entered it and\n        moderators); ``None`` otherwise.\n    review: The moderators' mark on its lineage; moderators only.\n    linked_events: The events any revision of the lineage is linked to;\n        moderators only.",
+        "description": "One report with its content, exact or rounded as the caller may see it.\n\nImplements: DTO.\n\nAttributes:\n    id: The report's id.\n    reporter_id: The reporting user; ``None`` for a guest report, which never\n        shows a reporter.\n    organization_id: The organisation reported for, or ``None``.\n    source_id: The provenance source.\n    status: Lifecycle status.\n    revision: Position in the revision chain.\n    supersedes_id: The revision this one replaces, if any.\n    superseded_by_id: The revision that replaced this one, if any.\n    observed_at: When it was observed.\n    coordinates: The exact position, or the rounded one.\n    accuracy: The GPS accuracy, only alongside exact coordinates.\n    coordinates_are_exact: Whether ``coordinates`` is the exact position.\n    description: The reporter's words.\n    original_language: The language of ``description``.\n    hazard_guess: The reporter's guess, if any.\n    place_hint: The picked place, if any.\n    media_ids: Attached media assets.\n    withdrawal_reason: Why it was withdrawn, if it was.\n    triage: The latest triage result, only for callers who may see it.\n    submitted_at: When it was submitted, UTC.\n    version: Optimistic-concurrency version, for ``ETag``.\n    channel: How the report reached the platform.\n    assisted: The consent record and private note of an assisted report,\n        only alongside exact coordinates (the person who entered it and\n        moderators); ``None`` otherwise.\n    review: The moderators' mark on its lineage; moderators only.\n    linked_events: The events any revision of the lineage is linked to,\n        oldest first, at most ``LINKED_EVENTS_MAX``; moderators only.\n    is_linked_events_truncated: Whether links beyond ``LINKED_EVENTS_MAX``\n        were left out; moderators only, ``None`` for everyone else.",
         "properties": {
           "accuracy": {
             "anyOf": [
@@ -6557,6 +6557,17 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "is_linked_events_truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Linked Events Truncated"
           },
           "linked_events": {
             "anyOf": [
@@ -6980,7 +6991,7 @@
       },
       "ReportSummary": {
         "additionalProperties": false,
-        "description": "One report in a listing, with its position rounded.\n\nImplements: DTO.\n\nAttributes:\n    id: The report's id.\n    status: Lifecycle status.\n    revision: Position in the revision chain.\n    observed_at: When it was observed.\n    coordinates: The position rounded by ``PublicCoordinatePolicy``.\n    hazard_code: The reporter's hazard guess, if any.\n    place_hint: The picked place, if any.\n    media_count: How many media assets are attached.\n    submitted_at: When it was submitted, UTC.\n    channel: How the report reached the platform.\n    review: The moderators' mark on its lineage; moderators only, ``None``\n        for everyone else.",
+        "description": "One report in a listing, with its position rounded.\n\nImplements: DTO.\n\nAttributes:\n    id: The report's id.\n    status: Lifecycle status.\n    revision: Position in the revision chain.\n    observed_at: When it was observed.\n    coordinates: The position rounded by ``PublicCoordinatePolicy``.\n    hazard_code: The reporter's hazard guess, if any.\n    place_hint: The picked place, if any.\n    media_count: How many media assets are attached.\n    submitted_at: When it was submitted, UTC.\n    channel: How the report reached the platform.\n    review: The moderators' mark on its lineage; moderators only, ``None``\n        for everyone else.\n    triage_flags: The distinct kinds of flag its latest triage raised, in\n        the order the rules ran (empty when none, or not triaged yet);\n        moderators only, ``None`` for everyone else. The flags' detail\n        stays on the report's detail view.",
         "properties": {
           "channel": {
             "$ref": "#/components/schemas/ReportChannel"
@@ -7056,6 +7067,27 @@
               }
             ],
             "title": "Submitted At"
+          },
+          "triage_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "exif_implausible",
+                    "duplicate_suspected",
+                    "pii_detected",
+                    "spam_suspected"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 4,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Triage Flags"
           }
         },
         "required": [
@@ -7287,13 +7319,14 @@
         "type": "object"
       },
       "ReviewOutcome": {
-        "description": "What one mark of a bulk request did.\n\nImplements: DTO.",
+        "description": "What one mark of a bulk request did.\n\n``conflict`` covers a concurrent mark of the same lineage and a mark on a\nrevision older than the one the lineage was last marked on; ``error`` any\nother refusal by the domain, so one bad report does not fail the batch.\n\nImplements: DTO.",
         "enum": [
           "marked",
           "unchanged",
           "not_found",
           "reason_required",
-          "conflict"
+          "conflict",
+          "error"
         ],
         "title": "ReviewOutcome",
         "type": "string"
@@ -9289,7 +9322,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -9435,7 +9468,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -9581,7 +9614,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -9739,7 +9772,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -9874,7 +9907,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -11009,7 +11042,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -12446,7 +12479,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -12624,6 +12657,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -12649,7 +12688,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -12796,7 +12835,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -13074,7 +13113,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -13219,7 +13258,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -13339,6 +13378,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -13364,7 +13409,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -13490,6 +13535,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -13515,7 +13566,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -13631,6 +13682,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -13656,7 +13713,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -13782,6 +13839,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -13807,7 +13870,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -13933,6 +13996,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -13958,7 +14027,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -14227,6 +14296,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -14252,7 +14327,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -14403,7 +14478,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -14491,6 +14566,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -14516,7 +14597,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -14657,7 +14738,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -14765,7 +14846,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -15004,7 +15085,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -15196,7 +15277,7 @@
     },
     "/api/v1/moderation/media/{asset_id}/decision": {
       "post": {
-        "description": "Record a moderator's decision, publishing the public copy when approved.\n\nArgs:\n    asset_id: The asset.\n    body: Decision, sensitivity and reason.\n    actor: The moderator.\n    response: Used to set the ``ETag`` header.\n    services: Use cases bound by the composition root.\n\nReturns:\n    The asset after the decision.",
+        "description": "Record a moderator's decision, publishing the public copy when approved.\n\n``If-Match`` is optional, as on every moderation route (Q66); when sent it is\ncompared with the asset's version inside the command's unit of work, so two\nmoderators deciding at once cannot let a stale approval overwrite a\nrejection.\n\nArgs:\n    asset_id: The asset.\n    body: Decision, sensitivity and reason.\n    actor: The moderator.\n    response: Used to set the ``ETag`` header.\n    services: Use cases bound by the composition root.\n    if_match: Optional: the asset's ETag the decision is based on.\n\nReturns:\n    The asset after the decision.\n\nRaises:\n    PreconditionFailedError: If ``If-Match`` is stale, names another asset\n        or is not a single strong tag (412).",
         "operationId": "moderate_media_api_v1_moderation_media__asset_id__decision_post",
         "parameters": [
           {
@@ -15207,6 +15288,25 @@
               "format": "uuid",
               "title": "Asset Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Optional: the asset's ETag, for example \"<asset_id>:3\".",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional: the asset's ETag, for example \"<asset_id>:3\".",
+              "title": "If-Match"
             }
           }
         ],
@@ -15248,6 +15348,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -15273,13 +15379,19 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
                 }
               }
             }
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details"
           },
           "422": {
             "content": {
@@ -15454,7 +15566,7 @@
     },
     "/api/v1/moderation/reports/review": {
       "post": {
-        "description": "Apply one mark to up to 100 reports, each on its own.\n\nNot atomic: every report gets its own outcome (``marked``, ``unchanged``,\n``not_found``, ``reason_required`` or ``conflict``), in request order, and\none failure never keeps the others from being marked.\n\nArgs:\n    body: The reports, the mark and its reason.\n    actor: The moderator.\n    services: Use cases bound by the composition root.\n\nReturns:\n    One result per report.",
+        "description": "Apply one mark to up to 100 reports, each on its own.\n\nNot atomic: every report gets its own outcome (``marked``, ``unchanged``,\n``not_found``, ``reason_required``, ``conflict`` or ``error``), in request\norder, and one refusal never keeps the others from being marked. Revisions\nof one lineage are marked once, on the newest one named, and share its\nresult.\n\nArgs:\n    body: The reports, the mark and its reason.\n    actor: The moderator.\n    services: Use cases bound by the composition root.\n\nReturns:\n    One result per report.",
         "operationId": "mark_report_reviews_api_v1_moderation_reports_review_post",
         "requestBody": {
           "content": {
@@ -15488,6 +15600,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -15499,6 +15617,21 @@
               "application/problem+json": {}
             },
             "description": "RFC 9457 Problem Details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: idempotency-key-reused (the key was used with another request) or idempotency-key-in-use (a request with the key is still running).",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -15631,7 +15764,7 @@
         ]
       },
       "post": {
-        "description": "Mark a report's lineage ``new``, ``reviewed`` or ``archived``.\n\nThe report is not changed: its status, its ETag and its reporter's rights\nstay as they were. Repeating the last mark changes nothing.\n\nArgs:\n    report_id: The revision the moderator looked at.\n    body: The mark and its reason.\n    actor: The moderator.\n    response: Used to set the review's new ``ETag``.\n    services: Use cases bound by the composition root.\n    if_match: Optional: the review's ETag the mark is based on.\n\nReturns:\n    The review after the mark, with its history.\n\nRaises:\n    PreconditionFailedError: If ``If-Match`` is stale or names another\n        review (412).\n    ReviewReasonRequiredError: If the move needs a reason (422).",
+        "description": "Mark a report's lineage ``new``, ``reviewed`` or ``archived``.\n\nThe report is not changed: its status, its ETag and its reporter's rights\nstay as they were. Repeating the last mark changes nothing.\n\nArgs:\n    report_id: The revision the moderator looked at.\n    body: The mark and its reason.\n    actor: The moderator.\n    response: Used to set the review's new ``ETag``.\n    services: Use cases bound by the composition root.\n    if_match: Optional: the review's ETag the mark is based on.\n\nReturns:\n    The review after the mark, with its history. The ``ETag`` names the\n    version this mark produced (or found, when it changed nothing), taken\n    from the command's result: should another moderator's mark land between\n    this commit and the read of the history, the body already shows it and\n    an ``If-Match`` with this ETag answers 412, so nobody overwrites a mark\n    they were not shown.\n\nRaises:\n    PreconditionFailedError: If ``If-Match`` is stale or names another\n        review (412).\n    ReviewRevisionSupersededError: If the report is older than the revision\n        the lineage was last marked on (409).\n    ReviewReasonRequiredError: If the move needs a reason (422).",
         "operationId": "mark_report_review_api_v1_moderation_reports__report_id__review_post",
         "parameters": [
           {
@@ -15702,6 +15835,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -15727,7 +15866,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -15742,12 +15881,6 @@
             "description": "RFC 9457 Problem Details"
           },
           "422": {
-            "content": {
-              "application/problem+json": {}
-            },
-            "description": "RFC 9457 Problem Details"
-          },
-          "428": {
             "content": {
               "application/problem+json": {}
             },
@@ -15880,7 +16013,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -15979,6 +16112,23 @@
                 }
               ],
               "title": "Assigned To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "target_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Id"
             }
           },
           {
@@ -16246,6 +16396,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -16271,7 +16427,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -16397,6 +16553,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -16422,7 +16584,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -16732,7 +16894,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -17190,7 +17352,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -17956,7 +18118,7 @@
     },
     "/api/v1/reports": {
       "get": {
-        "description": "List reports with rounded positions, as JSON or GeoJSON.\n\nModerators see every report and each lineage's review mark; anyone else\nonly their own, without marks. ``channel=guest`` is the moderators' queue of\nreports from people without an account; ``review_state`` (moderators only)\ntheir review queue; ``reporter=me`` narrows any listing to the caller's own.\n\nArgs:\n    parameters: Validated filters, format, cursor and limit.\n    actor: The authenticated caller.\n    response: Used to set ``Link`` and ``Vary`` on the JSON response.\n    services: Use cases bound by the composition root.\n    accept: ``application/geo+json`` selects a GeoJSON ``FeatureCollection``.\n\nReturns:\n    One page of reports in the negotiated representation. The GeoJSON form\n    carries the next page only in the ``Link`` header.",
+        "description": "List reports with rounded positions, as JSON or GeoJSON.\n\nModerators see every report, each lineage's review mark and each report's\ntriage flag kinds; anyone else only their own, without either.\n``channel=guest`` is the moderators' queue of reports from people without an\naccount; ``review_state`` and ``triage_flag`` (moderators only) their review\nqueues; ``reporter=me`` narrows any listing to the caller's own.\n\nArgs:\n    parameters: Validated filters, format, cursor and limit.\n    actor: The authenticated caller.\n    response: Used to set ``Link`` and ``Vary`` on the JSON response.\n    services: Use cases bound by the composition root.\n    accept: ``application/geo+json`` selects a GeoJSON ``FeatureCollection``.\n\nReturns:\n    One page of reports in the negotiated representation. The GeoJSON form\n    carries the next page only in the ``Link`` header.",
         "operationId": "list_reports_api_v1_reports_get",
         "parameters": [
           {
@@ -18075,6 +18237,28 @@
                 }
               ],
               "title": "Review State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "triage_flag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "exif_implausible",
+                    "duplicate_suspected",
+                    "pii_detected",
+                    "spam_suspected"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Triage Flag"
             }
           },
           {
@@ -18320,7 +18504,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -18563,7 +18747,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -18689,6 +18873,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -18714,7 +18904,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -18846,6 +19036,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -18871,7 +19067,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -19184,6 +19380,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -19209,7 +19411,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"
@@ -19565,6 +19767,12 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/problem+json": {}
+            },
+            "description": "RFC 9457 Problem Details: invalid-idempotency-key (Idempotency-Key is not a single UUID)."
+          },
           "401": {
             "content": {
               "application/problem+json": {}
@@ -19590,7 +19798,7 @@
             "description": "RFC 9457 Problem Details",
             "headers": {
               "Retry-After": {
-                "description": "Seconds to wait before retrying.",
+                "description": "Seconds to wait before retrying; sent only with idempotency-key-in-use, never with any other 409.",
                 "schema": {
                   "minimum": 0,
                   "type": "integer"

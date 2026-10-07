@@ -142,6 +142,7 @@ async def list_verification_cases(
             state=parameters.state,
             target_kind=parameters.target_kind,
             assigned_to=parameters.assigned_to,
+            target_id=parameters.target_id,
             page=PageRequest(limit=parameters.limit, cursor=parameters.cursor),
         )
     )

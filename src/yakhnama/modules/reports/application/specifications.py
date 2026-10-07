@@ -17,7 +17,11 @@ from datetime import datetime
 
 from yakhnama.modules.reports.application.dto import ReportRecord
 from yakhnama.modules.reports.domain.reviews import ReviewState
-from yakhnama.modules.reports.domain.value_objects import ReportChannel, ReportStatus
+from yakhnama.modules.reports.domain.value_objects import (
+    ReportChannel,
+    ReportStatus,
+    TriageFlagKind,
+)
 from yakhnama.shared_kernel.ids import EntityId
 from yakhnama.shared_kernel.privacy import PublicCoordinatePolicy
 from yakhnama.shared_kernel.specification import Specification
@@ -316,3 +320,38 @@ class ReportReviewStateSpecification(Specification[ReportRecord]):
         review = candidate.review
         current = ReviewState.NEW if review is None else review.state
         return current is self._state
+
+
+class ReportTriageFlagSpecification(Specification[ReportRecord]):
+    """Matches reports whose latest triage raised one kind of flag (moderators only).
+
+    Implements: Specification.
+
+    Attributes:
+        kind: The flag kind to match.
+    """
+
+    def __init__(self, kind: TriageFlagKind) -> None:
+        """Create the specification.
+
+        Args:
+            kind: The flag kind to match.
+        """
+        self._kind: TriageFlagKind = kind
+
+    @property
+    def kind(self) -> TriageFlagKind:
+        """Return the flag kind to match."""
+        return self._kind
+
+    def is_satisfied_by(self, candidate: ReportRecord) -> bool:
+        """Tell whether ``candidate``'s triage raised a flag of the kind.
+
+        Args:
+            candidate: The report to test.
+
+        Returns:
+            ``False`` for a report not triaged yet.
+        """
+        triage = candidate.triage
+        return triage is not None and self._kind in triage.kinds

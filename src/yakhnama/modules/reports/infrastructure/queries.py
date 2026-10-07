@@ -80,6 +80,7 @@ from sqlalchemy import (
     table,
     true,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased, defer
 from sqlalchemy.types import DateTime
@@ -99,6 +100,7 @@ from yakhnama.modules.reports.application.specifications import (
     ReportReporterSpecification,
     ReportReviewStateSpecification,
     ReportStatusSpecification,
+    ReportTriageFlagSpecification,
 )
 from yakhnama.modules.reports.domain.reviews import ReviewMark, ReviewState
 from yakhnama.modules.reports.domain.triage import ReportSummaryForTriage
@@ -236,7 +238,7 @@ def _in_rounded_bbox(
 def _report_leaf_condition(
     specification: Specification[ReportRecord],
 ) -> ColumnElement[bool]:
-    """Compile one of the eight report leaves.
+    """Compile one of the nine report leaves.
 
     Raises:
         TypeError: If the leaf has no SQL translation.
@@ -261,6 +263,12 @@ def _report_leaf_condition(
             condition = (
                 func.coalesce(ReportReviewRow.state, literal(ReviewState.NEW.value))
                 == specification.state.value
+            )
+        case ReportTriageFlagSpecification():
+            # Containment on the whole column, so the GIN index
+            # ix_reports_triage_gin (jsonb_path_ops, migration 0026) serves it.
+            condition = ReportRow.triage.op("@>")(
+                literal({"flags": [{"kind": specification.kind}]}, JSONB)
             )
         case _:
             message = f"no SQL translation for {type(specification).__name__}"
@@ -526,14 +534,17 @@ class SqlAlchemyReportQueryService:
             rows = (await session.execute(statement)).scalars().all()
         return tuple(row_to_review_mark(row) for row in rows)
 
-    async def list_linked_events(self, lineage_id: EntityId) -> tuple[LinkedEvent, ...]:
+    async def list_linked_events(
+        self, lineage_id: EntityId, limit: int
+    ) -> tuple[LinkedEvent, ...]:
         """Return the event links of every revision of a lineage, oldest first.
 
         Args:
             lineage_id: The id of the lineage's revision 1.
+            limit: Most links returned.
 
         Returns:
-            The links.
+            Up to ``limit`` links.
         """
         links = EVENT_REPORT_LINKS
         statement = (
@@ -541,6 +552,7 @@ class SqlAlchemyReportQueryService:
             .join(ReportRow, ReportRow.id == links.c.report_id)
             .where(ReportRow.lineage_id == lineage_id)
             .order_by(links.c.linked_at, links.c.event_id, links.c.report_id)
+            .limit(limit)
         )
         async with self._session_factory() as session:
             rows = (await session.execute(statement)).tuples().all()
